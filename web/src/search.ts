@@ -13,7 +13,7 @@ export interface State {
   message: string;
   working: number; coarse: number; patch: number;
   tilesRead: number; tilesBudget: number; tilesTotal: number;
-  patches: number; hits: Hit[];
+  patches: number; queued: number; hits: Hit[];
   bytes: number; seconds: number; scanSeconds: number; firstHitSeconds: number | null;
 }
 
@@ -25,6 +25,8 @@ export interface Options {
   minTiles?: number;
   maxCoarseVoxels?: number;
   topN?: number;
+  maxTiles?: number;          // cap on the first pass, whatever budgetFrac says
+  stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
 }
 
@@ -54,6 +56,8 @@ export class Search {
   private embs: Float32Array[] = [];
   private pixels: Uint8Array[] = [];
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
+  private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
+  private scanInfo: { score: Float32Array; dims: Dims; clo: Vec3; f: number; w: Dims } | null = null;
   private next = 0;
   private stopFlag = false;
   private t0 = performance.now();
@@ -73,7 +77,7 @@ export class Search {
     this.region = opt.region ?? [[0, 0, 0], [...L.shape] as Vec3];
     this.bytes0 = src.bytesRead;
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
-                   tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, hits: [], bytes: 0, seconds: 0,
+                   tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
                    scanSeconds: 0, firstHitSeconds: null };
   }
 
@@ -127,6 +131,7 @@ export class Search {
       const qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
       const inp: ScanInput = { vol: luminance(vol), dims: vol.shape, query: luminance(qr), qdims: qr.shape, window: w, margin: m };
       const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
+      this.scanInfo = { score: res.score, dims: res.dims, clo, f, w };
       this.emit({ scanSeconds: (performance.now() - ts) / 1000 });
       // 2. rank the working level's tiles by their best window
       const ch = this.src.levels[W].chunk;
@@ -145,7 +150,8 @@ export class Search {
           }
       this.order = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k.split(",").map(Number) as Vec3);
       const total = (d3 ? Math.ceil((rhi[0] - rlo[0]) / ch[0]) : 1) * Math.ceil((rhi[1] - rlo[1]) / ch[1]) * Math.ceil((rhi[2] - rlo[2]) / ch[2]);
-      const budget = Math.min(this.order.length, Math.max(this.opt.minTiles ?? 12, Math.round((this.opt.budgetFrac ?? 0.03) * total)));
+      const budget = Math.min(this.order.length, this.opt.maxTiles ?? Infinity,
+                              Math.max(this.opt.minTiles ?? 12, Math.round((this.opt.budgetFrac ?? 0.03) * total)));
       this.emit({ phase: "read", tilesTotal: total, tilesBudget: budget, message: "reading the best-ranked tiles" });
       await this.readUntil(budget);
     } catch (e) {
@@ -154,64 +160,88 @@ export class Search {
   }
 
   /** Read more tiles, up to `budget` in total (continue after a pause). */
+  /** Cheap-scan score at a working-level position (the window centred nearest it). */
+  private priorAt(c: Vec3): number {
+    const sc = this.scanInfo;
+    if (!sc) return 0;
+    const idx = [0, 1, 2].map((a) => {
+      const v = Math.floor(c[a] / sc.f) - sc.clo[a] - Math.floor(sc.w[a] / 2);
+      return Math.max(0, Math.min(sc.dims[a] - 1, v));
+    });
+    return sc.score[(idx[0] * sc.dims[1] + idx[1]) * sc.dims[2] + idx[2]];
+  }
+
+  /** Read a tile and queue its patches (the stride grid inside it), each with its prior. */
+  private async readTile(t: Vec3) {
+    const P = this.opt.patch, h = P / 2, W = this.opt.working, d3 = this.src.dims === 3;
+    const step = this.opt.stride ?? (d3 ? P / 2 : P);
+    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.region;
+    const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
+    const grid = (a: number) => {  // stride grid from the region corner, patch inside the region
+      const r: number[] = [];
+      const flat = a === 0 && !d3;
+      const first = rlo[a] + (flat ? 0 : h), lastOk = flat ? rhi[a] - 1 : rhi[a] - h, st = flat ? 1 : step;
+      for (let v = first + Math.max(0, Math.ceil((lo[a] - first) / st)) * st; v < hi[a] && v <= lastOk; v += st) r.push(v);
+      return r;
+    };
+    const cs: Vec3[] = [];
+    for (const z of grid(0)) for (const y of grid(1)) for (const x of grid(2)) {
+      if (Math.abs(z - this.query[0]) < (d3 ? h : 1) && Math.abs(y - this.query[1]) < h && Math.abs(x - this.query[2]) < h) continue;
+      cs.push([z, y, x]);
+    }
+    if (!cs.length) return;
+    const zs = cs.map((c) => c[0]), z0 = Math.min(...zs), z1 = Math.max(...zs) + 1;
+    const blo: Vec3 = [z0, lo[1] - h, lo[2] - h], bhi: Vec3 = [z1, hi[1] + h, hi[2] + h];
+    let r: Region;
+    try { r = await this.src.read(W, blo, bhi); } catch { return; }  // a tile that fails is skipped
+    const [, by, bx] = r.shape, C = r.channels;
+    for (const c of cs) {
+      const d = new Float32Array(P * P * C);
+      for (let y = 0; y < P; y++) {
+        const row = ((c[0] - z0) * by + (c[1] - h + y - blo[1])) * bx + (c[2] - h - blo[2]);
+        d.set(r.data.subarray(row * C, (row + P) * C), y * P * C);
+      }
+      this.queue.push({ c, pri: this.priorAt(c), patch: { data: d, size: P, channels: C } });
+    }
+  }
+
+  /** Read more tiles, up to `budget` in total (continue after a pause). Tiles are read a few at
+   * a time in coarse-scan order; their patches join one queue ranked by the cheap score at
+   * each patch; the best queued patches are embedded in small batches and the hits update after
+   * every batch, so results stream and the likeliest come first. */
   async readUntil(budget: number) {
     this.stopFlag = false;
     this.emit({ phase: "read", tilesBudget: budget });
-    const P = this.opt.patch, h = P / 2, step = P / 2, W = this.opt.working, d3 = this.src.dims === 3;
-    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.region;
-    const batchTiles = d3 ? 6 : 1;
-    while (this.next < Math.min(budget, this.order.length) && !this.stopFlag) {
-      const tiles = this.order.slice(this.next, Math.min(budget, this.next + batchTiles));
-      this.next += tiles.length;
-      const centers: Vec3[] = [], patches: Patch[] = [], pix: Uint8Array[] = [];
-      await Promise.all(tiles.map(async (t) => {
-        const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
-        const grid = (a: number) => {  // grid positions (stride P/2 from the region corner, patch inside region)
-          const r: number[] = [];
-          const flat = a === 0 && !d3;
-          const first = rlo[a] + (flat ? 0 : h), lastOk = flat ? rhi[a] - 1 : rhi[a] - h, st = flat ? 1 : step;
-          for (let v = first + Math.max(0, Math.ceil((lo[a] - first) / st)) * st; v < hi[a] && v <= lastOk; v += st) r.push(v);
-          return r;
-        };
-        const cs: Vec3[] = [];
-        for (const z of grid(0)) for (const y of grid(1)) for (const x of grid(2)) {
-          if (Math.abs(z - this.query[0]) < (d3 ? h : 1) && Math.abs(y - this.query[1]) < h && Math.abs(x - this.query[2]) < h) continue;
-          cs.push([z, y, x]);
-        }
-        if (!cs.length) return;
-        // one read per tile: its z range, grown by half a patch in y and x
-        const zs = cs.map((c) => c[0]), z0 = Math.min(...zs), z1 = Math.max(...zs) + 1;
-        const blo: Vec3 = [z0, lo[1] - h, lo[2] - h], bhi: Vec3 = [z1, hi[1] + h, hi[2] + h];
-        let r: Region;
-        try { r = await this.src.read(W, blo, bhi); } catch { return; }  // a tile that fails is skipped
-        const [, by, bx] = r.shape, C = r.channels;
-        for (const c of cs) {
-          const d = new Float32Array(P * P * C);
-          for (let y = 0; y < P; y++) {
-            const row = ((c[0] - z0) * by + (c[1] - h + y - blo[1])) * bx + (c[2] - h - blo[2]);
-            d.set(r.data.subarray(row * C, (row + P) * C), y * P * C);
-          }
-          centers.push(c);
-          patches.push({ data: d, size: P, channels: C });
-          pix.push(Uint8Array.from(d));
-        }
-      }));
-      if (centers.length) {
-        const keys = centers.map((c) => `${W}|${P}|${c.join(",")}`);
-        const e = await this.emb.embed(patches, keys);
-        for (let k = 0; k < centers.length; k++) {
-          this.centers.push(centers[k]);
-          this.embs.push(e[k]);
-          this.pixels.push(pix[k]);
-        }
+    const W = this.opt.working, P = this.opt.patch, d3 = this.src.dims === 3;
+    const ahead = d3 ? 6 : 3;
+    while (!this.stopFlag) {
+      const B = this.emb.provider === "webgpu" ? 64 : 16;
+      const limit = Math.min(budget, this.order.length);
+      if (this.queue.length < 2 * B && this.next < limit) {
+        const tiles = this.order.slice(this.next, Math.min(limit, this.next + ahead));
+        this.next += tiles.length;
+        await Promise.all(tiles.map((t) => this.readTile(t)));
+        this.queue.sort((x, y) => y.pri - x.pri);
       }
+      if (!this.queue.length) {
+        if (this.next >= limit) break;
+        continue;
+      }
+      const batch = this.queue.splice(0, B);
+      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`));
+      batch.forEach((q, k) => {
+        this.centers.push(q.c);
+        this.embs.push(e[k]);
+        this.pixels.push(Uint8Array.from(q.patch.data));
+      });
       this.rank();
-      await new Promise((r) => setTimeout(r, 0));  // let the page draw between tiles
-      this.emit({ tilesRead: this.next, patches: this.centers.length,
+      await new Promise((r) => setTimeout(r, 0));  // let the page draw
+      this.emit({ tilesRead: this.next, patches: this.centers.length, queued: this.queue.length,
                   firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
     }
-    this.emit({ phase: this.next >= this.order.length ? "done" : "paused",
-                message: this.next >= this.order.length ? "read every ranked tile" : "paused: continue to read more" });
+    const all = this.next >= this.order.length && !this.queue.length;
+    this.emit({ phase: all ? "done" : "paused", tilesRead: this.next, queued: this.queue.length,
+                message: all ? "read every ranked tile" : this.stopFlag ? "stopped" : "paused: read more to continue" });
   }
 
   stop() { this.stopFlag = true; }
