@@ -162,7 +162,7 @@ def main():
     ap.add_argument("--k", type=int, default=100, help="candidates kept per level")
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--region", default=None, help="s0 box zlo,ylo,xlo,zhi,yhi,xhi (default: whole array)")
-    ap.add_argument("--methods", default="ncc,hist,tex")
+    ap.add_argument("--methods", default="hist,tex", help="cheap scores (ncc was unreliable in test 2)")
     ap.add_argument("--no-embed", action="store_true", help="stop after cheap scores (no model)")
     a = ap.parse_args()
 
