@@ -443,6 +443,17 @@ def precomputed_levels(url, info, a):
     return out
 
 
+def stretch(logsizes):
+    """Colour limits for log10 sizes, ignoring near-empty chunks (under 5% of the median
+    size): a few hundred constant edge chunks otherwise take up most of the range and the
+    structure inside the sample washes out."""
+    v = logsizes[np.isfinite(logsizes)]
+    if not v.size:
+        return 0.0, 1.0
+    core = v[v > np.median(v) + np.log10(0.05)]
+    return tuple(np.percentile(core if core.size > 10 else v, [1, 99]))
+
+
 # ---------- neuroglancer ----------
 SHADER = """#uicontrol invlerp size(range=[%.3f, %.3f])
 #uicontrol float opacity slider(min=0, max=1, default=0.6)
@@ -539,7 +550,7 @@ def neuroglancer_viewer(levels, data_source, bind, port, map_port):
     write_ome_map(mlev, outdir)
     map_url = serve_dir(outdir, bind, map_port)
     fin = mlev[0]["data"]
-    lo, hi = np.nanpercentile(fin, [1, 99]) if np.isfinite(fin).any() else (0.0, 1.0)
+    lo, hi = stretch(fin)
     neuroglancer.set_server_bind_address(bind, port)
     viewer = neuroglancer.Viewer()
     with viewer.txn() as s:
@@ -563,7 +574,7 @@ def render(sizes, out, title):
         a = a[None]
     pos = np.where(a > 0, a, np.nan)
     la = np.log10(pos)
-    lo, hi = np.nanpercentile(la, [1, 99]) if np.isfinite(la).any() else (0.0, 1.0)
+    lo, hi = stretch(la)
     cmap = plt.get_cmap("magma").copy()
     cmap.set_bad("#3a6ea5")  # missing chunks
     z, y, x = la.shape
