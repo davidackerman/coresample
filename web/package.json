@@ -12,12 +12,13 @@
     "model": "cd .. && uv run python web/scripts/export_model.py"
   },
   "dependencies": {
-    "zarrita": "0.7.5",
-    "onnxruntime-web": "1.30.0"
+    "ol": "10.10.0",
+    "onnxruntime-web": "1.30.0",
+    "zarrita": "0.7.5"
   },
   "devDependencies": {
-    "vite": "7.1.12",
+    "@webgpu/types": "0.1.74",
     "typescript": "5.9.3",
-    "@webgpu/types": "0.1.74"
+    "vite": "7.1.12"
   }
 }
