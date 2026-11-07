@@ -1,8 +1,8 @@
 # coresample feasibility: results
 
 1. **Test 1 passes as a where-is-the-content map, not as an organelle detector.** Free chunk sizes separate cell from resin (AUC 0.95; 0.98 for the free s0/s1 size ratio) and trace the nucleus and cell outline, but within the cell they predict mito or vesicles only weakly (AUC 0.57-0.71).
-2. **Test 2 passes for the hard target (vesicles) and fails for the easy one (mito).** Vesicles match brute force on the top hits from s3, s4 or even s5 while reading 3-8% of the working level's bytes as stored (2-4% with 32^3 inner chunks, under 2% of the voxels). Mito match only the top 10 in the subvolume; over the whole volume, matching the top 25 needs about 25% of the bytes as stored (12% with 32^3 inner chunks).
-3. **The pyramid-as-index advantage is not shown.** Adaptive chunk sampling with the same embedding model matches or beats coarse-to-fine on both targets at 2-10% of the chunks. "Instant search" holds for texture-defined targets, and the embedding does most of the work.
+2. **Test 2, point-wise coarse-to-fine, passes for vesicles and fails for mito.** Vesicles match brute force on the top hits from s3, s4 or s5 while reading 3-8% of the working level's bytes as stored; mito need about 25% over the whole volume.
+3. **Test 3: read the coarse scan's top chunks whole, embed everything in them.** That matches or beats brute force on the top hits at **2.4% of the bytes for vesicles and 2.7% for mito over the whole volume** (both including the coarse scan), well ahead of random or adaptive sampling at that budget. Mito in the 1/9 subvolume still miss on the top 25. The advantage is in the first hits only: past about 5% every strategy converges, and recall still needs most of the data.
 
 Dataset: `jrc_hela-2` (OpenOrganelle), EM `recon-1/em/fibsem-uint8`, 6368 x 1600 x 12000
 voxels at 5.24 x 4 x 4 nm, six 2x levels (s0 chunks 128^3, s1-s5 chunks 64^3, zstd 6),
@@ -163,6 +163,55 @@ Whole volume:
 - **Self-building index.** In the rerun, 68% (mito) and 44% (vesicle) of candidate embeddings
   came from the cache that earlier searches had filled (`cache/embeddings.sqlite`).
 
+## Test 3: combining the cheap signals (follow-up)
+
+Proposed at the end of Test 2 and run once, with parameters fixed in advance (seed 1% of
+chunks, 0.5% random exploration, equal weight on prior and feedback; no tuning). Every
+strategy reads whole working-level chunks and embeds every grid patch in each chunk it
+reads, so they differ only in which chunks they read, in what order. Costs include the
+whole coarsest level over the region (1.2% of working-level bytes) for coarse-using
+strategies. Driver: `search.best_first_chunks`; harness: `test3_combined.py`.
+
+| strategy | what it uses |
+|---|---|
+| random | nothing |
+| adaptive | 1% random seeds, then expand around the best similarities |
+| adaptive+skip | adaptive, never reading chunks the free size map calls empty |
+| coarse | chunks in order of the cheap coarse scan (hist+tex at s4 for mito, s3 for vesicles) |
+| combined | skip empty, seed with the coarse scan's top 1%, expand on coarse prior + neighbours' similarity |
+
+The empty mask uses only s0 chunk sizes: near-constant chunks plus the lower Otsu class
+when the split is clearly bimodal. Over the whole volume it marks 19% of chunks empty and
+drops 60 of 23,591 cell chunks (0.25%), catching a third of the resin.
+
+p@10 / p@25 at matched budgets (bytes read including the coarse scan in brackets):
+
+| run | brute force | random, 1% | adaptive, 1% | coarse or combined, 1% | adaptive, 5% | coarse, 5% |
+|---|---|---|---|---|---|---|
+| vesicle | 0.82 / 0.85 | 0.70 / 0.56 | 0.66 / 0.56 | **0.92 / 0.86** (2.4%) | 0.90 / 0.87 (5.8%) | 0.82 / 0.86 (7.3%) |
+| mito, whole volume | 0.48 / 0.44 | 0.28 / 0.15 | 0.34 / 0.22 | **0.58 / 0.46** (2.7%) | 0.44 / 0.46 (6.2%) | 0.50 / 0.48 (8.4%) |
+| mito, subvolume | 0.50 / 0.50 | 0.03 / 0.03 | 0.07 / 0.07 | 0.34 / 0.34 (2.5%) | 0.46 / 0.29 (6.0%) | 0.40 / 0.34 (7.4%) |
+
+![test3 mito whole volume](test3_mito_full.png)
+![test3 vesicle](test3_vesicle.png)
+![test3 mito subvolume](test3_mito.png)
+
+- **The coarse scan is worth exactly its first few percent.** Reading its top-ranked chunks
+  first gives brute-force-level top hits at about 2.5% of the bytes for vesicles and
+  whole-volume mito; random and adaptive sampling need at least twice the bytes for the same
+  precision, or never reach it below 20%.
+- **Read chunks, not points.** At the same bytes, Test 2's descent to single candidates
+  embedded one patch per candidate and lost the target when coarse localization was off; a
+  chunk read whole costs the same bytes and embeds all of its 8 patches (whole-volume mito
+  at about 3% of the bytes: p@10 0.38 point-wise, K=25, vs 0.58 chunk-wise).
+- **Feedback and the size map add little.** `combined` tracks `coarse`; expansion around good
+  hits does not beat the static coarse order, and skipping empty chunks helps vesicles a bit
+  (p@25 0.91 at 2% of chunks) and nothing else consistently.
+- **Recall is not instant.** r@100 grows with data read for every strategy; the gain is in the
+  first good hits, which is what the browser shows first.
+- The s4 whole-volume scan takes about 33 s in numpy (s3 over the subvolume, 36 s): fine for a
+  test, the part to move to WebGPU.
+
 ## Kill rule
 
 | target | top hits matched | data needed (as stored / 32^3 inner / voxels) | verdict |
@@ -170,10 +219,16 @@ Whole volume:
 | vesicle | yes (p@10, p@25 at or above brute force) | 3.4% / 2.1% / 1.7% | pass |
 | mito, subvolume | p@10 only; p@25 at most 0.41 vs 0.50 | not reached | fail |
 | mito, whole volume | at K=400 | 24.6% / 12.1% / 3.4% | fail (over 20% as stored) |
+| vesicle, Test 3 chunk-wise | yes (p@10 0.92 vs 0.82, p@25 0.86 vs 0.85) | 2.4% as stored, incl. coarse scan | pass |
+| mito, whole volume, Test 3 chunk-wise | yes (p@10 0.58 vs 0.48, p@25 0.46 vs 0.44) | 2.7% as stored, incl. coarse scan | pass |
+| mito, subvolume, Test 3 chunk-wise | no (p@25 at most 0.37 below 10%) | not reached under 20% | fail |
 
-The hard target was not lost at coarse levels. The easy target fails because the cheap
-scores do not select it, and no cheap fix was found among the variants tried; I stopped
-there rather than tune further.
+The hard target was not lost at coarse levels. Point-wise descent fails the easy target
+because the cheap scores do not localize it well enough; reading the coarse scan's top
+chunks whole fixes that over the whole volume (the realistic search) but not in the
+smaller subvolume, where 62 instances and 768 chunks leave little room. Test 3 is a
+variant chosen after seeing Test 2, with parameters fixed in advance and no tuning; it
+should be confirmed on another dataset before it is relied on.
 
 ## Caveats
 
@@ -186,25 +241,28 @@ there rather than tune further.
 - Byte fractions depend on region size (per-candidate cost is absolute); the 32^3 inner-chunk
   figure assumes uniform byte density inside a stored chunk.
 
-## What this suggests (untested)
+## What this means for the browser tool (untested)
 
-- **Combine the three cheap signals instead of choosing one:** skip resin with the free
-  chunk-size map (AUC 0.95-0.98), seed with the cheap coarse ranking where it works (vesicles:
-  p@10 0.84 in 4 s), and expand adaptively with embeddings, which won on mito. This is the
-  natural next experiment.
-- **Smaller reads matter more than smarter scores** for cost: target sharded datasets, or embed
-  thin slabs at the coarsest level where the target is still visible.
-- **Shape-defined targets** need a shape-aware cheap score (or the embedding at a coarse level)
-  before the pyramid can prune for them.
+- **Shape of the search:** click a region; scan the coarsest level with cheap scores (a few MB
+  read); read the top-ranked working-level chunks whole and embed every patch in them;
+  stream hits as they come; keep reading down the ranking for recall. That is what Test 3
+  measured, and it gives the first good hits from about 2.5% of the data.
+- **Smaller reads matter:** stored chunks cost 4-9x the voxels needed. Sharded datasets with
+  small inner chunks (or reading thin slabs) would cut the bytes about in half again.
+- **Shape-defined targets** remain the weak spot of the cheap scores; a shape-aware cheap score,
+  or the embedding itself at a coarse level, is the next thing to test for them.
+- **Move the scan to WebGPU:** box sums, FFTs and filters only; DINOv2-small through ONNX
+  Runtime Web for about 500 patches per query.
 - **Display and breadth:** a chunkmirage `chunksize://` source and a similarity layer
   (`Source.info` + `read(box)` under the `chunkmirage.sources` entry point); refkv
   (d-v-b/refkv) for chunk sizes and pyramids across ~25 formats, then a second domain
-  (Sentinel-2 or a cloud-optimized GeoTIFF) before any browser work.
+  (Sentinel-2 or a cloud-optimized GeoTIFF) and a second EM dataset to confirm Test 3.
 
 ## Reproduce
 
 `uv run python test1_chunksize.py`, then `test2_coarse2fine.py` (first run), the rerun with
 `--methods hist+tex --sweep k methods coarsest --method-sweep all ncc --suffix _fix`, the whole
 volume with `--targets mito --region full --suffix _full --methods hist+tex --sweep k methods
---method-sweep all --coarsest 4`, and `report.py`. Raw numbers: `test1.json`,
-`test2_*.json`, `summary.json`.
+--method-sweep all --coarsest 4`, then `test3_combined.py` and `test3_combined.py --targets
+mito --region full --suffix _full`, and `report.py`. Raw numbers: `test1.json`,
+`test2_*.json`, `test3_*.json`, `summary.json`.

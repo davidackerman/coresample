@@ -22,6 +22,7 @@ export CORESAMPLE_MIRROR=/local/disk/mirror    # chunk mirror: many small files,
 uv run python explore_layout.py                # arrays, levels, chunking, compressors of jrc_hela-2
 uv run python test1_chunksize.py               # chunk size vs label occupancy
 uv run python test2_coarse2fine.py             # coarse-to-fine vs brute force vs sampling
+uv run python test3_combined.py                # chunk-wise strategies: coarse prior, size map, feedback
 uv run python report.py                        # plots + summary for RESULTS.md
 ```
 
@@ -45,12 +46,12 @@ uv run chunkmap.py precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdat
 
 | file | what |
 |---|---|
-| `search.py` | portable search logic: box sums, FFT NCC, histogram EMD, texture stats, peaks, coarse-to-fine descent. numpy/scipy only, no I/O, no labels |
+| `search.py` | portable search logic: box sums, FFT NCC, histogram EMD, texture stats, peaks, coarse-to-fine descent, coarse scan, best-first chunk search, size-based empty mask. numpy/scipy only, no I/O, no labels |
 | `embed.py` | DINOv2-small patch embeddings with the sqlite cache (`cache/embeddings.sqlite`) |
 | `common.py` | S3 listing, local chunk mirror, chunk-touch accounting |
 | `chunkmap.py` | chunk-size maps from listings, shard indexes, or HEAD requests |
 | `query.py` | raw-data-only search CLI |
-| `explore_layout.py`, `test1_chunksize.py`, `test2_coarse2fine.py`, `report.py` | the feasibility tests |
+| `explore_layout.py`, `test1_chunksize.py`, `test2_coarse2fine.py`, `test3_combined.py`, `report.py` | the feasibility tests |
 
 Data: [OpenOrganelle](https://openorganelle.janelia.org) `jrc_hela-2` from the public
 bucket `s3://janelia-cosem-datasets`, read lazily with range requests.

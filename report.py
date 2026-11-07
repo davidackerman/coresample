@@ -152,7 +152,57 @@ def main():
             print("sampling adaptive:", " ".join(f"{x['frac_chunks']:.2f}:p10={x['p@10']:.2f}/p25={x['p@25']:.2f}/r100={x['r@100']:.2f}" for x in summary[key]["sampling_adaptive"]))
             print("sampling random:  ", " ".join(f"{x['frac_chunks']:.2f}:p10={x['p@10']:.2f}/p25={x['p@25']:.2f}/r100={x['r@100']:.2f}" for x in summary[key]["sampling_random"]))
             print("cheapest match:", json.dumps(summary[key]["cheapest_match"], default=float))
+    test3(summary)
     (RESULTS / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
+
+
+STRAT_STYLE = {"random": ("o:", "tab:gray"), "adaptive": ("s--", "tab:olive"), "adaptive+skip": ("s-", "tab:green"),
+               "coarse": ("v--", "tab:purple"), "combined": ("*-", "tab:red")}
+
+
+def test3(summary):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out = {}
+    for f in sorted(RESULTS.glob("test3_*.json")):
+        r = json.loads(f.read_text())
+        key = f.stem.replace("test3_", "")
+        t2 = summary.get(key)
+        mean = {}
+        for sname, curves in r["curves"].items():
+            n = len(curves[0])
+            mean[sname] = [{k: float(np.mean([c[i][k] for c in curves])) for k in curves[0][i]} for i in range(n)]
+        out[key] = {"empty_fraction": r["empty_fraction"], "coarse_level": r["coarse_level"],
+                    "coarse_overhead": r["coarse_overhead"], "n_chunks": r["n_chunks"], "curves": mean,
+                    "coarse_seconds": float(np.mean([q["coarse_seconds"] for q in r["queries"]]))}
+        fig, axs = plt.subplots(1, 3, figsize=(17, 4.8))
+        for ax, metric in zip(axs, ("p@10", "p@25", "r@100")):
+            for sname, curve in mean.items():
+                st, col = STRAT_STYLE[sname]
+                ax.plot([x["frac_bytes"] for x in curve], [x[metric] for x in curve], st, c=col, label=sname, ms=7 if sname == "combined" else 5)
+            if t2:
+                ax.axhline(t2["brute"][metric], c="k", lw=1, label="brute force (100%)")
+                ks = sorted([e for e in t2["table"] if e["methods"] == "hist+tex" and e["coarsest"] == TARGET_DEFAULT[r["target"]]],
+                            key=lambda e: e["k"])
+                ax.plot([e["frac_bytes"] for e in ks], [e[metric] for e in ks], "D", c="tab:blue", mfc="none",
+                        label="coarse-to-fine hist+tex, K sweep")
+            ax.axvspan(0.10, 0.20, color="tab:red", alpha=0.07)
+            ax.set_xscale("log"); ax.set_xlabel("fraction of working-level bytes read (incl. coarse scan)")
+            ax.set_ylabel(metric); ax.set_title(f"{key}: {metric}")
+        axs[0].legend(fontsize=7, loc="lower right")
+        fig.savefig(RESULTS / f"test3_{key}.png", dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        print(f"\n== test3 {key}: {r['n_chunks']} chunks, {r['empty_fraction']:.0%} empty by size, "
+              f"coarse s{r['coarse_level']} overhead {r['coarse_overhead']:.2%}, scan {out[key]['coarse_seconds']:.1f}s")
+        fr = [x["frac_chunks"] for x in next(iter(mean.values()))]
+        for target_f in (0.01, 0.02, 0.05, 0.1, 0.2):
+            i = fr.index(target_f)
+            print(f"  {target_f:>4.0%} of chunks: " + "  ".join(
+                f"{sn}={c[i]['p@10']:.2f}/{c[i]['p@25']:.2f}/{c[i]['r@100']:.2f} ({c[i]['frac_bytes']:.1%})" for sn, c in mean.items()))
+    summary["test3"] = out
 
 
 if __name__ == "__main__":
