@@ -24,7 +24,7 @@ await page.screenshot({ path: `${out}_view.png` });
 console.log(el(), "model:", await page.textContent("#model"));
 await page.selectOption("#budget", process.env.PW_BUDGET ?? "0.005");
 await page.selectOption("#region", process.env.PW_REGION ?? "1");
-const box = await page.locator("#view").boundingBox();
+const box = await page.locator("#stage").boundingBox();
 await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 let last = "";
 while ((Date.now() - t0) / 1000 < Number(maxS)) {

@@ -4,7 +4,8 @@ import { PRESETS, type Preset } from "./datasets.ts";
 import { Embedder } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
 import { Search, coarseLevelFor, type State } from "./search.ts";
-import { OmeZarrSource, legacySurvey, type Source, type Vec3 } from "./sources.ts";
+import { OlViewer } from "./olviewer.ts";
+import { OmeZarrSource, TileSource, legacySurvey, type Source, type Vec3 } from "./sources.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -18,6 +19,12 @@ let src: Source | null = null;
 let preset: Preset | null = null;
 const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale = full-res px per screen px
 let search: Search | null = null;
+let olv: OlViewer | null = null;  // OpenLayers for tile pyramids; the canvas viewer for the rest (until Neuroglancer)
+const olDiv = document.createElement("div");
+olDiv.style.cssText = "position:absolute;inset:0;display:none;background:#000";
+canvas.after(olDiv);
+/** Full-resolution pixels per device pixel, whichever viewer is showing. */
+const zoomScale = () => (olv ? olv.scale() : view.scale);
 let hitEls: HTMLElement[] = [];
 
 // ---------------------------------------------------------------------------------------
@@ -77,12 +84,13 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
-const displayLevel = () => (src ? Math.max(0, Math.min(src.levels.length - 1, Math.floor(Math.log2(Math.max(view.scale, 1))))) : 0);
+const displayLevel = () => (src ? Math.max(0, Math.min(src.levels.length - 1, Math.floor(Math.log2(Math.max(zoomScale(), 1))))) : 0);
 
 let gen = 0;
 const off = document.createElement("canvas");
 async function render() {
   if (!src) return;
+  if (olv) { overlays(); return; }
   const g = ++gen;
   const L = displayLevel();
   // a coarse level first (instant from cache when panning), then the one for this zoom
@@ -124,6 +132,13 @@ function toScreen(fx: number, fy: number) {
 }
 
 function overlays() {
+  if (olv) {  // the boxes as OpenLayers features
+    if (!search) { olv.setBoxes(null, []); return; }
+    const st = search.state, f = 2 ** st.working, side = st.patch * f;
+    const box = (c: Vec3, lab?: string) => ({ fx: c[2] * f, fy: c[1] * f, side, label: lab });
+    olv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
+    return;
+  }
   if (!search || !src) return;
   const st = search.state, Wl = st.working, f = 2 ** Wl, P = st.patch, side = (P * f) / view.scale;
   const d3 = src.dims === 3;
@@ -160,7 +175,7 @@ function patchSize(): string {
 function drawHover() {
   hctx.clearRect(0, 0, hover.width, hover.height);
   $("psize").textContent = src ? `= ${patchSize().split("= ")[1] ?? patchSize()}` : "";
-  if (!src || !mouse || drag?.moved) return;
+  if (!src || !mouse || drag?.moved || olv) return;
   const P = Number($<HTMLSelectElement>("patch").value), side = (P * 2 ** searchLevel()) / view.scale;
   const dpr = window.devicePixelRatio || 1;
   hctx.setLineDash([6 * dpr, 4 * dpr]);
@@ -241,6 +256,18 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   src = s;
   preset = p;
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
+  olv?.destroy();
+  olv = null;
+  const tiled = s instanceof TileSource;
+  olDiv.style.display = tiled ? "block" : "none";
+  canvas.style.display = hover.style.display = tiled ? "none" : "block";
+  if (tiled) {
+    olv = new OlViewer(olDiv, s as TileSource, v, {
+      click: (fx, fy) => queryAt(fx, fy),
+      hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
+      moved: () => drawHover(),
+    });
+  }
   $("attrib").textContent = s.attribution ? `Data: ${s.attribution}` : s.name;
   $("hint").textContent = (p?.note ? p.note + " " : "") + "Drag to pan, scroll to zoom, click to search.";
   const zb = $("zbar");
@@ -298,9 +325,11 @@ $("more").addEventListener("click", () => {
 function regionFor(W: number, P: number): [Vec3, Vec3] {
   const s = src!, L = s.levels[W], f = 2 ** W, d3 = s.dims === 3;
   const whole: [Vec3, Vec3] = [[0, 0, 0], [...L.shape] as Vec3];
+  const vis = olv ? olv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
+                                      y0: view.cy - (canvas.height * view.scale) / 2, y1: view.cy + (canvas.height * view.scale) / 2 };
   const around = (k: number): [Vec3, Vec3] => {
-    const hw = (canvas.width * view.scale * k) / 2 / f, hh = (canvas.height * view.scale * k) / 2 / f;
-    const cx = view.cx / f, cy = view.cy / f;
+    const hw = ((vis.x1 - vis.x0) * k) / 2 / f, hh = ((vis.y1 - vis.y0) * k) / 2 / f;
+    const cx = (vis.x0 + vis.x1) / 2 / f, cy = (vis.y0 + vis.y1) / 2 / f;
     const lo: Vec3 = [0, Math.max(0, Math.floor(cy - hh)), Math.max(0, Math.floor(cx - hw))];
     const hi: Vec3 = [d3 ? L.shape[0] : 1, Math.min(L.shape[1], Math.ceil(cy + hh)), Math.min(L.shape[2], Math.ceil(cx + hw))];
     return [lo, hi];
@@ -313,13 +342,16 @@ function regionFor(W: number, P: number): [Vec3, Vec3] {
   return around(1);
 }
 
-function query(px: number, py: number) {
+function query(px: number, py: number) {  // canvas viewer: device pixels to full resolution
+  queryAt(view.cx + (px - canvas.width / 2) * view.scale, view.cy + (py - canvas.height / 2) * view.scale);
+}
+
+function queryAt(fx: number, fy: number) {
   if (!src) return;
   const s = src, n = s.levels.length;
   const P = Number($<HTMLSelectElement>("patch").value);
   const W = searchLevel();   // search at the level being viewed (as the hover box shows)
   const f = 2 ** W;
-  const fx = view.cx + (px - canvas.width / 2) * view.scale, fy = view.cy + (py - canvas.height / 2) * view.scale;
   const c: Vec3 = [s.dims === 3 ? Math.floor(view.z / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
@@ -398,6 +430,7 @@ function panel(st: State) {
 function goTo(i: number) {
   if (!search || !src) return;
   const c = search.center(i), f = 2 ** search.state.working;
+  if (olv) olv.goTo(c[2] * f, c[1] * f, f);
   view.cx = c[2] * f; view.cy = c[1] * f;
   if (src.dims === 3) { view.z = c[0] * f; zIn.value = String(view.z); $("zval").textContent = zIn.value; }
   view.scale = f;

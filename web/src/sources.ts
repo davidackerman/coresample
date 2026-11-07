@@ -292,11 +292,14 @@ export class TileSource implements Source {
     try { return await f(); } finally { this.active--; this.queue.shift()?.(); }
   }
 
-  private tile(zoom: number, x: number, y: number) {
+  private blobs = new Lru<Promise<Blob | null>>(4000);
+
+  /** The tile's image file (cached), as the viewer draws it and the search decodes it. */
+  blob(zoom: number, x: number, y: number): Promise<Blob | null> {
     const key = `${zoom}/${x}/${y}`;
-    let t = this.cache.get(key);
-    if (!t) {
-      t = (async () => {
+    let b = this.blobs.get(key);
+    if (!b) {
+      b = (async () => {
         for (let attempt = 0; attempt < 5; attempt++) {
           let wait = 300 * 2 ** attempt;
           try {
@@ -306,13 +309,23 @@ export class TileSource implements Source {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const blob = await r.blob();
             this.bytesRead += blob.size;
-            return await decodeImage(blob);
+            return blob;
           } catch {
             await new Promise((res) => setTimeout(res, wait));
           }
         }
         return null;
       })();
+      this.blobs.set(key, b, 1);
+    }
+    return b;
+  }
+
+  private tile(zoom: number, x: number, y: number) {
+    const key = `${zoom}/${x}/${y}`;
+    let t = this.cache.get(key);
+    if (!t) {
+      t = this.blob(zoom, x, y).then((b) => (b ? decodeImage(b).catch(() => null) : null));
       this.cache.set(key, t, 1);
     }
     return t;
