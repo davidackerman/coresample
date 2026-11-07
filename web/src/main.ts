@@ -9,6 +9,9 @@ import { OmeZarrSource, legacySurvey, type Source, type Vec3 } from "./sources.t
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
 const ctx = canvas.getContext("2d")!;
+const hover = $<HTMLCanvasElement>("hover");
+const hctx = hover.getContext("2d")!;
+let mouse: { x: number; y: number } | null = null;  // device pixels over the canvas
 const COARSE_BUDGET = 4e6;  // voxels of the coarse level scanned whole (the scan is on the path to first hits)
 
 let src: Source | null = null;
@@ -68,7 +71,9 @@ function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(canvas.clientWidth * dpr);
   canvas.height = Math.round(canvas.clientHeight * dpr);
+  hover.width = canvas.width; hover.height = canvas.height;
   render();
+  drawHover();
 }
 window.addEventListener("resize", resize);
 
@@ -133,6 +138,46 @@ function overlays() {
   box(search.query, "#5ab0ff", "query", 3);
 }
 
+/** The level a click searches at (the one on screen, leaving room for coarser levels). */
+const searchLevel = () => (src ? Math.max(0, Math.min(src.levels.length - 2, displayLevel())) : 0);
+
+/** A patch's physical size at the search level, in readable units. */
+function patchSize(): string {
+  if (!src) return "";
+  const P = Number($<HTMLSelectElement>("patch").value), W = searchLevel();
+  const v = P * src.levels[W].scale[2], u = (src.unit || "").toLowerCase();
+  const nm = u.startsWith("nano") ? 1 : u.startsWith("micro") ? 1e3 : u === "m" || u.startsWith("meter") || u.startsWith("metre") ? 1e9 : NaN;
+  let phys = "";
+  if (!Number.isNaN(nm)) {
+    const x = v * nm;  // nanometres
+    phys = x >= 1e12 ? `${(x / 1e12).toFixed(1)} km` : x >= 1e9 ? `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)} m` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} mm`
+         : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)} \u00b5m` : `${x.toFixed(0)} nm`;
+  } else if (u.startsWith("arcsec")) phys = v >= 60 ? `${(v / 60).toFixed(1)}\u2032` : `${v.toFixed(0)}\u2033`;
+  return `${P} px at level ${W}` + (phys ? ` = ${phys}` : "");
+}
+
+/** The dashed box under the cursor: exactly the region a click would search for. */
+function drawHover() {
+  hctx.clearRect(0, 0, hover.width, hover.height);
+  $("psize").textContent = src ? `= ${patchSize().split("= ")[1] ?? patchSize()}` : "";
+  if (!src || !mouse || drag?.moved) return;
+  const P = Number($<HTMLSelectElement>("patch").value), side = (P * 2 ** searchLevel()) / view.scale;
+  const dpr = window.devicePixelRatio || 1;
+  hctx.setLineDash([6 * dpr, 4 * dpr]);
+  hctx.lineWidth = 2 * dpr;
+  hctx.strokeStyle = "#5ab0ff";
+  hctx.strokeRect(mouse.x - side / 2, mouse.y - side / 2, side, side);
+  hctx.setLineDash([]);
+  const label = patchSize();
+  hctx.font = `${12 * dpr}px system-ui`;
+  const tw = hctx.measureText(label).width;
+  const lx = mouse.x - side / 2, ly = mouse.y - side / 2 - 6 * dpr;
+  hctx.fillStyle = "#000a";
+  hctx.fillRect(lx - 3 * dpr, ly - 13 * dpr, tw + 6 * dpr, 17 * dpr);
+  hctx.fillStyle = "#cfe6ff";
+  hctx.fillText(label, lx, ly);
+}
+
 // pan / zoom / click
 let drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
 canvas.addEventListener("pointerdown", (e) => {
@@ -140,6 +185,9 @@ canvas.addEventListener("pointerdown", (e) => {
   drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy, moved: false };
 });
 canvas.addEventListener("pointermove", (e) => {
+  const rr = canvas.getBoundingClientRect(), dd = window.devicePixelRatio || 1;
+  mouse = { x: (e.clientX - rr.left) * dd, y: (e.clientY - rr.top) * dd };
+  drawHover();
   if (!drag) return;
   const dpr = window.devicePixelRatio || 1, dx = (e.clientX - drag.x) * dpr, dy = (e.clientY - drag.y) * dpr;
   if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
@@ -152,6 +200,8 @@ canvas.addEventListener("pointerup", (e) => {
   }
   drag = null;
 });
+canvas.addEventListener("pointerleave", () => { mouse = null; drawHover(); });
+$("patch").addEventListener("change", drawHover);
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   if (!src) return;
@@ -163,6 +213,7 @@ canvas.addEventListener("wheel", (e) => {
   view.cx = fx - (px - canvas.width / 2) * view.scale;
   view.cy = fy - (py - canvas.height / 2) * view.scale;
   render();
+  drawHover();
 }, { passive: false });
 
 const zIn = $<HTMLInputElement>("z");
@@ -266,7 +317,7 @@ function query(px: number, py: number) {
   if (!src) return;
   const s = src, n = s.levels.length;
   const P = Number($<HTMLSelectElement>("patch").value);
-  const W = Math.max(0, Math.min(n - 2, displayLevel()));   // search at the level being viewed
+  const W = searchLevel();   // search at the level being viewed (as the hover box shows)
   const f = 2 ** W;
   const fx = view.cx + (px - canvas.width / 2) * view.scale, fy = view.cy + (py - canvas.height / 2) * view.scale;
   const c: Vec3 = [s.dims === 3 ? Math.floor(view.z / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];

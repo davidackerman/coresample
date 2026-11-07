@@ -17,6 +17,8 @@
   main { display: flex; height: calc(100% - 50px); }
   #stage { position: relative; flex: 1; min-width: 0; }
   #view { width: 100%; height: 100%; display: block; cursor: crosshair; background: #000; }
+  #hover { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #psize { color: var(--dim); }
   #hint { position: absolute; left: 12px; top: 10px; background: #000a; padding: 6px 9px; border-radius: 6px; color: var(--dim); max-width: 60%; pointer-events: none; }
   #attrib { position: absolute; left: 12px; bottom: 8px; right: 12px; color: #aab; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }
   #zbar { position: absolute; right: 12px; top: 10px; display: none; align-items: center; gap: 6px; background: #000a; padding: 6px 9px; border-radius: 6px; }
@@ -52,7 +54,8 @@
 <main>
   <div id="stage">
     <canvas id="view"></canvas>
-    <div id="hint">Drag to pan, scroll to zoom. Click something to find more like it.</div>
+    <canvas id="hover"></canvas>
+    <div id="hint">Drag to pan, scroll to zoom. The dashed box is what a click searches for.</div>
     <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
     <div id="attrib"></div>
   </div>
@@ -61,6 +64,7 @@
       <div class="row">
         <span class="lbl">patch</span>
         <select id="patch"><option>32</option><option selected>64</option><option>96</option><option>128</option></select>
+        <span id="psize"></span>
         <span class="lbl">read</span>
         <select id="budget"><option value="0.005">0.5%</option><option value="0.01" selected>1%</option><option value="0.02">2%</option><option value="0.05">5%</option></select>
         <span class="lbl">region</span>
