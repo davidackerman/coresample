@@ -338,3 +338,128 @@ def rank_by_embedding(query_emb: np.ndarray, embs: np.ndarray) -> np.ndarray:
     q = query_emb / (np.linalg.norm(query_emb) + 1e-9)
     e = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9)
     return e @ q
+
+
+# --------------------------------------------------------------------------------------
+# Chunk-level best-first search (no pyramid needed; priors optional)
+# --------------------------------------------------------------------------------------
+
+
+def otsu(x: np.ndarray, bins: int = 256) -> tuple[float, float]:
+    """Otsu's threshold of a 1-D sample and its effectiveness (between-class variance /
+    total variance, 0..1; near 1 = clearly bimodal)."""
+    x = np.asarray(x, float).ravel()
+    x = x[np.isfinite(x)]
+    if x.size < 2 or x.std() == 0:
+        return float(x.mean()) if x.size else 0.0, 0.0
+    hist, edges = np.histogram(x, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+    w0 = np.cumsum(hist)
+    w1 = w0[-1] - w0
+    m0 = np.cumsum(hist * centers)
+    mu0 = m0 / np.maximum(w0, 1)
+    mu1 = (m0[-1] - m0) / np.maximum(w1, 1)
+    between = w0 * w1 * (mu0 - mu1) ** 2 / w0[-1] ** 2
+    i = int(np.argmax(between))
+    return float(centers[i]), float(between[i] / x.var())
+
+
+def otsu_threshold(x: np.ndarray, bins: int = 256) -> float:
+    return otsu(x, bins)[0]
+
+
+def empty_chunks(log_sizes: np.ndarray, min_separation: float = 0.6) -> np.ndarray:
+    """Label-free 'empty' mask from compressed chunk sizes. Near-constant chunks (under 5%
+    of the median size: padding, fill) are always empty; among the rest, the lower Otsu
+    class is empty only if the split is clearly bimodal (effectiveness >= min_separation),
+    because an Otsu split of one population would discard half the content."""
+    x = np.asarray(log_sizes, float)
+    pad = x < np.median(x) + np.log10(0.05)
+    t, eta = otsu(x[~pad])
+    return pad | ((x < t) if eta >= min_separation else np.zeros_like(pad))
+
+
+def best_first_chunks(keys: np.ndarray, prior: np.ndarray, evaluate, budget: int, seed: float = 0.01,
+                      explore: float = 0.0, beta: float = 1.0, rng=None) -> list[int]:
+    """Order in which to read chunks, deciding as results come in.
+
+    keys (n, 3): chunk grid positions. prior (n,): cheap prior, higher = look first,
+    -inf = never read (e.g. empty). evaluate(i) -> best similarity found in chunk i
+    (reads it and embeds its patches). Seeds with the top `seed` fraction by prior plus
+    `explore` random chunks, then repeatedly reads the unread chunk maximizing
+    z(prior) + beta * z(best similarity among its read neighbours).
+    Returns the indices read, in order (at most `budget`)."""
+    rng = rng or np.random.default_rng(0)
+    n = len(keys)
+    ok = np.isfinite(prior)
+    if not ok.any():
+        return []
+    pz = np.full(n, -np.inf)
+    p = prior[ok]
+    pz[ok] = (p - p.mean()) / (p.std() + 1e-9) + 1e-6 * rng.random(ok.sum())  # random tie-break
+    pos = {tuple(k): i for i, k in enumerate(keys)}
+    offsets = np.array(np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing="ij")).reshape(3, -1).T
+    offsets = offsets[np.any(offsets != 0, axis=1)]
+    read = np.zeros(n, bool)
+    nb_best = np.full(n, -np.inf)
+    sims: list[float] = []
+    order: list[int] = []
+
+    def visit(i):
+        read[i] = True
+        order.append(i)
+        s = evaluate(i)
+        if s is None or not np.isfinite(s):
+            return
+        sims.append(s)
+        for d in offsets:
+            j = pos.get(tuple(keys[i] + d))
+            if j is not None and not read[j]:
+                nb_best[j] = max(nb_best[j], s)
+
+    n_seed = max(1, int(round(seed * n)))
+    cand = np.nonzero(ok)[0]
+    for i in cand[np.argsort(-pz[cand], kind="stable")][:n_seed]:
+        if len(order) < budget:
+            visit(i)
+    n_exp = int(round(explore * n))
+    rest = cand[~read[cand]]
+    for i in rng.permutation(rest)[:n_exp]:
+        if len(order) < budget:
+            visit(i)
+    while len(order) < min(budget, ok.sum()):
+        mu = np.mean(sims) if sims else 0.0
+        sd = np.std(sims) + 1e-9 if len(sims) > 1 else 1.0
+        nz = np.where(np.isfinite(nb_best), (nb_best - mu) / sd, 0.0)
+        score = np.where(read | ~ok, -np.inf, pz + beta * nz)
+        i = int(np.argmax(score))
+        if not np.isfinite(score[i]):
+            break
+        visit(i)
+    return order
+
+
+def coarse_scan(read, query_box, region, working: int, level: int, patch: int, methods=("hist", "tex"),
+                margin: int = 4, rotations: bool = True):
+    """Cheap scores of every window position over the whole region at `level`.
+    Returns (combined z-score map, centres of its windows in working-level voxels as a
+    (*map.shape, 3) array)."""
+    f = 2 ** (level - working)
+    w = np.array(window_at(level, working, patch))
+    qlo, qhi = (np.asarray(a) for a in query_box)
+    rlo, rhi = (np.asarray(a) for a in region)
+    m = margin
+    qc = (qlo + qhi) // 2 // f
+    q_ctx = read(level, qc - w // 2 - m, qc - w // 2 + w + m).astype(np.float32)
+    q = q_ctx[m:-m, m:-m, m:-m]
+    tq = query_texture(q_ctx, w, m)
+    lo, hi = rlo // f, -(-rhi // f)
+    vol = read(level, lo - m, hi + m).astype(np.float32)
+    inner = vol[m:-m, m:-m, m:-m]
+    edges = intensity_edges(inner)
+    tex_scale = texture_stats(inner, w).reshape(4, -1).std(axis=1) + 1e-9
+    maps = score_maps(vol, q, methods, edges, tq, tex_scale, rotations, margin=m)
+    comb = combine(maps, zscore_stats([maps]), methods)
+    idx = np.stack(np.meshgrid(*[np.arange(s) for s in comb.shape], indexing="ij"), -1)
+    centers = (idx + lo + w // 2) * f + f // 2
+    return comb, centers
