@@ -9,70 +9,71 @@
  "coarsest": 4,
  "patch": 64,
  "k": 100,
- "seconds": 95.29829530604184,
+ "mode": "chunks",
+ "seconds": 125.54821423906833,
  "hits_s0": [
   [
-   2638,
-   566,
-   9182
+   2562,
+   258,
+   8706
   ],
   [
-   2046,
-   614,
-   8942
+   2818,
+   386,
+   9090
   ],
   [
-   1998,
-   566,
-   9382
+   2818,
+   514,
+   8834
   ],
   [
-   2686,
-   438,
-   10070
+   2306,
+   514,
+   8962
   ],
   [
-   2798,
-   710,
-   8710
+   1410,
+   514,
+   7810
   ],
   [
-   1766,
-   518,
-   9086
+   2434,
+   386,
+   9986
   ],
   [
-   1654,
-   758,
-   8078
+   1794,
+   642,
+   8450
   ],
   [
-   1742,
-   678,
-   8398
+   1666,
+   514,
+   8706
   ],
   [
-   2910,
-   334,
-   9614
+   2050,
+   642,
+   8962
   ],
   [
-   1462,
-   598,
-   8406
+   2050,
+   514,
+   9346
   ]
  ],
  "scores": [
-  0.8948396444320679,
-  0.8929827809333801,
-  0.8913034200668335,
-  0.8689957857131958,
-  0.8660545349121094,
-  0.8602056503295898,
-  0.8554394245147705,
-  0.8436412811279297,
-  0.8426774740219116,
-  0.8421510457992554
+  0.92055344581604,
+  0.9131231904029846,
+  0.9065954685211182,
+  0.8984574675559998,
+  0.8976109623908997,
+  0.8939846158027649,
+  0.8912027478218079,
+  0.8900191783905029,
+  0.8857564330101013,
+  0.8852139115333557
  ],
- "neuroglancer": "https://neuroglancer-demo.appspot.com/#!%7B%22dimensions%22%3A%7B%22z%22%3A%5B5.240000000000001e-09%2C%22m%22%5D%2C%22y%22%3A%5B4e-09%2C%22m%22%5D%2C%22x%22%3A%5B4e-09%2C%22m%22%5D%7D%2C%22position%22%3A%5B2666.5%2C558.5%2C8978.5%5D%2C%22crossSectionScale%22%3A2%2C%22layers%22%3A%5B%7B%22type%22%3A%22image%22%2C%22source%22%3A%22zarr%3A//https%3A//janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8%22%2C%22name%22%3A%22data%22%7D%2C%7B%22type%22%3A%22annotation%22%2C%22name%22%3A%22hits%22%2C%22source%22%3A%7B%22url%22%3A%22local%3A//annotations%22%2C%22transform%22%3A%7B%22outputDimensions%22%3A%7B%22z%22%3A%5B5.240000000000001e-09%2C%22m%22%5D%2C%22y%22%3A%5B4e-09%2C%22m%22%5D%2C%22x%22%3A%5B4e-09%2C%22m%22%5D%7D%7D%7D%2C%22annotations%22%3A%5B%7B%22type%22%3A%22point%22%2C%22id%22%3A%22query%22%2C%22point%22%3A%5B2666.5%2C558.5%2C8978.5%5D%2C%22description%22%3A%22query%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit0%22%2C%22point%22%3A%5B2638.5%2C566.5%2C9182.5%5D%2C%22description%22%3A%22%231%20cos%3D0.895%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit1%22%2C%22point%22%3A%5B2046.5%2C614.5%2C8942.5%5D%2C%22description%22%3A%22%232%20cos%3D0.893%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit2%22%2C%22point%22%3A%5B1998.5%2C566.5%2C9382.5%5D%2C%22description%22%3A%22%233%20cos%3D0.891%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit3%22%2C%22point%22%3A%5B2686.5%2C438.5%2C10070.5%5D%2C%22description%22%3A%22%234%20cos%3D0.869%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit4%22%2C%22point%22%3A%5B2798.5%2C710.5%2C8710.5%5D%2C%22description%22%3A%22%235%20cos%3D0.866%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit5%22%2C%22point%22%3A%5B1766.5%2C518.5%2C9086.5%5D%2C%22description%22%3A%22%236%20cos%3D0.860%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit6%22%2C%22point%22%3A%5B1654.5%2C758.5%2C8078.5%5D%2C%22description%22%3A%22%237%20cos%3D0.855%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit7%22%2C%22point%22%3A%5B1742.5%2C678.5%2C8398.5%5D%2C%22description%22%3A%22%238%20cos%3D0.844%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit8%22%2C%22point%22%3A%5B2910.5%2C334.5%2C9614.5%5D%2C%22description%22%3A%22%239%20cos%3D0.843%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit9%22%2C%22point%22%3A%5B1462.5%2C598.5%2C8406.5%5D%2C%22description%22%3A%22%2310%20cos%3D0.842%22%7D%5D%7D%5D%2C%22selectedLayer%22%3A%7B%22layer%22%3A%22hits%22%2C%22visible%22%3Atrue%7D%2C%22layout%22%3A%224panel%22%7D"
+ "neuroglancer": "https://neuroglancer-demo.appspot.com/#!%7B%22dimensions%22%3A%7B%22z%22%3A%5B5.240000000000001e-09%2C%22m%22%5D%2C%22y%22%3A%5B4e-09%2C%22m%22%5D%2C%22x%22%3A%5B4e-09%2C%22m%22%5D%7D%2C%22position%22%3A%5B2666.5%2C558.5%2C8978.5%5D%2C%22crossSectionScale%22%3A2%2C%22layers%22%3A%5B%7B%22type%22%3A%22image%22%2C%22source%22%3A%22zarr%3A//https%3A//janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8%22%2C%22name%22%3A%22data%22%7D%2C%7B%22type%22%3A%22annotation%22%2C%22name%22%3A%22hits%22%2C%22source%22%3A%7B%22url%22%3A%22local%3A//annotations%22%2C%22transform%22%3A%7B%22outputDimensions%22%3A%7B%22z%22%3A%5B5.240000000000001e-09%2C%22m%22%5D%2C%22y%22%3A%5B4e-09%2C%22m%22%5D%2C%22x%22%3A%5B4e-09%2C%22m%22%5D%7D%7D%7D%2C%22annotations%22%3A%5B%7B%22type%22%3A%22point%22%2C%22id%22%3A%22query%22%2C%22point%22%3A%5B2666.5%2C558.5%2C8978.5%5D%2C%22description%22%3A%22query%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit0%22%2C%22point%22%3A%5B2562.5%2C258.5%2C8706.5%5D%2C%22description%22%3A%22%231%20cos%3D0.921%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit1%22%2C%22point%22%3A%5B2818.5%2C386.5%2C9090.5%5D%2C%22description%22%3A%22%232%20cos%3D0.913%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit2%22%2C%22point%22%3A%5B2818.5%2C514.5%2C8834.5%5D%2C%22description%22%3A%22%233%20cos%3D0.907%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit3%22%2C%22point%22%3A%5B2306.5%2C514.5%2C8962.5%5D%2C%22description%22%3A%22%234%20cos%3D0.898%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit4%22%2C%22point%22%3A%5B1410.5%2C514.5%2C7810.5%5D%2C%22description%22%3A%22%235%20cos%3D0.898%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit5%22%2C%22point%22%3A%5B2434.5%2C386.5%2C9986.5%5D%2C%22description%22%3A%22%236%20cos%3D0.894%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit6%22%2C%22point%22%3A%5B1794.5%2C642.5%2C8450.5%5D%2C%22description%22%3A%22%237%20cos%3D0.891%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit7%22%2C%22point%22%3A%5B1666.5%2C514.5%2C8706.5%5D%2C%22description%22%3A%22%238%20cos%3D0.890%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit8%22%2C%22point%22%3A%5B2050.5%2C642.5%2C8962.5%5D%2C%22description%22%3A%22%239%20cos%3D0.886%22%7D%2C%7B%22type%22%3A%22point%22%2C%22id%22%3A%22hit9%22%2C%22point%22%3A%5B2050.5%2C514.5%2C9346.5%5D%2C%22description%22%3A%22%2310%20cos%3D0.885%22%7D%5D%7D%5D%2C%22selectedLayer%22%3A%7B%22layer%22%3A%22hits%22%2C%22visible%22%3Atrue%7D%2C%22layout%22%3A%224panel%22%7D"
 }

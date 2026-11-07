@@ -2,8 +2,9 @@
 
 No labels, no precomputation: the pyramid already in the store is the index.
 Reads go straight to the store with tensorstore (zarr v2, zarr v3, N5 over
-http(s)/s3/gs/file), cheap scores rank the coarsest level, the top-K candidates are
-refined level by level, and DINOv2-small re-ranks the survivors at the working level.
+http(s)/s3/gs/file). Cheap scores rank the coarsest level; the working-level chunks under
+the best windows are read whole (1% of them by default) and DINOv2-small ranks every patch
+in them. `--mode points` instead refines K candidates level by level (test 2).
 
     uv run python query.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 \\
         --point 2500,800,4000 --working 2 --coarsest 4 --patch 64 --k 100 --top 20
@@ -164,6 +165,10 @@ def main():
     ap.add_argument("--region", default=None, help="s0 box zlo,ylo,xlo,zhi,yhi,xhi (default: whole array)")
     ap.add_argument("--methods", default="hist,tex", help="cheap scores (ncc was unreliable in test 2)")
     ap.add_argument("--no-embed", action="store_true", help="stop after cheap scores (no model)")
+    ap.add_argument("--mode", choices=["chunks", "points"], default="chunks",
+                    help="chunks: read the coarse scan's top chunks whole (test 3, default); points: descend to K points")
+    ap.add_argument("--chunk-frac", type=float, default=0.01, help="chunks mode: fraction of chunks to read")
+    ap.add_argument("--min-chunks", type=int, default=20, help="chunks mode: read at least this many")
     a = ap.parse_args()
 
     url = normalize(a.url)
@@ -180,18 +185,45 @@ def main():
     else:
         region = (np.zeros(3, int), -(-shape0 // f))
     t0 = time.perf_counter()
-    stages = search.coarse_to_fine(rd.read, (qc - P // 2, qc + P // 2), region, W, coarsest, P, a.k,
-                                   tuple(a.methods.split(",")))
-    for st in stages:
-        print(f"level s{st.level}: {len(st.centers)} candidates, {st.seconds:.1f}s")
-    cand = search.to_working(stages[-1], W)
-    scores = stages[-1].scores
+    qbox = (qc - P // 2, qc + P // 2)
+    methods = tuple(a.methods.split(","))
+    h = P // 2
+    get = lambda cs: np.stack([rd.read(W, c - [0, h, h], c + [1, h, h])[0] for c in cs])
+    if a.mode == "chunks":
+        # test 3: rank working-level chunks by the coarse scan, read the top ones whole and
+        # embed every grid patch in them (a chunk costs the same bytes however many we embed)
+        comb, centers = search.coarse_scan(rd.read, qbox, region, W, coarsest, P, methods)
+        print(f"coarse scan s{coarsest}: {comb.size} windows, {time.perf_counter() - t0:.1f}s")
+        cs = np.array(rd.store(W).chunk_layout.read_chunk.shape[-3:])
+        rlo, rhi = (np.asarray(x) for x in region)
+        fc, fs = centers.reshape(-1, 3), comb.ravel()
+        ok = np.all((fc >= rlo) & (fc < rhi), 1)
+        keys, inv = np.unique(fc[ok] // cs, axis=0, return_inverse=True)
+        best = np.full(len(keys), -np.inf)
+        np.maximum.at(best, inv.ravel(), fs[ok])
+        n_all = int(np.prod(-(-(rhi - rlo) // cs)))
+        nread = min(len(keys), max(a.min_chunks, int(round(a.chunk_frac * n_all))))
+        top = keys[np.argsort(-best, kind="stable")[:nread]]
+        step = P // 2
+        cand = []
+        for k in top:
+            lo, hi = np.maximum(k * cs, rlo + h), np.minimum((k + 1) * cs, rhi - h)
+            ax = [np.arange(rlo[d] + h + -(-(lo[d] - rlo[d] - h) // step) * step, hi[d], step) for d in range(3)]
+            if all(len(x) for x in ax):
+                cand.append(np.stack(np.meshgrid(*ax, indexing="ij"), -1).reshape(-1, 3))
+        cand = np.concatenate(cand) if cand else np.zeros((0, 3), int)
+        print(f"reading {nread} of {n_all} working-level chunks ({nread / n_all:.1%}), {len(cand)} patches")
+        scores = np.zeros(len(cand))
+    else:
+        stages = search.coarse_to_fine(rd.read, qbox, region, W, coarsest, P, a.k, methods)
+        for st in stages:
+            print(f"level s{st.level}: {len(st.centers)} candidates, {st.seconds:.1f}s")
+        cand = search.to_working(stages[-1], W)
+        scores = stages[-1].scores
     if not a.no_embed and len(cand):
         from embed import Embedder
 
         emb = Embedder()
-        h = P // 2
-        get = lambda cs: np.stack([rd.read(W, c - [0, h, h], c + [1, h, h])[0] for c in cs])
         qe = emb.embed_at(url, W, qc[None], P, get)[0]
         E = emb.embed_at(url, W, cand, P, get)
         scores = search.rank_by_embedding(qe, E)
@@ -212,7 +244,7 @@ def main():
     out.parent.mkdir(exist_ok=True)
     link = neuroglancer_link(url, rd.levels, q0, hits_s0, hs)
     out.write_text(json.dumps({"url": url, "point_s0": q0.tolist(), "working": W, "coarsest": coarsest, "patch": P,
-                               "k": a.k, "seconds": dt, "hits_s0": hits_s0.tolist(), "scores": [float(s) for s in hs],
+                               "k": a.k, "mode": a.mode, "seconds": dt, "hits_s0": hits_s0.tolist(), "scores": [float(s) for s in hs],
                                "neuroglancer": link}, indent=1))
     print(f"\nwrote {out}\nNeuroglancer: {link[:120]}... (full link in the json)")
 
