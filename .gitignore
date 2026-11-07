@@ -4,3 +4,6 @@ __pycache__/
 cache/
 .hf/
 *.pyc
+web/node_modules/
+web/dist/
+web/public/models/*.onnx
