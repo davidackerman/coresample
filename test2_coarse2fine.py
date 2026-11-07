@@ -35,12 +35,13 @@ REGION_S0 = (np.array([640, 0, 512]), np.array([2688, 1600, 4608]))
 TARGETS = {
     "mito": dict(label=f"{LABELS_N5}/mito_seg", working=2, patch=64, coarsest=[5, 4, 3], default_coarsest=4,
                  min_voxels=500),
-    "vesicle": dict(label=f"{LABELS_N5}/vesicle_seg", working=1, patch=64, coarsest=[5, 4, 3, 2],
+    "vesicle": dict(label=f"{LABELS_N5}/vesicle_seg", working=1, patch=64, coarsest=[5, 4, 3],
                     default_coarsest=3, min_voxels=30),
 }
 KS = [25, 50, 100, 200, 400]
 DEFAULT_K = 100
-METHOD_SETS = {"ncc": ("ncc",), "hist": ("hist",), "tex": ("tex",), "all": ("ncc", "hist", "tex")}
+METHOD_SETS = {"ncc": ("ncc",), "hist": ("hist",), "tex": ("tex",), "all": ("ncc", "hist", "tex"),
+               "hist+tex": ("hist", "tex")}
 NS = [10, 25, 50, 100, 200]
 BANDWIDTH = 50e6  # bytes/s used to turn bytes into a modelled transfer time
 
@@ -278,10 +279,15 @@ def run_target(name, cfg, args, data, emb, log):
         results["sampling"][qi] = sampling_curves(data, W, P, gc, sims, notself, cents, rlo, rhi, rng)
 
         # coarse-to-fine sweeps (one factor at a time around the defaults)
-        configs = [(cfg["default_coarsest"], DEFAULT_K, "all")]
-        configs += [(cfg["default_coarsest"], k, "all") for k in KS if k != DEFAULT_K]
-        configs += [(cfg["default_coarsest"], DEFAULT_K, m) for m in METHOD_SETS if m != "all"]
-        configs += [(c, DEFAULT_K, "all") for c in cfg["coarsest"] if c != cfg["default_coarsest"]]
+        dm, dc = args.methods, cfg["default_coarsest"]
+        coarsests = args.coarsest or cfg["coarsest"]
+        configs = [(dc, DEFAULT_K, dm)]
+        if "k" in args.sweep:
+            configs += [(dc, k, dm) for k in KS if k != DEFAULT_K]
+        if "methods" in args.sweep:
+            configs += [(dc, DEFAULT_K, m) for m in args.method_sweep if m != dm]
+        if "coarsest" in args.sweep:
+            configs += [(c, DEFAULT_K, dm) for c in coarsests if c != dc]
         if args.quick:
             configs = configs[:1]
         for coarsest, k, mset in configs:
@@ -395,6 +401,10 @@ def main():
     ap.add_argument("--quick", action="store_true", help="default config only (smoke test)")
     ap.add_argument("--region", default=None, help="s0 box zlo,ylo,xlo,zhi,yhi,xhi, or 'full'")
     ap.add_argument("--suffix", default="", help="appended to result file names")
+    ap.add_argument("--methods", default="all", choices=list(METHOD_SETS), help="default cheap-score set")
+    ap.add_argument("--sweep", nargs="*", default=["k", "methods", "coarsest"], help="one-factor sweeps to run")
+    ap.add_argument("--coarsest", nargs="*", type=int, default=None, help="coarsest levels for the sweep")
+    ap.add_argument("--method-sweep", nargs="*", default=list(METHOD_SETS), help="method sets in the methods sweep")
     args = ap.parse_args()
     global REGION_S0
     if args.region == "full":

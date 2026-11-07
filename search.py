@@ -75,7 +75,14 @@ def ncc_map(vol: np.ndarray, query: np.ndarray, rotations: bool = True) -> np.nd
         # correlation = convolution with the flipped kernel
         Q = sfft.rfftn(q0[::-1, ::-1, ::-1].astype(np.float32), fshape, workers=-1)
         num = sfft.irfftn(V * Q, fshape, workers=-1)[valid]
-        r = num / (np.sqrt(var_v) * qn + 1e-9)
+        if qn < 1e-6:  # flat query: correlation undefined
+            r = np.zeros_like(num)
+        else:
+            # flat windows (resin, padding, saturated areas): the numerator is FFT round-off
+            # and dividing it by a ~0 variance gives huge spurious scores, so define NCC = 0
+            flat = var_v <= 1e-2 * n
+            r = np.where(flat, 0.0, num / np.maximum(np.sqrt(var_v) * qn, 1e-9))
+            r = np.clip(r, -1.0, 1.0)
         best = r if best is None else np.maximum(best, r)
     return best
 

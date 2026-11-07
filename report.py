@@ -20,9 +20,23 @@ def mean_over_queries(rows, key):
     return float(np.mean([r[key] for r in rows]))
 
 
-def load(target):
-    p = RESULTS / f"test2_{target}.json"
-    return json.loads(p.read_text()) if p.exists() else None
+def load(target, region="sub"):
+    """Merge test2_<target>*.json runs over the same region (c2f rows from all of them;
+    brute force and sampling from the first). region 'sub' = subvolume, 'full' = whole volume."""
+    files = sorted(RESULTS.glob(f"test2_{target}*.json"))
+    runs = [json.loads(f.read_text()) for f in files]
+    full = lambda r: r["region_s0"][0] == [0, 0, 0] and r["region_s0"][1] == [6368, 1600, 12000]
+    runs = [r for r in runs if full(r) == (region == "full")]
+    if not runs:
+        return None
+    base = max(runs, key=lambda r: len(r["brute"]))
+    seen = {}
+    for r in runs:
+        for row in r["c2f"]:
+            seen[(row["query"], row["coarsest"], row["k"], row["methods"])] = row
+    base = dict(base)
+    base["c2f"] = list(seen.values())
+    return base
 
 
 def c2f_table(r):
@@ -63,7 +77,7 @@ def sampling_means(r, kind):
             for i in range(n)]
 
 
-def plot_target(name, r, table, b):
+def plot_target(name, r, table, b, tag=""):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -75,14 +89,18 @@ def plot_target(name, r, table, b):
             s = sampling_means(r, kind)
             ax.plot([x["frac_chunks"] for x in s], [x[metric] for x in s], style, c="tab:gray" if kind == "random" else "tab:olive",
                     label=f"{kind} chunk sampling (chunks read)")
-        ks = [e for e in table if e["methods"] == "all" and e["coarsest"] == TARGET_DEFAULT[name]]
-        for key, c, lab in (("frac_bytes", "tab:red", "c2f, bytes as stored"),
-                            ("frac_bytes_inner32", "tab:orange", "c2f, bytes if 32^3 inner chunks"),
-                            ("frac_voxels", "tab:blue", "c2f, voxels needed")):
-            ax.plot([e[key] for e in ks], [e[metric] for e in ks], "D-", c=c, label=lab)
-            for e in ks:
-                if key == "frac_bytes":
-                    ax.annotate(f"K={e['k']}", (e[key], e[metric]), fontsize=7, xytext=(3, 3), textcoords="offset points")
+        for mset, mk in (("all", "D-"), ("hist+tex", "^-")):
+            ks = sorted([e for e in table if e["methods"] == mset and e["coarsest"] == TARGET_DEFAULT[name]],
+                        key=lambda e: e["k"])
+            if len(ks) < 2:
+                continue
+            for key, c, lab in (("frac_bytes", "tab:red", "bytes as stored"),
+                                ("frac_bytes_inner32", "tab:orange", "bytes if 32^3 inner chunks"),
+                                ("frac_voxels", "tab:blue", "voxels needed")):
+                ax.plot([e[key] for e in ks], [e[metric] for e in ks], mk, c=c, label=f"c2f {mset}, {lab}")
+                for e in ks:
+                    if key == "frac_bytes":
+                        ax.annotate(f"K={e['k']}", (e[key], e[metric]), fontsize=7, xytext=(3, 3), textcoords="offset points")
         ax.axhline(b[metric], c="k", lw=1, label=f"brute force (100%)")
         ax.axhline(r["chance_precision"] if metric.startswith("p") else 0, c="k", ls=":", lw=1, label="chance" if metric.startswith("p") else None)
         ax.axvspan(0.10, 0.20, color="tab:red", alpha=0.07, label="kill threshold 10-20%")
@@ -91,7 +109,7 @@ def plot_target(name, r, table, b):
         ax.set_ylabel(metric)
         ax.set_title(f"{name}: {metric} vs data read")
     axs[0].legend(fontsize=7, loc="lower right")
-    fig.savefig(RESULTS / f"test2_{name}_recall_vs_data.png", dpi=110, bbox_inches="tight")
+    fig.savefig(RESULTS / f"test2_{name}{tag}_recall_vs_data.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -104,31 +122,36 @@ def main():
     if t1.exists():
         summary["test1"] = json.loads(t1.read_text())
     for name in ("mito", "vesicle"):
-        r = load(name)
-        if not r or not r["c2f"]:
-            continue
-        table = c2f_table(r)
-        b = brute_means(r)
-        ok = [e for e in table if matches(e, b)]
-        cheapest = {key: (min(ok, key=lambda e: e[key]) if ok else None)
-                    for key in ("frac_bytes", "frac_bytes_inner32", "frac_voxels")}
-        summary[name] = {"brute": b, "chance": r["chance_precision"], "n_instances": r["n_instances"],
-                         "queries": len(r["brute"]), "table": table,
-                         "cheapest_match": {k: (v and {kk: v[kk] for kk in ("coarsest", "k", "methods", k, "p@10", "p@25", "r@100")})
-                                            for k, v in cheapest.items()},
-                         "sampling_random": sampling_means(r, "random"),
-                         "sampling_adaptive": sampling_means(r, "adaptive"),
-                         "brute_patches": r["brute_patches"], "brute_cost": r["brute_cost"]}
-        plot_target(name, r, table, b)
-        print(f"\n== {name}: {r['n_instances']} instances, chance p={r['chance_precision']:.2f}, "
-              f"brute p@10={b['p@10']:.2f} p@25={b['p@25']:.2f} r@100={b['r@100']:.2f}")
-        print("coarsest K methods | p@10 p@25 r@100 | bytes inner32 voxels | coarse p@10 (s) | cheap s embed s | match")
-        for e in table:
-            print(f"s{e['coarsest']} {e['k']:>3} {e['methods']:<4} | {e['p@10']:.2f} {e['p@25']:.2f} {e['r@100']:.2f} | "
-                  f"{e['frac_bytes']:.1%} {e['frac_bytes_inner32']:.1%} {e['frac_voxels']:.2%} | "
-                  f"{e['coarse_p@10']:.2f} ({e['coarse_seconds']:.1f}) | {e['seconds_cheap']:.1f} {e['seconds_embed']:.1f} | "
-                  f"{'yes' if matches(e, b) else ''}")
-        print("cheapest match:", json.dumps(summary[name]["cheapest_match"], default=float))
+        for region in ("sub", "full"):
+            r = load(name, region)
+            if not r or not r["c2f"]:
+                continue
+            tag = "" if region == "sub" else "_full"
+            key = name + tag
+            table = c2f_table(r)
+            b = brute_means(r)
+            ok = [e for e in table if matches(e, b)]
+            cheapest = {k: (min(ok, key=lambda e: e[k]) if ok else None)
+                        for k in ("frac_bytes", "frac_bytes_inner32", "frac_voxels")}
+            summary[key] = {"brute": b, "chance": r["chance_precision"], "n_instances": r["n_instances"],
+                            "queries": len(r["brute"]), "table": table, "region_s0": r["region_s0"],
+                            "cheapest_match": {k: (v and {kk: v[kk] for kk in ("coarsest", "k", "methods", k, "p@10", "p@25", "r@100")})
+                                               for k, v in cheapest.items()},
+                            "sampling_random": sampling_means(r, "random"),
+                            "sampling_adaptive": sampling_means(r, "adaptive"),
+                            "brute_patches": r["brute_patches"], "brute_cost": r["brute_cost"]}
+            plot_target(name, r, table, b, tag)
+            print(f"\n== {key}: {r['n_instances']} instances, chance p={r['chance_precision']:.2f}, "
+                  f"brute p@10={b['p@10']:.2f} p@25={b['p@25']:.2f} r@100={b['r@100']:.2f}")
+            print("coarsest K methods | p@10 p@25 r@100 | bytes inner32 voxels | coarse p@10 (s) | cheap s embed s | match")
+            for e in table:
+                print(f"s{e['coarsest']} {e['k']:>3} {e['methods']:<8} | {e['p@10']:.2f} {e['p@25']:.2f} {e['r@100']:.2f} | "
+                      f"{e['frac_bytes']:.1%} {e['frac_bytes_inner32']:.1%} {e['frac_voxels']:.2%} | "
+                      f"{e['coarse_p@10']:.2f} ({e['coarse_seconds']:.1f}) | {e['seconds_cheap']:.1f} {e['seconds_embed']:.1f} | "
+                      f"{'yes' if matches(e, b) else ''}")
+            print("sampling adaptive:", " ".join(f"{x['frac_chunks']:.2f}:p10={x['p@10']:.2f}/p25={x['p@25']:.2f}/r100={x['r@100']:.2f}" for x in summary[key]["sampling_adaptive"]))
+            print("sampling random:  ", " ".join(f"{x['frac_chunks']:.2f}:p10={x['p@10']:.2f}/p25={x['p@25']:.2f}/r100={x['r@100']:.2f}" for x in summary[key]["sampling_random"]))
+            print("cheapest match:", json.dumps(summary[key]["cheapest_match"], default=float))
     (RESULTS / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
 
 
