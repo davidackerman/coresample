@@ -1,0 +1,693 @@
+{
+ "target": "mito",
+ "region_s0": [
+  [
+   0,
+   0,
+   0
+  ],
+  [
+   6368,
+   1600,
+   12000
+  ]
+ ],
+ "pools": {
+  "all": {
+   "none": [
+    [
+     {
+      "precision": 0.9,
+      "found": 12
+     },
+     {
+      "precision": 0.6,
+      "found": 22
+     },
+     {
+      "precision": 0.5,
+      "found": 29
+     },
+     {
+      "precision": 0.9,
+      "found": 41
+     },
+     {
+      "precision": 0.6,
+      "found": 49
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.2,
+      "found": 5
+     },
+     {
+      "precision": 0.4,
+      "found": 9
+     },
+     {
+      "precision": 0.3,
+      "found": 12
+     },
+     {
+      "precision": 0.3,
+      "found": 15
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.2,
+      "found": 4
+     },
+     {
+      "precision": 0.0,
+      "found": 4
+     },
+     {
+      "precision": 0.2,
+      "found": 6
+     },
+     {
+      "precision": 0.0,
+      "found": 6
+     }
+    ],
+    [
+     {
+      "precision": 0.3,
+      "found": 5
+     },
+     {
+      "precision": 0.6,
+      "found": 12
+     },
+     {
+      "precision": 0.4,
+      "found": 18
+     },
+     {
+      "precision": 0.4,
+      "found": 22
+     },
+     {
+      "precision": 0.4,
+      "found": 27
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.7,
+      "found": 20
+     },
+     {
+      "precision": 0.5,
+      "found": 28
+     },
+     {
+      "precision": 0.3,
+      "found": 32
+     },
+     {
+      "precision": 0.6,
+      "found": 38
+     }
+    ]
+   ],
+   "rocchio": [
+    [
+     {
+      "precision": 0.9,
+      "found": 12
+     },
+     {
+      "precision": 0.7,
+      "found": 24
+     },
+     {
+      "precision": 0.4,
+      "found": 30
+     },
+     {
+      "precision": 0.9,
+      "found": 40
+     },
+     {
+      "precision": 0.7,
+      "found": 51
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.3,
+      "found": 5
+     },
+     {
+      "precision": 0.2,
+      "found": 7
+     },
+     {
+      "precision": 0.3,
+      "found": 11
+     },
+     {
+      "precision": 0.4,
+      "found": 16
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.2,
+      "found": 4
+     },
+     {
+      "precision": 0.0,
+      "found": 4
+     },
+     {
+      "precision": 0.1,
+      "found": 5
+     },
+     {
+      "precision": 0.3,
+      "found": 8
+     }
+    ],
+    [
+     {
+      "precision": 0.3,
+      "found": 5
+     },
+     {
+      "precision": 0.6,
+      "found": 11
+     },
+     {
+      "precision": 0.5,
+      "found": 17
+     },
+     {
+      "precision": 0.3,
+      "found": 22
+     },
+     {
+      "precision": 0.7,
+      "found": 32
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.7,
+      "found": 19
+     },
+     {
+      "precision": 0.8,
+      "found": 32
+     },
+     {
+      "precision": 0.5,
+      "found": 39
+     },
+     {
+      "precision": 0.4,
+      "found": 44
+     }
+    ]
+   ],
+   "logreg": [
+    [
+     {
+      "precision": 0.9,
+      "found": 12
+     },
+     {
+      "precision": 0.1,
+      "found": 13
+     },
+     {
+      "precision": 0.5,
+      "found": 19
+     },
+     {
+      "precision": 0.6,
+      "found": 26
+     },
+     {
+      "precision": 0.5,
+      "found": 32
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.0,
+      "found": 2
+     },
+     {
+      "precision": 0.7,
+      "found": 10
+     },
+     {
+      "precision": 0.2,
+      "found": 14
+     },
+     {
+      "precision": 0.2,
+      "found": 16
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.1,
+      "found": 3
+     },
+     {
+      "precision": 0.3,
+      "found": 6
+     },
+     {
+      "precision": 0.1,
+      "found": 7
+     },
+     {
+      "precision": 0.0,
+      "found": 7
+     }
+    ],
+    [
+     {
+      "precision": 0.3,
+      "found": 5
+     },
+     {
+      "precision": 0.4,
+      "found": 11
+     },
+     {
+      "precision": 0.1,
+      "found": 14
+     },
+     {
+      "precision": 0.5,
+      "found": 22
+     },
+     {
+      "precision": 0.3,
+      "found": 26
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.1,
+      "found": 11
+     },
+     {
+      "precision": 0.8,
+      "found": 23
+     },
+     {
+      "precision": 0.3,
+      "found": 26
+     },
+     {
+      "precision": 0.9,
+      "found": 39
+     }
+    ]
+   ]
+  },
+  "coarse_top2pct": {
+   "none": [
+    [
+     {
+      "precision": 0.8,
+      "found": 12
+     },
+     {
+      "precision": 0.5,
+      "found": 18
+     },
+     {
+      "precision": 0.4,
+      "found": 22
+     },
+     {
+      "precision": 0.2,
+      "found": 24
+     },
+     {
+      "precision": 0.2,
+      "found": 26
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 9
+     },
+     {
+      "precision": 0.4,
+      "found": 13
+     },
+     {
+      "precision": 0.2,
+      "found": 16
+     },
+     {
+      "precision": 0.4,
+      "found": 20
+     },
+     {
+      "precision": 0.1,
+      "found": 21
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.1,
+      "found": 4
+     },
+     {
+      "precision": 0.1,
+      "found": 5
+     },
+     {
+      "precision": 0.2,
+      "found": 7
+     },
+     {
+      "precision": 0.5,
+      "found": 15
+     }
+    ],
+    [
+     {
+      "precision": 0.4,
+      "found": 5
+     },
+     {
+      "precision": 0.5,
+      "found": 11
+     },
+     {
+      "precision": 0.3,
+      "found": 16
+     },
+     {
+      "precision": 0.1,
+      "found": 17
+     },
+     {
+      "precision": 0.3,
+      "found": 20
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.6,
+      "found": 16
+     },
+     {
+      "precision": 0.4,
+      "found": 20
+     },
+     {
+      "precision": 0.5,
+      "found": 27
+     },
+     {
+      "precision": 0.3,
+      "found": 30
+     }
+    ]
+   ],
+   "rocchio": [
+    [
+     {
+      "precision": 0.8,
+      "found": 12
+     },
+     {
+      "precision": 0.5,
+      "found": 18
+     },
+     {
+      "precision": 0.5,
+      "found": 24
+     },
+     {
+      "precision": 0.2,
+      "found": 26
+     },
+     {
+      "precision": 0.0,
+      "found": 26
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 9
+     },
+     {
+      "precision": 0.3,
+      "found": 12
+     },
+     {
+      "precision": 0.5,
+      "found": 18
+     },
+     {
+      "precision": 0.1,
+      "found": 19
+     },
+     {
+      "precision": 0.3,
+      "found": 22
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.0,
+      "found": 2
+     },
+     {
+      "precision": 0.2,
+      "found": 5
+     },
+     {
+      "precision": 0.1,
+      "found": 6
+     },
+     {
+      "precision": 0.4,
+      "found": 12
+     }
+    ],
+    [
+     {
+      "precision": 0.4,
+      "found": 5
+     },
+     {
+      "precision": 0.4,
+      "found": 10
+     },
+     {
+      "precision": 0.3,
+      "found": 14
+     },
+     {
+      "precision": 0.3,
+      "found": 17
+     },
+     {
+      "precision": 0.1,
+      "found": 18
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.5,
+      "found": 16
+     },
+     {
+      "precision": 0.5,
+      "found": 22
+     },
+     {
+      "precision": 0.6,
+      "found": 29
+     },
+     {
+      "precision": 0.2,
+      "found": 32
+     }
+    ]
+   ],
+   "logreg": [
+    [
+     {
+      "precision": 0.8,
+      "found": 12
+     },
+     {
+      "precision": 0.5,
+      "found": 18
+     },
+     {
+      "precision": 0.5,
+      "found": 25
+     },
+     {
+      "precision": 0.3,
+      "found": 28
+     },
+     {
+      "precision": 0.4,
+      "found": 33
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 9
+     },
+     {
+      "precision": 0.0,
+      "found": 9
+     },
+     {
+      "precision": 0.6,
+      "found": 16
+     },
+     {
+      "precision": 0.5,
+      "found": 21
+     },
+     {
+      "precision": 0.7,
+      "found": 28
+     }
+    ],
+    [
+     {
+      "precision": 0.2,
+      "found": 2
+     },
+     {
+      "precision": 0.1,
+      "found": 3
+     },
+     {
+      "precision": 0.2,
+      "found": 5
+     },
+     {
+      "precision": 0.1,
+      "found": 6
+     },
+     {
+      "precision": 0.8,
+      "found": 18
+     }
+    ],
+    [
+     {
+      "precision": 0.4,
+      "found": 5
+     },
+     {
+      "precision": 0.1,
+      "found": 6
+     },
+     {
+      "precision": 0.7,
+      "found": 15
+     },
+     {
+      "precision": 0.5,
+      "found": 21
+     },
+     {
+      "precision": 0.1,
+      "found": 22
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 10
+     },
+     {
+      "precision": 0.3,
+      "found": 13
+     },
+     {
+      "precision": 0.7,
+      "found": 22
+     },
+     {
+      "precision": 0.7,
+      "found": 30
+     },
+     {
+      "precision": 0.4,
+      "found": 34
+     }
+    ]
+   ]
+  }
+ }
+}

@@ -212,6 +212,43 @@ p@10 / p@25 at matched budgets (bytes read including the coarse scan in brackets
 - The s4 whole-volume scan takes about 33 s in numpy (s3 over the subvolume, 36 s): fine for a
   test, the part to move to WebGPU.
 
+## Test 4: relevance feedback (follow-up)
+
+A simulated person pages through results 10 at a time and marks each shown region good or
+bad (graded with the labels, as a person would judge by eye); after each page everything not
+yet shown is re-ranked. Five pages, five queries per run, the brute-force embeddings as the
+pool (`test4_feedback.py`).
+
+Distinct instances found in the 50 regions shown:
+
+| run | no feedback | Rocchio (move the query toward good, away from bad) | logistic regression on the marks |
+|---|---|---|---|
+| mito, subvolume | 26.0 | 26.4 | 25.4 |
+| mito, whole volume | 27.0 | 30.2 | 24.0 |
+| vesicle | 122.8 | 124.4 | 134.0 |
+| mito, whole volume, pool = coarse top 2% of chunks | 22.4 | 22.0 | 27.0 |
+| vesicle, pool = coarse top 2% of chunks | 121.0 | 118.6 | 118.4 |
+
+**Feedback helps little and not consistently** (Rocchio 0 to +12%, logistic regression -10% to
++20%). With about half of the first page right for mito, ten marks do not teach a better
+boundary in DINOv2's space; the model, not the ranking, is the ceiling. Rocchio stays in the
+browser tool as a button (it rarely hurts); a better or domain model is the bigger lever.
+
+## The browser tool (`web/`)
+
+The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
+texture stats, 2-D and 3-D, in a Web Worker), chunk-wise reading in coarse-scan order, and
+DINOv2-small exported to ONNX (`web/scripts/export_model.py`, max deviation from PyTorch
+8e-7) run through chunkmirage's ONNX Runtime Web wrapper on WebGPU (WebAssembly fallback).
+Readers: OME-Zarr (zarrita, zarr v2/v3), tile pyramids (XYZ, WMTS-style, ArcGIS), Zoomify, and
+the Legacy Surveys cutout service. Raw data only; nothing precomputed.
+
+- **Port parity.** On the same s4 volume the TypeScript scan matches `search.coarse_scan`
+  (Pearson 0.986, Spearman 0.994, 91% of the top 2,000 windows in common).
+- **Smoke tests in headless Chromium** (CPU only, about 8 patches/s, no GPU here): Mars CTX,
+  Hubble Andromeda, Legacy Surveys NGC 6129 and the 3-D HeLa volume all open, scan in
+  0.1-2.4 s and stream hits; first hits at 8 s on the volume.
+
 ## Kill rule
 
 | target | top hits matched | data needed (as stored / 32^3 inner / voxels) | verdict |

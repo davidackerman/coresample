@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>coresample</title>
+<style>
+  :root { --bg: #111418; --panel: #1a1f26; --line: #2b323c; --text: #e6e9ee; --dim: #9aa4b2; --acc: #5ab0ff; --good: #4cc38a; --bad: #e5675e; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; letter-spacing: .3px; }
+  header h1 span { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  select, input, button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  button { cursor: pointer; } button:hover { border-color: var(--acc); } button:disabled { opacity: .45; cursor: default; }
+  #custom { width: 260px; }
+  main { display: flex; height: calc(100% - 50px); }
+  #stage { position: relative; flex: 1; min-width: 0; }
+  #view { width: 100%; height: 100%; display: block; cursor: crosshair; background: #000; }
+  #hint { position: absolute; left: 12px; top: 10px; background: #000a; padding: 6px 9px; border-radius: 6px; color: var(--dim); max-width: 60%; pointer-events: none; }
+  #attrib { position: absolute; left: 12px; bottom: 8px; right: 12px; color: #aab; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }
+  #zbar { position: absolute; right: 12px; top: 10px; display: none; align-items: center; gap: 6px; background: #000a; padding: 6px 9px; border-radius: 6px; }
+  aside { width: 400px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .sec { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 3px 0; }
+  .lbl { color: var(--dim); }
+  #status { font-variant-numeric: tabular-nums; white-space: pre-line; color: var(--dim); min-height: 52px; }
+  #status b { color: var(--text); font-weight: 600; }
+  #bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  #bar > div { height: 100%; width: 0; background: var(--acc); transition: width .2s; }
+  #qwrap { display: flex; gap: 10px; align-items: center; }
+  #qcanvas { width: 72px; height: 72px; image-rendering: pixelated; border: 2px solid var(--acc); border-radius: 4px; background: #000; }
+  #hits { flex: 1; overflow-y: auto; padding: 10px 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; align-content: start; }
+  .hit { position: relative; }
+  .hit canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border-radius: 4px; border: 2px solid transparent; cursor: pointer; background: #000; display: block; }
+  .hit.good canvas { border-color: var(--good); } .hit.bad { opacity: .35; }
+  .hit .cap { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .hit .cap button { padding: 0 5px; font-size: 11px; line-height: 16px; }
+  .empty { color: var(--dim); grid-column: 1 / -1; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>coresample<span>find regions like this one, no precomputation</span></h1>
+  <select id="dataset"></select>
+  <input id="custom" placeholder="OME-Zarr URL, or legacy:RA,Dec">
+  <button id="open">Open</button>
+  <span class="lbl" id="model">model: loading</span>
+</header>
+<main>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hint">Drag to pan, scroll to zoom. Click something to find more like it.</div>
+    <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
+    <div id="attrib"></div>
+  </div>
+  <aside>
+    <div class="sec">
+      <div class="row">
+        <span class="lbl">patch</span>
+        <select id="patch"><option>32</option><option selected>64</option><option>96</option><option>128</option></select>
+        <span class="lbl">read</span>
+        <select id="budget"><option value="0.005">0.5%</option><option value="0.01" selected>1%</option><option value="0.02">2%</option><option value="0.05">5%</option></select>
+        <span class="lbl">region</span>
+        <select id="region"><option value="auto" selected>auto</option><option value="whole">whole</option><option value="8">8x view</option><option value="1">view</option></select>
+      </div>
+      <div class="row">
+        <button id="stop" disabled>Stop</button>
+        <button id="more" disabled>Read 2x more</button>
+        <button id="clear" disabled>Clear</button>
+        <a id="link" target="_blank" style="display:none">open hit in viewer</a>
+      </div>
+    </div>
+    <div class="sec">
+      <div id="qwrap"><canvas id="qcanvas" width="64" height="64"></canvas><div id="status">Click on the image to search.</div></div>
+      <div id="bar"><div></div></div>
+    </div>
+    <div id="hits"><div class="empty">Hits appear here as tiles are read. Mark them good or bad to re-rank.</div></div>
+  </aside>
+</main>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>

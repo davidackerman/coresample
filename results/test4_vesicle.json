@@ -1,0 +1,693 @@
+{
+ "target": "vesicle",
+ "region_s0": [
+  [
+   640,
+   0,
+   512
+  ],
+  [
+   2688,
+   1600,
+   4608
+  ]
+ ],
+ "pools": {
+  "all": {
+   "none": [
+    [
+     {
+      "precision": 0.7,
+      "found": 13
+     },
+     {
+      "precision": 0.9,
+      "found": 40
+     },
+     {
+      "precision": 0.8,
+      "found": 56
+     },
+     {
+      "precision": 0.9,
+      "found": 79
+     },
+     {
+      "precision": 0.9,
+      "found": 95
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 22
+     },
+     {
+      "precision": 0.7,
+      "found": 49
+     },
+     {
+      "precision": 1.0,
+      "found": 73
+     },
+     {
+      "precision": 0.9,
+      "found": 101
+     },
+     {
+      "precision": 1.0,
+      "found": 133
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 27
+     },
+     {
+      "precision": 0.9,
+      "found": 49
+     },
+     {
+      "precision": 0.8,
+      "found": 72
+     },
+     {
+      "precision": 0.8,
+      "found": 92
+     },
+     {
+      "precision": 0.9,
+      "found": 112
+     }
+    ],
+    [
+     {
+      "precision": 0.7,
+      "found": 31
+     },
+     {
+      "precision": 1.0,
+      "found": 58
+     },
+     {
+      "precision": 1.0,
+      "found": 99
+     },
+     {
+      "precision": 0.8,
+      "found": 137
+     },
+     {
+      "precision": 0.8,
+      "found": 165
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 32
+     },
+     {
+      "precision": 0.8,
+      "found": 53
+     },
+     {
+      "precision": 0.9,
+      "found": 73
+     },
+     {
+      "precision": 0.8,
+      "found": 87
+     },
+     {
+      "precision": 0.8,
+      "found": 109
+     }
+    ]
+   ],
+   "rocchio": [
+    [
+     {
+      "precision": 0.7,
+      "found": 13
+     },
+     {
+      "precision": 0.9,
+      "found": 34
+     },
+     {
+      "precision": 0.8,
+      "found": 51
+     },
+     {
+      "precision": 0.9,
+      "found": 73
+     },
+     {
+      "precision": 1.0,
+      "found": 97
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 22
+     },
+     {
+      "precision": 0.8,
+      "found": 48
+     },
+     {
+      "precision": 1.0,
+      "found": 77
+     },
+     {
+      "precision": 0.9,
+      "found": 97
+     },
+     {
+      "precision": 1.0,
+      "found": 137
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 27
+     },
+     {
+      "precision": 0.9,
+      "found": 56
+     },
+     {
+      "precision": 0.9,
+      "found": 80
+     },
+     {
+      "precision": 0.7,
+      "found": 95
+     },
+     {
+      "precision": 1.0,
+      "found": 113
+     }
+    ],
+    [
+     {
+      "precision": 0.7,
+      "found": 31
+     },
+     {
+      "precision": 1.0,
+      "found": 67
+     },
+     {
+      "precision": 0.9,
+      "found": 96
+     },
+     {
+      "precision": 1.0,
+      "found": 127
+     },
+     {
+      "precision": 0.7,
+      "found": 148
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 32
+     },
+     {
+      "precision": 0.7,
+      "found": 49
+     },
+     {
+      "precision": 1.0,
+      "found": 70
+     },
+     {
+      "precision": 0.9,
+      "found": 91
+     },
+     {
+      "precision": 0.9,
+      "found": 127
+     }
+    ]
+   ],
+   "logreg": [
+    [
+     {
+      "precision": 0.7,
+      "found": 13
+     },
+     {
+      "precision": 0.7,
+      "found": 29
+     },
+     {
+      "precision": 0.8,
+      "found": 96
+     },
+     {
+      "precision": 1.0,
+      "found": 181
+     },
+     {
+      "precision": 0.8,
+      "found": 215
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 22
+     },
+     {
+      "precision": 0.6,
+      "found": 41
+     },
+     {
+      "precision": 1.0,
+      "found": 80
+     },
+     {
+      "precision": 0.8,
+      "found": 98
+     },
+     {
+      "precision": 0.6,
+      "found": 120
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 27
+     },
+     {
+      "precision": 0.9,
+      "found": 56
+     },
+     {
+      "precision": 0.5,
+      "found": 72
+     },
+     {
+      "precision": 0.6,
+      "found": 87
+     },
+     {
+      "precision": 0.9,
+      "found": 108
+     }
+    ],
+    [
+     {
+      "precision": 0.7,
+      "found": 31
+     },
+     {
+      "precision": 0.6,
+      "found": 62
+     },
+     {
+      "precision": 0.6,
+      "found": 70
+     },
+     {
+      "precision": 0.9,
+      "found": 101
+     },
+     {
+      "precision": 0.9,
+      "found": 141
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 32
+     },
+     {
+      "precision": 0.0,
+      "found": 32
+     },
+     {
+      "precision": 1.0,
+      "found": 50
+     },
+     {
+      "precision": 0.6,
+      "found": 68
+     },
+     {
+      "precision": 0.7,
+      "found": 86
+     }
+    ]
+   ]
+  },
+  "coarse_top2pct": {
+   "none": [
+    [
+     {
+      "precision": 0.9,
+      "found": 16
+     },
+     {
+      "precision": 0.9,
+      "found": 39
+     },
+     {
+      "precision": 0.9,
+      "found": 58
+     },
+     {
+      "precision": 0.8,
+      "found": 81
+     },
+     {
+      "precision": 0.8,
+      "found": 105
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 22
+     },
+     {
+      "precision": 0.9,
+      "found": 58
+     },
+     {
+      "precision": 0.9,
+      "found": 95
+     },
+     {
+      "precision": 0.9,
+      "found": 118
+     },
+     {
+      "precision": 1.0,
+      "found": 146
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 35
+     },
+     {
+      "precision": 1.0,
+      "found": 61
+     },
+     {
+      "precision": 0.7,
+      "found": 87
+     },
+     {
+      "precision": 0.8,
+      "found": 101
+     },
+     {
+      "precision": 0.8,
+      "found": 117
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 27
+     },
+     {
+      "precision": 0.7,
+      "found": 41
+     },
+     {
+      "precision": 0.9,
+      "found": 66
+     },
+     {
+      "precision": 0.7,
+      "found": 95
+     },
+     {
+      "precision": 0.8,
+      "found": 116
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 17
+     },
+     {
+      "precision": 0.9,
+      "found": 51
+     },
+     {
+      "precision": 0.6,
+      "found": 76
+     },
+     {
+      "precision": 0.8,
+      "found": 99
+     },
+     {
+      "precision": 0.9,
+      "found": 121
+     }
+    ]
+   ],
+   "rocchio": [
+    [
+     {
+      "precision": 0.9,
+      "found": 16
+     },
+     {
+      "precision": 0.8,
+      "found": 35
+     },
+     {
+      "precision": 0.9,
+      "found": 54
+     },
+     {
+      "precision": 0.9,
+      "found": 79
+     },
+     {
+      "precision": 0.9,
+      "found": 106
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 22
+     },
+     {
+      "precision": 0.9,
+      "found": 66
+     },
+     {
+      "precision": 1.0,
+      "found": 98
+     },
+     {
+      "precision": 1.0,
+      "found": 123
+     },
+     {
+      "precision": 0.9,
+      "found": 146
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 35
+     },
+     {
+      "precision": 1.0,
+      "found": 59
+     },
+     {
+      "precision": 0.6,
+      "found": 82
+     },
+     {
+      "precision": 1.0,
+      "found": 101
+     },
+     {
+      "precision": 0.9,
+      "found": 120
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 27
+     },
+     {
+      "precision": 0.7,
+      "found": 45
+     },
+     {
+      "precision": 0.9,
+      "found": 74
+     },
+     {
+      "precision": 0.6,
+      "found": 86
+     },
+     {
+      "precision": 0.8,
+      "found": 103
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 17
+     },
+     {
+      "precision": 0.9,
+      "found": 57
+     },
+     {
+      "precision": 0.7,
+      "found": 75
+     },
+     {
+      "precision": 0.8,
+      "found": 102
+     },
+     {
+      "precision": 0.8,
+      "found": 118
+     }
+    ]
+   ],
+   "logreg": [
+    [
+     {
+      "precision": 0.9,
+      "found": 16
+     },
+     {
+      "precision": 0.5,
+      "found": 31
+     },
+     {
+      "precision": 1.0,
+      "found": 64
+     },
+     {
+      "precision": 0.9,
+      "found": 92
+     },
+     {
+      "precision": 0.8,
+      "found": 113
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 22
+     },
+     {
+      "precision": 0.4,
+      "found": 31
+     },
+     {
+      "precision": 0.8,
+      "found": 51
+     },
+     {
+      "precision": 1.0,
+      "found": 71
+     },
+     {
+      "precision": 1.0,
+      "found": 96
+     }
+    ],
+    [
+     {
+      "precision": 1.0,
+      "found": 35
+     },
+     {
+      "precision": 1.0,
+      "found": 59
+     },
+     {
+      "precision": 0.6,
+      "found": 82
+     },
+     {
+      "precision": 0.7,
+      "found": 105
+     },
+     {
+      "precision": 0.9,
+      "found": 123
+     }
+    ],
+    [
+     {
+      "precision": 0.9,
+      "found": 27
+     },
+     {
+      "precision": 0.7,
+      "found": 63
+     },
+     {
+      "precision": 0.8,
+      "found": 77
+     },
+     {
+      "precision": 1.0,
+      "found": 103
+     },
+     {
+      "precision": 1.0,
+      "found": 126
+     }
+    ],
+    [
+     {
+      "precision": 0.8,
+      "found": 17
+     },
+     {
+      "precision": 1.0,
+      "found": 53
+     },
+     {
+      "precision": 0.8,
+      "found": 75
+     },
+     {
+      "precision": 0.8,
+      "found": 108
+     },
+     {
+      "precision": 0.8,
+      "found": 134
+     }
+    ]
+   ]
+  }
+ }
+}

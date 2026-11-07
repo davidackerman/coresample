@@ -26,6 +26,18 @@ uv run python test3_combined.py                # chunk-wise strategies: coarse p
 uv run python report.py                        # plots + summary for RESULTS.md
 ```
 
+In the browser (raw data only, DINOv2 on your GPU through WebGPU; Chrome recommended):
+
+```bash
+cd web && npm install && npm run model   # exports DINOv2-small to ONNX (88 MB, gitignored)
+npm run build && npx vite preview        # http://localhost:5180
+```
+
+Presets go beyond EM: Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy
+Surveys around NGC 6129, Sentinel-2 cloudless, IDR images, and jrc_hela-2 in 3-D. Any OME-Zarr
+URL works too, or `legacy:RA,Dec` for a Legacy Surveys field. `web/scripts/deploy_pages.sh`
+publishes the build to GitHub Pages.
+
 Search with raw data only (no labels anywhere), on any OME-Zarr or N5 pyramid:
 
 ```bash
@@ -51,6 +63,7 @@ uv run chunkmap.py precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdat
 | `common.py` | S3 listing, local chunk mirror, chunk-touch accounting |
 | `chunkmap.py` | chunk-size maps from listings, shard indexes, or HEAD requests |
 | `query.py` | raw-data-only search CLI |
+| `web/` | the browser tool: TypeScript scan (worker), chunk-wise search, readers for OME-Zarr, tile pyramids, Zoomify and the Legacy Surveys cutout service; reuses chunkmirage's ONNX Runtime Web wrapper |
 | `explore_layout.py`, `test1_chunksize.py`, `test2_coarse2fine.py`, `test3_combined.py`, `report.py` | the feasibility tests |
 
 Data: [OpenOrganelle](https://openorganelle.janelia.org) `jrc_hela-2` from the public
