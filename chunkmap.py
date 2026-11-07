@@ -650,6 +650,102 @@ def zarr_levels(a):
     return out
 
 
+# ---------- N5 ----------
+def n5_level(arr_url, m, geom, a, label):
+    """One N5 dataset. N5 lists dimensions fastest-first (x, y, z) and keys blocks as
+    'i0/i1/i2' in that order; the map is returned slowest-first like zarr (z, y, x)."""
+    dims, block = m["dimensions"], m["blockSize"]
+    grid = [-(-n // c) for n, c in zip(dims, block)]
+    sizes = np.full(grid, np.nan)
+    listed = try_list(arr_url, [f"{i}/" for i in range(grid[0])], a.threads)
+    if listed is not None:
+        how = "bucket listing"
+        for rel, sz in listed:
+            try:
+                idx = tuple(int(t) for t in rel.split("/"))
+            except ValueError:
+                continue
+            if len(idx) == len(grid) and all(0 <= i < g for i, g in zip(idx, grid)):
+                sizes[idx] = sz
+    else:
+        how = "HEAD requests"
+        idxs = list(np.ndindex(*grid))
+        prog = Progress("HEAD requests", len(idxs))
+        with ThreadPoolExecutor(a.threads) as ex:
+            for idx, sz in zip(idxs, ex.map(lambda i: remote_size(f"{arr_url}/" + "/".join(map(str, i))), idxs)):
+                sizes[idx] = sz
+                prog.add()
+        prog.done()
+    return dict(sizes=sizes.transpose(), chunks=block[::-1], geom=geom, label=label,
+                shape=dims[::-1], how=how)
+
+
+def n5_geometry(attrs, nd, group=None, level=0):
+    """Physical scale and lower corner (slowest-first) of an N5 dataset.
+
+    Understands the COSEM 'transform' (scale, translate = voxel centre, axes listed
+    slowest-first), 'pixelResolution' / 'resolution' (fastest-first), and n5-viewer
+    'downsamplingFactors' (corner kept at the origin at every level)."""
+    t = attrs.get("transform")
+    if t and "scale" in t:
+        sc = np.array(t["scale"], float)
+        tr = np.array(t.get("translate", [0.0] * nd), float)
+        names = t.get("axes") or ["z", "y", "x"][-nd:]
+        units = t.get("units") or [None] * nd
+        return dict(names=list(names), types=["space"] * nd, units=list(units), scale=sc, corner=tr - 0.5 * sc)
+    res = attrs.get("pixelResolution")
+    unit = None
+    if isinstance(res, dict):
+        unit, res = res.get("unit"), res.get("dimensions")
+    res = res or attrs.get("resolution") or (group or {}).get("resolution") or [1.0] * nd
+    f = attrs.get("downsamplingFactors")
+    if f is None and group and "scales" in group:
+        f = group["scales"][level]
+    sc = np.array(res, float)[::-1]
+    if f is not None and not attrs.get("pixelResolution"):
+        sc = sc * np.array(f, float)[::-1]
+    names = (attrs.get("axes") or (group or {}).get("axes") or ["x", "y", "z"][:nd])[::-1]
+    return dict(names=list(names), types=["space"] * nd, units=[unit] * nd, scale=sc, corner=np.zeros(nd))
+
+
+def n5_levels(a, attrs):
+    url = a.url
+    if "dimensions" in attrs:
+        nd = len(attrs["dimensions"])
+        return [n5_level(url, attrs, n5_geometry(attrs, nd), a, f"{url}  (n5)")]
+    ms = attrs.get("multiscales")
+    if ms:
+        paths = [d["path"] for d in ms[0]["datasets"]]
+    else:  # n5-viewer style: s0, s1, ... with optional 'scales'
+        paths = [f"s{i}" for i in range(len(attrs.get("scales", []) or range(64)))]
+    if a.level is not None:
+        paths = [p for p in paths if p == a.level] or sys.exit(f"Level {a.level!r} not found")
+    metas = []
+    for i, p in enumerate(paths):
+        m = get_json(f"{url}/{p}/attributes.json")
+        if m is None or "dimensions" not in m:
+            if ms:
+                continue
+            break
+        metas.append((i, p, m))
+    if not metas:
+        sys.exit(f"No N5 dataset or multiscale group found at {url}")
+    nch = lambda m: int(np.prod([-(-n // c) for n, c in zip(m["dimensions"], m["blockSize"])]))
+    keep = [t for t in metas if a.level is not None or nch(t[2]) <= a.max_chunks] or metas[-1:]
+    skipped = [t[1] for t in metas if t not in keep]
+    if skipped:
+        print(f"Skipping levels over --max-chunks: {skipped}", file=sys.stderr)
+    out = []
+    for i, p, m in keep:
+        print(f"Level {p}: {nch(m)} chunks", file=sys.stderr)
+        t0 = time.time()
+        nd = len(m["dimensions"])
+        geom = n5_geometry(ms[0]["datasets"][i] if ms else m, nd, attrs, i)
+        out.append(n5_level(f"{url}/{p}", m, geom, a, f"{url}/{p}  (n5, level {p})"))
+        out[-1]["seconds"] = time.time() - t0
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("url")
@@ -667,9 +763,14 @@ def main():
     a.url = normalize_url(a.url)
 
     info = get_json(a.url + "/info")
+    n5 = None if info else get_json(a.url + "/attributes.json")
     if info and "scales" in info:
         levels = precomputed_levels(a.url, info, a)
         data_source = "precomputed://" + a.url
+    elif n5 and ("dimensions" in n5 or "multiscales" in n5 or "scales" in n5
+                 or get_json(a.url + "/s0/attributes.json")):
+        levels = n5_levels(a, n5)
+        data_source = "n5://" + a.url
     else:
         levels = zarr_levels(a)
         data_source = "zarr://" + a.url
