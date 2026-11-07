@@ -233,7 +233,11 @@ def derived_signals(encodings, occ, valid):
     out = {}
     out["free: s0/s1 size ratio (same region, two levels)"] = ls0 - ls1
     out["free: s0 size minus 5^3-cell local median"] = ls0 - median_filter(ls0, size=5, mode="nearest")
-    res, _ = trend_residual(occ["em_mean_s3"], ls0, valid)
+    # fit only on non-degenerate chunks: constant edge chunks (<5% of the median size) sit at
+    # a couple of padding intensities and would drag the binned median down there
+    fit = valid & (ls0 > np.median(ls0[valid]) + np.log10(0.05))
+    res, _ = trend_residual(occ["em_mean_s3"], ls0, fit)
+    res = np.where(fit, res, 0.0)
     out["residual: s0 log size vs coarse mean intensity"] = res
     out["|residual| (outlier rank)"] = np.abs(res)
     return out
@@ -293,7 +297,10 @@ def figures(out, encodings, occ, valid, fgm, targets):
 
     # size vs coarse intensity: the trend and its residual
     ls0 = np.log10(np.maximum(s0, 1))
-    res, (cx, cy) = trend_residual(occ["em_mean_s3"], ls0, valid)
+    fit = valid & (ls0 > np.median(ls0[valid]) + np.log10(0.05))
+    res, (cx, cy) = trend_residual(occ["em_mean_s3"], ls0, fit)
+    res = np.where(fit, res, 0.0)
+    valid = fit  # plot the fitted population
     fig, axs = plt.subplots(1, 3, figsize=(16, 4.4), gridspec_kw={"width_ratios": [1.1, 1, 1]})
     sc = axs[0].scatter(occ["em_mean_s3"][valid], ls0[valid], c=occ["any"][valid], s=2, cmap="viridis", vmin=0, vmax=1)
     axs[0].plot(cx, cy, "r-", lw=2, label="binned median trend")
