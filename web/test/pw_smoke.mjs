@@ -22,13 +22,13 @@ await page.goto(`http://127.0.0.1:5180/?d=${preset}`);
 await page.waitForTimeout(15000);
 await page.screenshot({ path: `${out}_view.png` });
 console.log(el(), "model:", await page.textContent("#model"));
-await page.selectOption("#budget", "0.005");
-await page.selectOption("#region", "1");
+await page.selectOption("#budget", process.env.PW_BUDGET ?? "0.005");
+await page.selectOption("#region", process.env.PW_REGION ?? "1");
 const box = await page.locator("#view").boundingBox();
 await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 let last = "";
 while ((Date.now() - t0) / 1000 < Number(maxS)) {
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(Number(process.env.PW_POLL ?? 4000));
   const st = (await page.innerText("#status")).replace(/\n/g, " | ");
   if (st !== last) { console.log(el(), st); last = st; }
   if (/paused|done|error/.test(st)) break;

@@ -9,7 +9,7 @@ import { OmeZarrSource, legacySurvey, type Source, type Vec3 } from "./sources.t
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
 const ctx = canvas.getContext("2d")!;
-const COARSE_BUDGET = 8e6;
+const COARSE_BUDGET = 4e6;  // voxels of the coarse level scanned whole (the scan is on the path to first hits)
 
 let src: Source | null = null;
 let preset: Preset | null = null;
@@ -32,6 +32,10 @@ const modelEl = $("model");
     await emb.embed(Array.from({ length: n }, () => ({ data: d, size: 64, channels: 1 })));
     const rate = n / ((performance.now() - t2) / 1000);
     modelEl.textContent = `model: ${emb.provider === "webgpu" ? "GPU (WebGPU)" : "CPU (WebAssembly, slow)"} ready, ${rate.toFixed(0)} patches/s (${((t2 - t) / 1000).toFixed(0)} s to load)`;
+    if (emb.provider !== "webgpu")
+      modelEl.title = window.isSecureContext
+        ? "No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
+        : "WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead.";
   } catch (e) {
     modelEl.textContent = `model failed: ${(e as Error).message}`;
   }
@@ -271,7 +275,7 @@ function query(px: number, py: number) {
   clearSearch();
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, budgetFrac: Number($<HTMLSelectElement>("budget").value),
-                                   maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60 });
+                                   maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60, maxTiles: 48 });
   for (const b of ["stop", "clear"]) $<HTMLButtonElement>(b).disabled = false;
   let queued = false;
   const me = search;
@@ -305,7 +309,8 @@ function panel(st: State) {
   const lines = [
     `<b>${st.phase}</b>: ${st.message}`,
     st.coarse >= 0 ? `scanned level ${st.coarse} in ${st.scanSeconds.toFixed(1)} s; searching level ${st.working}` : "",
-    st.tilesTotal ? `tiles read <b>${st.tilesRead}</b> of ${st.tilesTotal} (${pct.toFixed(2)}%), ${st.patches} patches embedded` : "",
+    st.tilesTotal ? `tiles read <b>${st.tilesRead}</b> of ${st.tilesTotal} (${pct.toFixed(2)}%), ${st.patches} patches embedded` +
+      (st.queued ? `, ${st.queued} queued` : "") : "",
     `${fmt(st.bytes)} downloaded, ${st.seconds.toFixed(1)} s` + (st.firstHitSeconds ? `, first hits at ${st.firstHitSeconds.toFixed(1)} s` : ""),
   ];
   $("status").innerHTML = lines.filter(Boolean).join("\n");

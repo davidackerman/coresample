@@ -9,6 +9,37 @@ Every embedding is cached, so the index builds itself from use. Compressed chunk
 read from storage metadata without touching pixels, give a free map of where the
 content is.
 
+**Try it: https://davidackerman.github.io/coresample/** (Chrome recommended: the model runs on
+your GPU through WebGPU; without WebGPU it falls back to the CPU, about 10x slower).
+
+### Using the page
+
+Pick a dataset, drag to pan, scroll to zoom, then click something: hits stream into the right
+panel, best first. Click a thumbnail to go there, mark hits good or bad to re-rank, and use
+**Read 2x more** to keep searching. The search runs at the zoom level you are looking at, so
+zoom until the thing you care about is clear, then click.
+
+How it decides: your clicked patch is embedded by DINOv2-small (a general image model). A
+cheap scan of a coarse level (intensity histogram and texture statistics, no model) ranks
+where similar things might be; the full-resolution tiles under the best-ranked places are
+read first, every patch in them is embedded, and hits are ranked by embedding similarity to
+your click (the number under each thumbnail). Nothing is precomputed or uploaded anywhere.
+
+Ways to load data:
+
+| how | example |
+|---|---|
+| a preset from the menu | Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy Surveys around NGC 6129, Sentinel-2 cloudless, IDR organoid EM and lung histology, OpenOrganelle jrc_hela-2 in 3-D |
+| a link to a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
+| any OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` in the box at the top |
+| a DESI Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec in degrees) |
+
+The data must be a multiscale pyramid (each level 2x coarser) on a host that allows
+cross-origin reads (CORS), as public buckets, NASA GIBS/Trek, ESA and IDR do. Sources without
+CORS (the Legacy Surveys' own map tiles, for one) cannot be read by a web page; the page uses
+their cutout service instead. More formats (TIFF/SVS slides, HDF5, FITS, Sentinel-2 SAFE...)
+are planned through refkv; volumes will open in Neuroglancer where it can read them.
+
 This repository currently holds the **feasibility tests** (Python, workstation scale)
 and the `chunkmap.py` prototype. Results and the go/no-go verdict are in
 [results/RESULTS.md](results/RESULTS.md).
