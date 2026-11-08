@@ -1,0 +1,6 @@
+[vesicle] 3440 instances, 46872 candidates, 30 queries
+[vesicle] dinov3-small  p@10 0.85+/-0.03  p@25 0.85+/-0.02  r@100 0.068  (646s)
+[mito] 62 instances, 5115 candidates, 30 queries
+[mito] dinov3-small  p@10 0.50+/-0.04  p@25 0.45+/-0.02  r@100 0.619  (85s)
+[mito_full] 421 instances, 48576 candidates, 30 queries
+[mito_full] dinov3-small  p@10 0.44+/-0.05  p@25 0.39+/-0.03  r@100 0.112  (835s)

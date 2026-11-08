@@ -1,0 +1,14 @@
+[vesicle] 3440 instances, 46872 candidates, 30 queries
+[vesicle] dinov2-small  p@10 0.81+/-0.04  p@25 0.80+/-0.03  r@100 0.064  (288s)
+[vesicle] dinov2-base   p@10 0.77+/-0.03  p@25 0.77+/-0.02  r@100 0.062  (1906s)
+[vesicle] siglip-base   p@10 0.87+/-0.02  p@25 0.85+/-0.02  r@100 0.068  (6473s)
+[vesicle] clip-b16      p@10 0.81+/-0.04  p@25 0.82+/-0.03  r@100 0.068  (4406s)
+[vesicle] cem500k: skipped (cem500k: unexpected missing weights ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var'])
+[vesicle] texture       p@10 0.76+/-0.04  p@25 0.76+/-0.03  r@100 0.063  (6268s)
+[mito_full] 421 instances, 48576 candidates, 30 queries
+[mito_full] dinov2-small  p@10 0.44+/-0.04  p@25 0.43+/-0.03  r@100 0.107  (206s)
+[mito_full] dinov2-base   p@10 0.38+/-0.04  p@25 0.36+/-0.03  r@100 0.104  (671s)
+[mito_full] siglip-base   p@10 0.41+/-0.04  p@25 0.38+/-0.03  r@100 0.103  (2885s)
+[mito_full] clip-b16      p@10 0.42+/-0.03  p@25 0.38+/-0.03  r@100 0.104  (3130s)
+[mito_full] cem500k: skipped (cem500k: unexpected missing weights ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var'])
+[mito_full] texture       p@10 0.33+/-0.04  p@25 0.33+/-0.02  r@100 0.087  (6475s)
