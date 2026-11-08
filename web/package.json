@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@webgpu/types": "0.1.74",
+    "https-proxy-agent": "7.0.6",
     "typescript": "5.9.3",
     "vite": "7.1.12"
   }

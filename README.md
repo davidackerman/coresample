@@ -31,14 +31,21 @@ Ways to load data:
 |---|---|
 | a preset from the menu | Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy Surveys around NGC 6129, Sentinel-2 cloudless, IDR organoid EM and lung histology, OpenOrganelle jrc_hela-2 in 3-D |
 | a link to a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
-| any OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` in the box at the top |
+| your own OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` in the box at the top |
+| your own web-map tiles | `https://host/.../{z}/{x}/{y}.png` (add `#maxZoom=12` to set the finest zoom) |
+| your own Zoomify image | `https://host/.../ImageProperties.xml` |
 | a DESI Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec in degrees) |
+| a link to your data | `?url=<any of the above>`: opening data puts this in the address bar, so the link can be shared |
+
+The page shows each dataset's size (pixels or voxels, and levels) when it opens. Volumes and
+OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes),
+tile pyramids in OpenLayers; the search runs behind the scenes in either.
 
 The data must be a multiscale pyramid (each level 2x coarser) on a host that allows
 cross-origin reads (CORS), as public buckets, NASA GIBS/Trek, ESA and IDR do. Sources without
 CORS (the Legacy Surveys' own map tiles, for one) cannot be read by a web page; the page uses
 their cutout service instead. More formats (TIFF/SVS slides, HDF5, FITS, Sentinel-2 SAFE...)
-are planned through refkv; volumes will open in Neuroglancer where it can read them.
+are planned through refkv.
 
 This repository currently holds the **feasibility tests** (Python, workstation scale)
 and the `chunkmap.py` prototype. Results and the go/no-go verdict are in
@@ -67,7 +74,8 @@ npm run build && npx vite preview        # http://localhost:5180
 Presets go beyond EM: Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy
 Surveys around NGC 6129, Sentinel-2 cloudless, IDR images, and jrc_hela-2 in 3-D. Any OME-Zarr
 URL works too, or `legacy:RA,Dec` for a Legacy Surveys field. `web/scripts/deploy_pages.sh`
-publishes the build to GitHub Pages.
+publishes the build by hand; the site itself is built by `.github/workflows/pages.yml`
+(Neuroglancer from source, the ONNX model, chunkmirage at the commit in `web/chunkmirage.lock`).
 
 Search with raw data only (no labels anywhere), on any OME-Zarr or N5 pyramid:
 

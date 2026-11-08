@@ -13,7 +13,7 @@
   header h1 span { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
   select, input, button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
   button { cursor: pointer; } button:hover { border-color: var(--acc); } button:disabled { opacity: .45; cursor: default; }
-  #custom { width: 260px; }
+  #custom { width: 330px; }
   main { display: flex; height: calc(100% - 50px); }
   #stage { position: relative; flex: 1; min-width: 0; }
   #view { width: 100%; height: 100%; display: block; cursor: crosshair; background: #000; }
@@ -46,7 +46,12 @@
 <header>
   <h1>coresample<span>find regions like this one, no precomputation</span></h1>
   <select id="dataset"></select>
-  <input id="custom" placeholder="OME-Zarr URL, or legacy:RA,Dec">
+  <input id="custom" placeholder="your data: OME-Zarr URL, tile template, Zoomify, legacy:RA,Dec" title="Your own data, any public host that allows cross-origin reads (CORS):
+- OME-Zarr (zarr v2/v3, 2-D or 3-D): https://..., s3://bucket/path, gs://bucket/path
+- web-map tiles: https://host/.../{z}/{x}/{y}.png (add #maxZoom=12 to set the finest zoom)
+- Zoomify: https://host/.../ImageProperties.xml
+- DESI Legacy Surveys field: legacy:245.43,37.996 (RA, Dec in degrees)
+Opening it puts ?url=... in the address bar: share that link.">
   <button id="open">Open</button>
   <span class="lbl" id="model">model: loading</span>
   <a href="https://github.com/davidackerman/coresample" target="_blank" style="margin-left:auto">source and how it works</a>

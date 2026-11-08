@@ -4,8 +4,9 @@ import { PRESETS, type Preset } from "./datasets.ts";
 import { Embedder } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
 import { Search, coarseLevelFor, type State } from "./search.ts";
+import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
-import { OmeZarrSource, TileSource, legacySurvey, type Source, type Vec3 } from "./sources.ts";
+import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -19,12 +20,14 @@ let src: Source | null = null;
 let preset: Preset | null = null;
 const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale = full-res px per screen px
 let search: Search | null = null;
-let olv: OlViewer | null = null;  // OpenLayers for tile pyramids; the canvas viewer for the rest (until Neuroglancer)
+let olv: OlViewer | null = null;  // OpenLayers for tile pyramids
+let ngv: NgViewer | null = null;
+let ngBoxesKey = "";  // Neuroglancer for OME-Zarr (2-D and 3-D); the canvas viewer only as a fallback
 const olDiv = document.createElement("div");
 olDiv.style.cssText = "position:absolute;inset:0;display:none;background:#000";
 canvas.after(olDiv);
 /** Full-resolution pixels per device pixel, whichever viewer is showing. */
-const zoomScale = () => (olv ? olv.scale() : view.scale);
+const zoomScale = () => (olv ? olv.scale() : ngv ? ngv.scale() : view.scale);
 let hitEls: HTMLElement[] = [];
 
 // ---------------------------------------------------------------------------------------
@@ -78,7 +81,8 @@ function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(canvas.clientWidth * dpr);
   canvas.height = Math.round(canvas.clientHeight * dpr);
-  hover.width = canvas.width; hover.height = canvas.height;
+  const stage = canvas.parentElement!;  // the canvas is hidden under OpenLayers or Neuroglancer
+  hover.width = Math.round(stage.clientWidth * dpr); hover.height = Math.round(stage.clientHeight * dpr);
   render();
   drawHover();
 }
@@ -90,7 +94,7 @@ let gen = 0;
 const off = document.createElement("canvas");
 async function render() {
   if (!src) return;
-  if (olv) { overlays(); return; }
+  if (olv || ngv) { overlays(); return; }
   const g = ++gen;
   const L = displayLevel();
   // a coarse level first (instant from cache when panning), then the one for this zoom
@@ -132,6 +136,16 @@ function toScreen(fx: number, fy: number) {
 }
 
 function overlays() {
+  if (ngv) {  // the boxes as a Neuroglancer annotation layer
+    if (!search) { if (ngBoxesKey !== "none") { ngBoxesKey = "none"; ngv.setBoxes(null, []); } return; }
+    const st = search.state, f = 2 ** st.working, side = st.patch * f, d3 = src?.dims === 3;
+    const box = (c: Vec3, lab?: string) => ({ fz: d3 ? c[0] * f : 0, fy: c[1] * f, fx: c[2] * f, side, label: lab });
+    const key = `${st.hits.length}|${st.hits[0]?.index}|${st.hits[st.hits.length - 1]?.index}`;
+    if (key === ngBoxesKey) return;  // a state restore per change, not per frame
+    ngBoxesKey = key;
+    ngv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, `#${k + 1}`)));
+    return;
+  }
   if (olv) {  // the boxes as OpenLayers features
     if (!search) { olv.setBoxes(null, []); return; }
     const st = search.state, f = 2 ** st.working, side = st.patch * f;
@@ -173,8 +187,9 @@ function patchSize(): string {
 
 /** The dashed box under the cursor: exactly the region a click would search for. */
 function drawHover() {
-  hctx.clearRect(0, 0, hover.width, hover.height);
   $("psize").textContent = src ? `= ${patchSize().split("= ")[1] ?? patchSize()}` : "";
+  if (ngv) { ngv.drawHover(); return; }  // Neuroglancer's mouse is in its frame; it draws the box
+  hctx.clearRect(0, 0, hover.width, hover.height);
   if (!src || !mouse || drag?.moved || olv) return;
   const P = Number($<HTMLSelectElement>("patch").value), side = (P * 2 ** searchLevel()) / view.scale;
   const dpr = window.devicePixelRatio || 1;
@@ -251,6 +266,21 @@ for (const p of PRESETS) sel.add(new Option(p.label, p.id));
 sel.addEventListener("change", () => openPreset(PRESETS.find((p) => p.id === sel.value)!));
 $("open").addEventListener("click", () => openCustom($<HTMLInputElement>("custom").value));
 
+let ngAvailable: Promise<boolean> | null = null;
+/** Whether this site serves Neuroglancer at ./ng/ (the deployed build, or the dev relay). */
+function hasNeuroglancer() {
+  return (ngAvailable ??= fetch("ng/index.html", { method: "HEAD" }).then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("html")).catch(() => false));
+}
+
+/** "W x H px (8.8 Tpx), 13 levels" or the voxel count for a volume. */
+function sizeText(s: Source): string {
+  const [z, y, x] = s.levels[0].shape, n = s.dims === 3 ? x * y * z : x * y;
+  const si = (v: number) => (v >= 1e12 ? `${(v / 1e12).toFixed(1)} T` : v >= 1e9 ? `${(v / 1e9).toFixed(1)} G` : v >= 1e6 ? `${(v / 1e6).toFixed(0)} M` : `${(v / 1e3).toFixed(0)} k`);
+  const f = (v: number) => v.toLocaleString("en-US");
+  return s.dims === 3 ? `${f(x)} x ${f(y)} x ${f(z)} voxels (${si(n)}vox), ${s.levels.length} levels`
+                      : `${f(x)} x ${f(y)} px (${si(n)}px), ${s.levels.length} levels`;
+}
+
 async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   clearSearch();
   src = s;
@@ -258,9 +288,22 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
   olv?.destroy();
   olv = null;
-  const tiled = s instanceof TileSource;
+  ngv?.destroy();
+  ngv = null;
+  ngBoxesKey = "";
+  const tiled = s instanceof TileSource, volume = s instanceof OmeZarrSource && (await hasNeuroglancer());
   olDiv.style.display = tiled ? "block" : "none";
-  canvas.style.display = hover.style.display = tiled ? "none" : "block";
+  canvas.style.display = tiled || volume ? "none" : "block";
+  hover.style.display = tiled ? "none" : "block";
+  if (volume) {
+    ngv = new NgViewer(canvas.parentElement!, s as OmeZarrSource, { cx: v.cx, cy: v.cy, z: v.z ?? view.z, scale: v.scale }, hover, {
+      click: (fz, fy, fx) => queryAt(fx, fy, fz),
+      hoverBox: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
+      moved: () => drawHover(),
+    });
+    hover.parentElement!.appendChild(hover);  // the hover canvas above the viewer's frame
+    $("zbar").style.display = "none";  // Neuroglancer moves through z itself
+  }
   if (tiled) {
     olv = new OlViewer(olDiv, s as TileSource, v, {
       click: (fx, fy) => queryAt(fx, fy),
@@ -268,10 +311,10 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
       moved: () => drawHover(),
     });
   }
-  $("attrib").textContent = s.attribution ? `Data: ${s.attribution}` : s.name;
+  $("attrib").textContent = `${s.name}: ${sizeText(s)}` + (s.attribution ? `. Data: ${s.attribution}` : "");
   $("hint").textContent = (p?.note ? p.note + " " : "") + "Drag to pan, scroll to zoom, click to search.";
   const zb = $("zbar");
-  zb.style.display = s.dims === 3 ? "flex" : "none";
+  zb.style.display = s.dims === 3 && !ngv ? "flex" : "none";
   if (s.dims === 3) { zIn.max = String(s.levels[0].shape[0] - 1); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
   if (p?.patch) $<HTMLSelectElement>("patch").value = String(p.patch);
   const u = new URL(location.href);
@@ -293,9 +336,20 @@ async function openCustom(text: string) {
     let s: Source;
     const m = /^legacy:\s*([-\d.]+)\s*,\s*([-\d.]+)/i.exec(text);
     if (m) s = legacySurvey(Number(m[1]), Number(m[2]));
-    else s = await OmeZarrSource.open(text);
+    else if (/\{z\}/.test(text) && /\{x\}/.test(text) && /\{y\}/.test(text)) {
+      // a web-map tile template: square world, 256 px tiles; "#maxZoom=N" sets the finest zoom
+      const [tpl, frag] = text.split("#"), mz = Number(new URLSearchParams(frag ?? "").get("maxZoom") ?? 18);
+      s = new TileSource({ name: tpl.replace(/^https?:\/\//, "").split("/")[0], tileSize: 256, maxZoom: mz, channels: 3,
+                           url: (z, x, y) => tpl.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y)) });
+    } else if (/ImageProperties\.xml$/i.test(text) || /^zoomify:/i.test(text)) {
+      const base = text.replace(/^zoomify:/i, "").replace(/\/?ImageProperties\.xml$/i, "");
+      s = await openZoomify(base, base.split("/").filter(Boolean).pop() ?? "Zoomify image");
+    } else s = await OmeZarrSource.open(text);
     const L0 = s.levels[0].shape;
     await setSource(s, { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+    const u = new URL(location.href);  // a link that opens this data again
+    u.searchParams.delete("d"); u.searchParams.set("url", text);
+    history.replaceState(null, "", u);
   } catch (e) {
     $("status").textContent = `could not open: ${(e as Error).message}`;
   }
@@ -325,7 +379,7 @@ $("more").addEventListener("click", () => {
 function regionFor(W: number, P: number): [Vec3, Vec3] {
   const s = src!, L = s.levels[W], f = 2 ** W, d3 = s.dims === 3;
   const whole: [Vec3, Vec3] = [[0, 0, 0], [...L.shape] as Vec3];
-  const vis = olv ? olv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
+  const vis = olv ? olv.extentPx() : ngv ? ngv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
                                       y0: view.cy - (canvas.height * view.scale) / 2, y1: view.cy + (canvas.height * view.scale) / 2 };
   const around = (k: number): [Vec3, Vec3] => {
     const hw = ((vis.x1 - vis.x0) * k) / 2 / f, hh = ((vis.y1 - vis.y0) * k) / 2 / f;
@@ -346,13 +400,13 @@ function query(px: number, py: number) {  // canvas viewer: device pixels to ful
   queryAt(view.cx + (px - canvas.width / 2) * view.scale, view.cy + (py - canvas.height / 2) * view.scale);
 }
 
-function queryAt(fx: number, fy: number) {
+function queryAt(fx: number, fy: number, fz?: number) {
   if (!src) return;
   const s = src, n = s.levels.length;
   const P = Number($<HTMLSelectElement>("patch").value);
   const W = searchLevel();   // search at the level being viewed (as the hover box shows)
   const f = 2 ** W;
-  const c: Vec3 = [s.dims === 3 ? Math.floor(view.z / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
+  const c: Vec3 = [s.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
   clearSearch();
@@ -431,6 +485,7 @@ function goTo(i: number) {
   if (!search || !src) return;
   const c = search.center(i), f = 2 ** search.state.working;
   if (olv) olv.goTo(c[2] * f, c[1] * f, f);
+  if (ngv) ngv.goTo(c[2] * f, c[1] * f, c[0] * f, f);
   view.cx = c[2] * f; view.cy = c[1] * f;
   if (src.dims === 3) { view.z = c[0] * f; zIn.value = String(view.z); $("zval").textContent = zIn.value; }
   view.scale = f;
@@ -440,8 +495,14 @@ function goTo(i: number) {
   render();
 }
 
+// for debugging from the console
+(window as any).coresample = { get ngv() { return ngv; }, get olv() { return olv; }, get search() { return search; } };
+
 // start
-const want = new URL(location.href).searchParams.get("d");
-const first = PRESETS.find((p) => p.id === want) ?? PRESETS[0];
-sel.value = first.id;
-openPreset(first);
+const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");
+if (own) { $<HTMLInputElement>("custom").value = own; openCustom(own); }
+else {
+  const first = PRESETS.find((p) => p.id === want) ?? PRESETS[0];
+  sel.value = first.id;
+  openPreset(first);
+}

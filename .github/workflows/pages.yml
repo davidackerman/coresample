@@ -1,0 +1,99 @@
+name: Pages
+
+# The site at https://davidackerman.github.io/coresample/: the browser tool (web/) built by Vite,
+# with the pieces it needs beside it, as cellmap-flow's Pages workflow builds its browser mode:
+#
+#   /           the page, its worker and assets (web/dist)
+#   /ng/        Neuroglancer, built from source: the page drives it in a same-origin iframe
+#               (reads clicks and zoom, adds hit annotations), which an appspot iframe cannot do
+#   /models/    DINOv2-small as ONNX (web/scripts/export_model.py), run in the page by ONNX
+#               Runtime Web through chunkmirage's wrapper
+#   /ort/       ONNX Runtime Web's WebAssembly runtime (copied by chunkmirage's Vite plugin)
+#
+# chunkmirage's browser pieces are imported from a sibling checkout at the commit
+# web/chunkmirage.lock pins. The model and the viewer are cached by what makes them.
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write   # pushes the gh-pages branch
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  NEUROGLANCER: v2.41.2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch chunkmirage (web/chunkmirage.lock)
+        run: |
+          git clone -q https://github.com/JaneliaSciComp/chunkmirage ../chunkmirage
+          git -C ../chunkmirage checkout -q "$(cat web/chunkmirage.lock)"
+
+      - uses: actions/cache@v4
+        id: model
+        with:
+          path: web/public/models
+          key: model-${{ hashFiles('web/scripts/export_model.py') }}
+      - name: Export DINOv2-small to ONNX
+        if: steps.model.outputs.cache-hit != 'true'
+        run: |
+          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q transformers onnx onnxruntime onnxscript numpy
+          python web/scripts/export_model.py
+
+      - uses: actions/cache@v4
+        id: neuroglancer
+        with:
+          path: web/public/ng
+          key: neuroglancer-${{ env.NEUROGLANCER }}
+      - name: Build Neuroglancer
+        if: steps.neuroglancer.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 --branch "$NEUROGLANCER" https://github.com/google/neuroglancer "$RUNNER_TEMP/ng"
+          cd "$RUNNER_TEMP/ng"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          npm run build -- --output="$GITHUB_WORKSPACE/web/public/ng"
+          find "$GITHUB_WORKSPACE/web/public/ng" -name '*.map' -delete
+
+      - name: Build the page
+        run: npm ci --no-audit --no-fund && npx vite build
+        working-directory: web
+
+      # every piece checked before anything is published: a missing one should fail here,
+      # not as a blank viewer on the site
+      - name: Check the site
+        run: |
+          for f in index.html ng/index.html models/dinov2-small-112.onnx ort/ort-wasm-simd-threaded.asyncify.wasm; do
+            [ -f "web/dist/$f" ] || { echo "::error::web/dist/$f is missing"; exit 1; }
+          done
+          touch web/dist/.nojekyll
+          du -sh web/dist web/dist/ng web/dist/models
+
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: web/dist
+          force_orphan: true
+          full_commit_message: "Deploy ${{ github.sha }}: the page, its Neuroglancer and model"
