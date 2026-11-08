@@ -2,6 +2,8 @@
 // web-map tiles): it draws and caches the source's own tiles, so panning and zooming stay smooth.
 // Map coordinates are full-resolution pixels with y negated: pixel (col c, row r) is (c, -r).
 import Feature from "ol/Feature";
+import ImageLayer from "ol/layer/Image";
+import ImageCanvasSource from "ol/source/ImageCanvas";
 import type ImageTile from "ol/ImageTile";
 import TileState from "ol/TileState";
 import Map from "ol/Map";
@@ -18,6 +20,8 @@ import "ol/ol.css";
 import type { TileSource } from "./sources.ts";
 
 export interface Box { fx: number; fy: number; side: number; label?: string }
+/** A picture laid over the map: its canvas covers full-resolution pixels [x0, x1) x [y0, y1). */
+export interface Overlay { canvas: HTMLCanvasElement; x0: number; y0: number; x1: number; y1: number }
 
 const square = (b: Box) => {
   const h = b.side / 2;
@@ -35,9 +39,11 @@ export class OlViewer {
   private boxes = new VectorSource();
   private hoverF = new Feature();
   private dpr = window.devicePixelRatio || 1;
+  private heat: Overlay | null = null;
+  private heatLayer: ImageLayer<ImageCanvasSource>;
 
   constructor(target: HTMLElement, src: TileSource, init: { cx: number; cy: number; scale: number },
-              on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void;
+              on: { click: (fx: number, fy: number, add: boolean) => void; hover: () => { side: number; text: string } | null; moved: () => void;
                     pointer?: (fx: number, fy: number) => void }) {
     const s = src.spec, ts = s.tileSize;
     const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
@@ -83,8 +89,34 @@ export class OlViewer {
     const overlay = new VectorLayer({ source: this.boxes, style: (f) => boxStyle(f as Feature), updateWhileAnimating: true, updateWhileInteracting: true });
     this.hoverF.set("kind", "hover");
     this.boxes.addFeature(this.hoverF);
-    this.map = new Map({ target, layers: [tiles, overlay], view: this.view, controls: [] });
-    this.map.on("singleclick", (e) => { this.lastPixel = null; this.refreshHover(); on.click(e.coordinate[0], -e.coordinate[1]); });
+    // the similarity heat: one canvas over the search region, drawn into each view unsmoothed
+    this.heatLayer = new ImageLayer({
+      visible: false,
+      source: new ImageCanvasSource({
+        projection, ratio: 1,
+        canvasFunction: (ext, _res, _pr, size) => {
+          const cv = document.createElement("canvas");
+          cv.width = size[0]; cv.height = size[1];
+          const h = this.heat;
+          if (!h) return cv;
+          // the cells in view only (deep zooms would otherwise scale the whole canvas enormously)
+          const cw = (h.x1 - h.x0) / h.canvas.width, chh = (h.y1 - h.y0) / h.canvas.height;
+          const vx0 = ext[0], vx1 = ext[2], vy0 = -ext[3], vy1 = -ext[1];
+          const i0 = Math.max(0, Math.floor((vx0 - h.x0) / cw)), i1 = Math.min(h.canvas.width, Math.ceil((vx1 - h.x0) / cw));
+          const j0 = Math.max(0, Math.floor((vy0 - h.y0) / chh)), j1 = Math.min(h.canvas.height, Math.ceil((vy1 - h.y0) / chh));
+          if (i1 <= i0 || j1 <= j0) return cv;
+          const sx = size[0] / (vx1 - vx0), sy = size[1] / (vy1 - vy0), g = cv.getContext("2d")!;
+          g.imageSmoothingEnabled = false;
+          g.drawImage(h.canvas, i0, j0, i1 - i0, j1 - j0, (h.x0 + i0 * cw - vx0) * sx, (h.y0 + j0 * chh - vy0) * sy, (i1 - i0) * cw * sx, (j1 - j0) * chh * sy);
+          return cv;
+        },
+      }),
+    });
+    this.map = new Map({ target, layers: [tiles, this.heatLayer, overlay], view: this.view, controls: [] });
+    this.map.on("singleclick", (e) => {  // shift-click: another example of the same thing
+      this.lastPixel = null; this.refreshHover();
+      on.click(e.coordinate[0], -e.coordinate[1], !!(e.originalEvent as MouseEvent).shiftKey);
+    });
     this.onHover = on.hover;
     this.map.on("pointermove", (e) => {
       if (e.dragging) return;
@@ -122,7 +154,14 @@ export class OlViewer {
   goTo(fx: number, fy: number, scale: number) {
     this.view.animate({ center: [fx, -fy], resolution: scale * this.dpr, duration: 250 });
   }
-  setBoxes(query: Box | null, hits: Box[]) {
+  /** The similarity heat over the map (null: none), at this opacity. */
+  setHeat(h: Overlay | null, opacity = 0.6) {
+    this.heat = h;
+    this.heatLayer.setVisible(!!h);
+    this.heatLayer.setOpacity(opacity);
+    this.heatLayer.getSource()?.changed();
+  }
+  setBoxes(queries: Box[], hits: Box[]) {
     for (const f of this.boxes.getFeatures()) if (f !== this.hoverF) this.boxes.removeFeature(f);
     const add = (b: Box, kind: string) => {
       const f = new Feature(square(b));
@@ -131,7 +170,7 @@ export class OlViewer {
       this.boxes.addFeature(f);
     };
     hits.forEach((b) => add(b, "hit"));
-    if (query) add(query, "query");
+    queries.forEach((b) => add(b, "query"));
   }
   destroy() { this.map.setTarget(undefined); }
 }

@@ -1,0 +1,24 @@
+[mito] tones: background 154, outlines 141, inside 153; noise 4.5
+   real patch             p@10 0.48  p@25 0.46   vs the real patch +0.00+/-0.00
+   outline (one)          p@10 0.00  p@25 0.00   vs the real patch -0.48+/-0.03
+   outline+tex (one)      p@10 0.03  p@25 0.04   vs the real patch -0.44+/-0.04
+   filled (one)           p@10 0.00  p@25 0.00   vs the real patch -0.48+/-0.03
+   filled+tex (one)       p@10 0.06  p@25 0.05   vs the real patch -0.42+/-0.04
+   outline (all)          p@10 0.00  p@25 0.00   vs the real patch -0.48+/-0.03
+   outline+tex (all)      p@10 0.10  p@25 0.09   vs the real patch -0.37+/-0.04
+   filled (all)           p@10 0.00  p@25 0.00   vs the real patch -0.48+/-0.03
+   filled+tex (all)       p@10 0.13  p@25 0.12   vs the real patch -0.35+/-0.05
+   blank (tones only)     p@10 0.00  p@25 0.00   vs the real patch -0.48+/-0.03
+   random order           p@10 0.08  p@25 0.07   vs the real patch -0.39+/-0.04
+[vesicle] tones: background 158, outlines 147, inside 152; noise 4.1
+   real patch             p@10 0.81  p@25 0.80   vs the real patch +0.00+/-0.00
+   outline (one)          p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   outline+tex (one)      p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   filled (one)           p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   filled+tex (one)       p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   outline (all)          p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   outline+tex (all)      p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   filled (all)           p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   filled+tex (all)       p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   blank (tones only)     p@10 0.00  p@25 0.00   vs the real patch -0.81+/-0.04
+   random order           p@10 0.20  p@25 0.22   vs the real patch -0.61+/-0.04

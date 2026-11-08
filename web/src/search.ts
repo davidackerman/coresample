@@ -3,7 +3,9 @@
 // embed every patch in each tile read, and keep an updated, non-overlapping hit list. It keeps
 // reading, best-ranked tiles first, until every tile of the region is read or it is stopped;
 // results stream after every batch. Memory stays bounded: only the best few thousand candidates
-// (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those.
+// (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those. More
+// examples can join the query at any time (it becomes their mean), and every place compared
+// leaves its score in a compact list for the similarity heat map.
 import { GRID, PART, similarity, type Embedder, type Focus, type Patch, type TokenGrid } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
@@ -17,6 +19,7 @@ export interface State {
   patches: number; queued: number; hits: Hit[];
   bytes: number; seconds: number; scanSeconds: number; firstHitSeconds: number | null;
   rough: { level: number; places: number } | null;  // the model's coarse pass that orders the reads
+  examples: number;  // examples the query is made of (shift-click adds one)
 }
 
 export interface Options {
@@ -31,29 +34,65 @@ export interface Options {
   method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
+  sketch?: Patch;             // a drawing (P x P at the working level) to search for instead of a place
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
 }
 
 const MARGIN = 4;
 const KEEP = 3000;
+/** The "place" of a drawn query: none (every comparison with it is false). */
+export const NOWHERE: Vec3 = [NaN, NaN, NaN];
+const placed = (c: Vec3) => c.every(Number.isFinite);
 
 /** The model's pass over a coarser level that decides which tiles are read first (test 8: two
  * levels up, the same physical box, it finds the right tiles sooner than the cheap statistics
- * at the same cost). It runs in rounds, in the cheap scan's order, a few hundred places at a
- * time; tiles are read best rough score first, and a new round starts when only tiles below
- * the median rough score are left. Nothing is cut: every tile is still read in the end. */
+ * at the same cost). It runs in rounds, a few hundred places at a time: the level-L chunks
+ * under the next tiles of the cheap scan's order, each downloaded once and every tile under it
+ * scored from it (a chunk comes whole, so all its places are used). Tiles are read best rough
+ * score first, and a new round starts when only tiles below the median rough score are left.
+ * Nothing is cut: every tile is still read in the end. */
 interface Rough {
   L: number; p: number; stride: number; k: number;
   q0: Float32Array; q: Float32Array;             // the query at level L (and after feedback)
   goods: Float32Array[]; bads: Float32Array[];   // marked hits seen at level L
   pool: { t: Vec3; s: number; embs: Float32Array[] }[];  // scored tiles not read yet
   scores: number[];                              // every rough score so far (for the median)
-  cursor: number;                                // next tile of the cheap order to score
+  cursor: number;                                // next tile of the cheap order to look at
   cells: number;                                 // places scored
+  scored: Set<number>;                           // tiles scored already (tileKey)
+  ranked: Set<number>;                           // every tile of the order (tileKey)
 }
+/** A working-level tile as one number (each index below 2^20, z below 2^13). */
+const tileKey = (t: Vec3) => t[0] * 2 ** 40 + t[1] * 2 ** 20 + t[2];
 
 /** A candidate kept for ranking: its place, embedding, pixels and current score. */
-interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number }
+interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number; h: number }
+
+/** One example of what to find: its place, its embeddings (keyed by variant: "id", the
+ * rotations "r1".."r7", the scales "s-1", "s+1"), its pixels and its view at the rough level. */
+interface Example { c: Vec3; vars: Map<string, Float32Array>; pix: Uint8Array; rough: Float32Array | null }
+
+/** Every place compared, with its score (for the heat map): centres (z, y, x, working level)
+ * and scores. Scores are set when a place is compared; the kept candidates' scores follow
+ * re-ranking (feedback, more examples), the rest keep the score they had when dropped. */
+export interface Heat { c: Int32Array; s: Float32Array; n: number; version: number }
+const HEAT_MAX = 6_000_000;  // places remembered (16 bytes each)
+
+/** The mean of unit vectors, each part (PART dims) made unit length again. */
+function unitMean(vs: Float32Array[]): Float32Array {
+  const q = new Float32Array(vs[0].length);
+  for (const v of vs) for (let d = 0; d < q.length; d++) q[d] += v[d];
+  return unitParts(q);
+}
+function unitParts(q: Float32Array): Float32Array {
+  for (let o = 0; o < q.length; o += PART) {
+    let n = 0;
+    for (let d = o; d < Math.min(q.length, o + PART); d++) n += q[d] * q[d];
+    n = Math.sqrt(n) || 1;
+    for (let d = o; d < Math.min(q.length, o + PART); d++) q[d] /= n;
+  }
+  return q;
+}
 
 /** How candidates are compared with the query (test 5 measured each on labelled EM). */
 export interface MatchOptions {
@@ -61,6 +100,7 @@ export interface MatchOptions {
   rotations: boolean;  // also the query rotated/flipped 8 ways, best match counts
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
+  combine?: "mean" | "any";  // several examples: their mean (default), or the best match among them
 }
 /** How far apart hits must be, in boxes (patch sides): from the query, and from each other
  * (1 = no overlap). */
@@ -95,7 +135,8 @@ export class Search {
   state: State;
   query: Vec3;
   private qvars: Float32Array[] = [];  // the query's embeddings (variants), feedback applied
-  private q0vars: Float32Array[] = []; // the same before feedback
+  private q0vars: Float32Array[] = []; // the same before feedback: the mean of the examples'
+  private examples: Example[] = [];
   private sum: Float64Array | null = null;  // running sum of candidate embeddings (for "adapt")
   private good: number[] = [];       // item ids
   private bad: number[] = [];
@@ -126,13 +167,46 @@ export class Search {
     this.bytes0 = src.bytesRead;
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
                    tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
-                   scanSeconds: 0, firstHitSeconds: null, rough: null };
+                   scanSeconds: 0, firstHitSeconds: null, rough: null, examples: 1 };
+    this.ready = new Promise((r) => (this.setReady = r));
   }
+  private ready: Promise<void>;
+  private setReady!: () => void;
 
   on(f: (s: State) => void) { this.listeners.push(f); }
   /** The searched region (working-level voxels) and the tiles read so far (tile indices). */
   get regionBox(): [Vec3, Vec3] { return this.region; }
   readTiles(): Vec3[] { return this.readList; }
+  /** The examples' places and pixels (the first is the query clicked). */
+  exampleCenters(): Vec3[] { return this.examples.map((e) => e.c); }
+  examplePixels(): Uint8Array[] { return this.examples.map((e) => e.pix); }
+  /** Every place compared so far and its score (see Heat). */
+  heat(): Heat { return { c: this.hc, s: this.hs, n: this.hn, version: this.hv }; }
+  private hc = new Int32Array(3 * 4096);
+  private hs = new Float32Array(4096);
+  private hn = 0;
+  private hv = 0;
+  private heatAdd(c: Vec3, s: number): number {
+    if (this.hn >= HEAT_MAX) return -1;
+    if (this.hn === this.hs.length) {
+      const n = Math.min(HEAT_MAX, 2 * this.hs.length), hc = new Int32Array(3 * n), hs = new Float32Array(n);
+      hc.set(this.hc); hs.set(this.hs); this.hc = hc; this.hs = hs;
+    }
+    this.hc.set(c, 3 * this.hn);
+    this.hs[this.hn] = s;
+    return this.hn++;
+  }
+  /** Whether a patch centred at `c` overlaps an example (those are not hits). */
+  private atExample(c: Vec3): boolean {
+    const h = this.opt.patch / 2, dz = this.src.dims === 3 ? h : 1;
+    return this.examples.some((e) => Math.abs(c[0] - e.c[0]) < dz && Math.abs(c[1] - e.c[1]) < h && Math.abs(c[2] - e.c[2]) < h);
+  }
+  /** The example nearest `c` (null if every example is a drawing). */
+  nearestExample(c: Vec3): Vec3 | null {
+    const d3 = this.src.dims === 3, dist = (e: Vec3) => Math.hypot(d3 ? c[0] - e[0] : 0, c[1] - e[1], c[2] - e[2]);
+    const at = this.examples.map((e) => e.c).filter(placed);
+    return at.length ? at.reduce((b, e) => (dist(e) < dist(b) ? e : b)) : null;
+  }
   private readList: Vec3[] = [];
   private rough: Rough | null = null;
   private medN = -1;
@@ -143,17 +217,27 @@ export class Search {
   }
 
   /** Pixels of the patch (y, x, c as bytes) of hit or query `i` (-1 = the query). */
-  patchPixels(i: number): Uint8Array { return i < 0 ? this.qpix : this.items.get(i)!.pix; }
+  patchPixels(i: number): Uint8Array { return i < 0 ? this.examples[0].pix : this.items.get(i)!.pix; }
   center(i: number): Vec3 { return this.items.get(i)!.c; }
-  private qpix!: Uint8Array;
 
   private get tokenMode() { return this.opt.method === "tokens"; }
 
   /** What the query embeds from: its patch, or (token mode) the crop twice its size around it,
    * whose central window of tokens is the query. */
-  private async queryBase(): Promise<Patch> {
-    if (!this.tokenMode) return (await this.readPatches([this.query])).patches[0];
-    return (await this.readPatches([this.query], 2 * this.opt.patch)).patches[0];
+  private async queryBase(c: Vec3): Promise<Patch> {
+    if (!placed(c)) return this.sketchBase();
+    if (!this.tokenMode) return (await this.readPatches([c])).patches[0];
+    return (await this.readPatches([c], 2 * this.opt.patch)).patches[0];
+  }
+
+  /** The drawing as the model sees it: itself, or (token mode) in the middle of a crop twice its
+   * size filled with its median. */
+  private sketchBase(): Patch {
+    const sk = this.opt.sketch!, P = sk.size, C = sk.channels;
+    if (!this.tokenMode) return sk;
+    const S = 2 * P, med = median(sk.data), d = new Float32Array(S * S * C).fill(med);
+    for (let y = 0; y < P; y++) d.set(sk.data.subarray(y * P * C, (y + 1) * P * C), ((y + P / 2) * S + P / 2) * C);
+    return { data: d, size: S, channels: C };
   }
 
   private async readPatches(centers: Vec3[], side = this.opt.patch): Promise<{ patches: Patch[]; bytes: Uint8Array[] }> {
@@ -175,12 +259,17 @@ export class Search {
 
   async start() {
     try {
-      const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3;
-      const q = await this.readPatches([this.query]);
-      if (missingFraction(q.patches[0].data) > 0.05)
-        throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
-      this.qpix = q.bytes[0];
-      this.q0vars = await this.queryVariants(await this.queryBase());
+      const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3, sk = this.opt.sketch;
+      let pix: Uint8Array;
+      if (sk) pix = Uint8Array.from(sk.data);
+      else {
+        const q = await this.readPatches([this.query]);
+        if (missingFraction(q.patches[0].data) > 0.05)
+          throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
+        pix = q.bytes[0];
+      }
+      this.examples = [{ c: sk ? NOWHERE : this.query, vars: await this.queryVariants(await this.queryBase(sk ? NOWHERE : this.query), this.query), pix, rough: null }];
+      this.combine();
       this.qvars = this.q0vars.map((v) => Float32Array.from(v));
       // 1. cheap scan of the coarse level
       const C = this.chooseCoarse(), f = 2 ** (C - W);
@@ -192,9 +281,13 @@ export class Search {
       const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
       const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
       const vol = await this.src.read(C, [clo[0] - m[0], clo[1] - m[1], clo[2] - m[2]], [chi[0] + m[0], chi[1] + m[1], chi[2] + m[2]]);
-      const qc: Vec3 = [d3 ? Math.floor(this.query[0] / f) : 0, Math.floor(this.query[1] / f), Math.floor(this.query[2] / f)];
-      const qlo: Vec3 = [qc[0] - Math.floor(w[0] / 2) - m[0], qc[1] - Math.floor(w[1] / 2) - m[1], qc[2] - Math.floor(w[2] / 2) - m[2]];
-      const qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
+      let qr: Region;
+      if (sk) qr = sketchWindow(sk, w, m);  // the drawing shrunk to the coarse level, its median around it
+      else {
+        const qc: Vec3 = [d3 ? Math.floor(this.query[0] / f) : 0, Math.floor(this.query[1] / f), Math.floor(this.query[2] / f)];
+        const qlo: Vec3 = [qc[0] - Math.floor(w[0] / 2) - m[0], qc[1] - Math.floor(w[1] / 2) - m[1], qc[2] - Math.floor(w[2] / 2) - m[2]];
+        qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
+      }
       const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: fillMissing(luminance(qr)), qdims: qr.shape, window: w, margin: m };
       const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
       this.scanInfo = { score: res.score, dims: res.dims, clo, f, w };
@@ -216,10 +309,12 @@ export class Search {
           }
       this.order = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k.split(",").map(Number) as Vec3);
       await this.setupRough();
+      this.setReady();
       this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
       await this.resume();
     } catch (e) {
       this.emit({ phase: "error", message: String((e as Error).message ?? e) });
+      this.setReady();
     }
   }
 
@@ -249,8 +344,8 @@ export class Search {
     };
     const cs: Vec3[] = [];
     for (const z of grid(0)) for (const y of grid(1)) for (const x of grid(2)) {
-      if (Math.abs(z - this.query[0]) < (d3 ? h : 1) && Math.abs(y - this.query[1]) < h && Math.abs(x - this.query[2]) < h) continue;
-      cs.push([z, y, x]);
+      const c: Vec3 = [z, y, x];
+      if (!this.atExample(c)) cs.push(c);
     }
     if (!cs.length) return;
     const zs = cs.map((c) => c[0]), z0 = Math.min(...zs), z1 = Math.max(...zs) + 1;
@@ -319,7 +414,7 @@ export class Search {
         this.sum ??= new Float64Array(e[k].length);
         for (let d = 0; d < e[k].length; d++) this.sum[d] += e[k][d];
         const id = this.nextId++;
-        this.items.set(id, { c: q.c, e: e[k], pix: Uint8Array.from(q.patch.data), s: -Infinity });
+        this.items.set(id, { c: q.c, e: e[k], pix: Uint8Array.from(q.patch.data), s: -Infinity, h: this.heatAdd(q.c, -Infinity) });
         fresh.push(id);
       });
       this.embedded += batch.length;
@@ -369,11 +464,13 @@ export class Search {
     if (!k) return;
     const L = W + k, p = P / 2 ** k, f = 2 ** k;
     const q = this.query, c: Vec3 = [d3 ? Math.floor(q[0] / f) : 0, Math.floor(q[1] / f), Math.floor(q[2] / f)];
-    const base = (await this.readAt(L, [c], p))[0];
+    const base = this.opt.sketch ? shrink(this.opt.sketch, p) : (await this.readAt(L, [c], p))[0];
     if (!base || !informative(base.data)) return;
     const q0 = (await this.emb.embed([base]))[0];
+    this.examples[0].rough = q0;
     // 2-D grids are not overlapping (stride P at the working level): sample every other place
-    this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], scores: [], cursor: 0, cells: 0 };
+    this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], scores: [], cursor: 0, cells: 0,
+                   scored: new Set(), ranked: new Set(this.order.map(tileKey)) };
   }
 
   /** p x p patches at level L around `centers` (z, y, x of that level). */
@@ -387,15 +484,31 @@ export class Search {
     }));
   }
 
-  /** One round of the rough pass: the next tiles of the cheap order, every place in them at
-   * level L through the model, each tile scored by its best place. */
+  /** One round of the rough pass: the level-L chunks under the next tiles of the cheap order,
+   * every place in them through the model, each tile under them scored by its best place. */
   private async roughRound() {
     const r = this.rough!, W = this.opt.working, d3 = this.src.dims === 3, ch = this.src.levels[W].chunk, f = 2 ** r.k;
+    const chL = this.src.levels[r.L].chunk;
     const [rlo, rhi] = this.region, h = r.p / 2;
     const perTile = (d3 ? Math.max(1, ch[0] / f / r.stride) : 1) * Math.max(1, ch[1] / f / r.stride) * Math.max(1, ch[2] / f / r.stride);
     const budget = this.emb.provider === "webgpu" ? 768 : 48;  // places per round
-    const tiles = this.order.slice(r.cursor, r.cursor + Math.max(1, Math.floor(budget / perTile)));
-    r.cursor += tiles.length;
+    const tiles: Vec3[] = [], seen = new Set<string>();
+    while (r.cursor < this.order.length && tiles.length * perTile < budget) {
+      const t = this.order[r.cursor++];
+      if (r.scored.has(tileKey(t))) continue;
+      // the level-L chunk holding this tile's corner, and every ranked tile under that chunk
+      const cl = [0, 1, 2].map((a) => Math.floor((t[a] * ch[a]) / f / chL[a]));
+      const ck = cl.join(",");
+      if (seen.has(ck)) continue;
+      seen.add(ck);
+      const lo = [0, 1, 2].map((a) => Math.floor((cl[a] * chL[a] * f) / ch[a]));
+      const hi = [0, 1, 2].map((a) => Math.max(lo[a] + 1, Math.ceil(((cl[a] + 1) * chL[a] * f) / ch[a])));
+      for (let z = lo[0]; z < hi[0]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[2]; x < hi[2]; x++) {
+        const u: Vec3 = [z, y, x], k = tileKey(u);
+        if (r.ranked.has(k) && !r.scored.has(k)) { r.scored.add(k); tiles.push(u); }
+      }
+      if (!r.scored.has(tileKey(t))) { r.scored.add(tileKey(t)); tiles.push(t); }  // (chunk sizes that do not line up)
+    }
     const cells: { ti: number; c: Vec3 }[] = [];
     const axis = (a: number, t: Vec3) => {  // places of this tile along axis a, at level L
       const lo = Math.max(t[a] * ch[a], rlo[a]) / f, hi = Math.min((t[a] + 1) * ch[a], rhi[a]) / f, out: number[] = [];
@@ -432,18 +545,57 @@ export class Search {
     const p = (await this.readAt(r.L, [c], r.p))[0];
     if (!p || !informative(p.data)) return;
     (good ? r.goods : r.bads).push((await this.emb.embed([p]))[0]);
+    this.roughRequery();
+  }
+
+  /** The rough query from the examples and the marks (as applyFeedback), and the tiles not
+   * read yet scored again with it. */
+  private roughRequery() {
+    const r = this.rough!;
     const q = Float32Array.from(r.q0);
     const add = (vs: Float32Array[], w: number) => { for (const v of vs) for (let d = 0; d < q.length; d++) q[d] += (w / vs.length) * v[d]; };
     add(r.goods, 0.75);
     add(r.bads, -0.25);
-    for (let o = 0; o < q.length; o += PART) {
-      let n = 0;
-      for (let d = o; d < o + PART; d++) n += q[d] * q[d];
-      n = Math.sqrt(n) || 1;
-      for (let d = o; d < o + PART; d++) q[d] /= n;
+    r.q = unitParts(q);
+    for (const t of r.pool) t.s = t.embs.reduce((m, e) => Math.max(m, similarity(e, r.q, "whole")), -Infinity);
+  }
+
+  /** Another example of what to find. The query becomes the mean of the examples' embeddings
+   * (each part unit length again), as Earth Engine's similarity search and similar.earth
+   * combine several points; the rough pass's query too. The coarse scan that ranked the tiles
+   * first stays the first example's. Resolves to an error message, or null when added. */
+  async addExample(c: Vec3): Promise<string | null> {
+    await this.ready;
+    if (this.state.phase === "error") return this.state.message;
+    if (this.atExample(c)) return "that place is already an example";
+    const q = await this.readPatches([c]);
+    if (missingFraction(q.patches[0].data) > 0.05) return "no data there";
+    const ex: Example = { c, vars: await this.queryVariants(await this.queryBase(c), c), pix: q.bytes[0], rough: null };
+    this.examples.push(ex);
+    this.combine();
+    this.applyFeedback();
+    const r = this.rough;
+    if (r) {
+      const f = 2 ** r.k, rc: Vec3 = [this.src.dims === 3 ? Math.floor(c[0] / f) : 0, Math.floor(c[1] / f), Math.floor(c[2] / f)];
+      const p = (await this.readAt(r.L, [rc], r.p))[0];
+      if (p && informative(p.data)) ex.rough = (await this.emb.embed([p]))[0];
+      r.q0 = unitMean(this.examples.flatMap((e) => (e.rough ? [e.rough] : [])));
+      this.roughRequery();
     }
-    r.q = q;
-    for (const t of r.pool) t.s = t.embs.reduce((m, e) => Math.max(m, similarity(e, q, "whole")), -Infinity);
+    this.rank();
+    this.emit({ examples: this.examples.length });
+    return null;
+  }
+
+  /** The query's variants as the mean of the examples' (a variant an example lacks, such as a
+   * scale off the pyramid, is the mean of those that have it), or with "any" every example's
+   * variants side by side (a candidate scores its best match among them). Test 9: the mean
+   * gains with more examples on vesicles, "any" did better on mito. */
+  private combine() {
+    if ((this.opt.match ?? DEFAULT_MATCH).combine === "any") { this.q0vars = this.examples.flatMap((e) => [...e.vars.values()]); return; }
+    const keys: string[] = [];
+    for (const e of this.examples) for (const k of e.vars.keys()) if (!keys.includes(k)) keys.push(k);
+    this.q0vars = keys.map((k) => unitMean(this.examples.flatMap((e) => (e.vars.has(k) ? [e.vars.get(k)!] : []))));
   }
 
   /** Drop all but the best `keep` candidates (marked ones stay), so memory stays bounded however
@@ -518,8 +670,7 @@ export class Search {
       if (cyN < p.ylo || cyN >= p.yhi || cxN < p.xlo || cxN >= p.xhi) continue;
       const a = r * (Gx + 1) + c, b = r * (Gx + 1) + c + WIN, cc = (r + WIN) * (Gx + 1) + c, dd = (r + WIN) * (Gx + 1) + c + WIN;
       if (bad[dd] - bad[b] - bad[cc] + bad[a] > 0) continue;  // touches a crop with no data
-      const q = this.query;
-      if (Math.abs(p.z - q[0]) < (d3 ? h : 1) && Math.abs(cyN - q[1]) < h && Math.abs(cxN - q[2]) < h) continue;  // the query itself
+      if (this.atExample([p.z, cyN, cxN])) continue;  // an example itself
       let n = 0;
       for (let d = 0; d < D; d++) { const x = I[dd * D + d] - I[b * D + d] - I[cc * D + d] + I[a * D + d]; v[d] = x; n += x * x; }
       n = Math.sqrt(n) || 1;
@@ -531,6 +682,7 @@ export class Search {
       let s = -Infinity;
       for (const qv of this.qvars) s = Math.max(s, similarity(e, qv, m.focus));
       cand.push({ r, c, s, e });
+      if (r % (WIN / 2) === 0 && c % (WIN / 2) === 0) this.heatAdd([p.z, Math.round(cyN), Math.round(cxN)], s);  // the heat map at half a box
     }
     // the best windows of this plane, not overlapping, become candidates
     cand.sort((x, y) => y.s - x.s);
@@ -548,7 +700,7 @@ export class Search {
         for (let k = 0; k < C; k++) { const val = p.region.data[src + k]; pix[(y * P + x) * C + k] = val === val ? val : 0; }
       }
       const id = this.nextId++;
-      this.items.set(id, { c: [p.z, cy, cx], e: w.e, pix, s: w.s });
+      this.items.set(id, { c: [p.z, cy, cx], e: w.e, pix, s: w.s, h: this.heatAdd([p.z, cy, cx], w.s) });
       fresh.push(id);
     }
     return fresh;
@@ -558,9 +710,9 @@ export class Search {
 
   /** The query's embeddings: the patch itself, plus its 7 other rotations/flips and its view at
    * half and double the field (one level finer and coarser), as the match options ask. */
-  private async queryVariants(base: Patch): Promise<Float32Array[]> {
+  private async queryVariants(base: Patch, at: Vec3): Promise<Map<string, Float32Array>> {
     const m = this.opt.match ?? DEFAULT_MATCH, P = base.size, C = base.channels;
-    const patches: Patch[] = [base];
+    const patches: Patch[] = [base], keys = ["id"];
     if (m.rotations) {
       const rot = (d: Float32Array, k: number, flip: boolean) => {  // k quarter turns, optional mirror
         const o = new Float32Array(d.length);
@@ -571,20 +723,21 @@ export class Search {
         }
         return o;
       };
-      for (const flip of [false, true]) for (let k = 0; k < 4; k++) if (k || flip) patches.push({ data: rot(base.data, k, flip), size: P, channels: C });
+      for (const flip of [false, true]) for (let k = 0; k < 4; k++) if (k || flip) { patches.push({ data: rot(base.data, k, flip), size: P, channels: C }); keys.push(`r${patches.length - 1}`); }
     }
-    if (m.scales) {
-      const W = this.opt.working, h = P / 2, q = this.query, d3 = this.src.dims === 3;  // P: the base's side
+    if (m.scales && placed(at)) {  // a drawing has no other levels
+      const W = this.opt.working, h = P / 2, q = at, d3 = this.src.dims === 3;  // P: the base's side
       for (const L of [W - 1, W + 1]) {
         if (L < 0 || L >= this.src.levels.length) continue;
         const f = 2 ** (W - L), c = [d3 ? Math.floor(q[0] * f) : 0, Math.floor(q[1] * f), Math.floor(q[2] * f)];
         const r = await this.src.read(L, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
-        if (informative(r.data)) patches.push({ data: r.data, size: P, channels: r.channels });
+        if (informative(r.data)) { patches.push({ data: r.data, size: P, channels: r.channels }); keys.push(L < W ? "s-1" : "s+1"); }
       }
     }
-    if (!this.tokenMode) return this.emb.embed(patches);
+    const keyed = (vs: Float32Array[]) => new Map(vs.map((v, i) => [keys[i], v]));
+    if (!this.tokenMode) return keyed(await this.emb.embed(patches));
     // token mode: each variant's crop through the model, its central window of tokens averaged
-    return (await this.emb.tokens(patches)).map(({ tokens, g, D }) => {
+    return keyed((await this.emb.tokens(patches)).map(({ tokens, g, D }) => {
       const v = new Float32Array(D), o = (g - WIN) / 2;
       for (let y = o; y < o + WIN; y++) for (let x = o; x < o + WIN; x++)
         for (let d = 0; d < D; d++) v[d] += tokens[(y * g + x) * D + d];
@@ -593,7 +746,7 @@ export class Search {
       n = Math.sqrt(n) || 1;
       for (let d = 0; d < D; d++) v[d] /= n;
       return v;
-    });
+    }));
   }
 
   /** New match options: re-rank everything embedded so far (variants re-embedded if needed). */
@@ -601,7 +754,11 @@ export class Search {
     const old = this.opt.match ?? DEFAULT_MATCH;
     this.opt.match = m;
     if (m.rotations !== old.rotations || m.scales !== old.scales) {
-      this.q0vars = await this.queryVariants(await this.queryBase());
+      for (const e of this.examples) e.vars = await this.queryVariants(await this.queryBase(e.c), e.c);
+      this.combine();
+      this.applyFeedback();
+    } else if (m.combine !== old.combine) {
+      this.combine();
       this.applyFeedback();
     }
     this.rank();
@@ -635,13 +792,7 @@ export class Search {
       };
       add(this.good, 0.75);
       add(this.bad, -0.25);
-      for (let o = 0; o < q.length; o += PART) {
-        let n = 0;
-        for (let d = o; d < o + PART; d++) n += q[d] * q[d];
-        n = Math.sqrt(n) || 1;
-        for (let d = o; d < o + PART; d++) q[d] /= n;
-      }
-      return q;
+      return unitParts(q);
     });
   }
 
@@ -659,15 +810,17 @@ export class Search {
       let s = -Infinity;
       for (const q of this.qvars) s = Math.max(s, similarity(it.e, q, m.focus, mu));
       it.s = s;
+      if (it.h >= 0) this.hs[it.h] = s;
     }
+    this.hv++;
     const scored = [...this.items.entries()].sort((a, b) => b[1].s - a[1].s);
     const hits: Hit[] = [];
     const bad = new Set(this.bad);
-    const sp = this.opt.spread ?? DEFAULT_SPREAD, q = this.query, gap = sp.between * P, far = sp.fromQuery * P;
+    const sp = this.opt.spread ?? DEFAULT_SPREAD, gap = sp.between * P, far = sp.fromQuery * P;
     for (const [i, { s, c }] of scored) {
-      if (bad.has(i)) continue;
-      // at least `fromQuery` boxes from the query (straight-line, in voxels of the search level)
-      if (far > 0 && Math.hypot(d3 ? c[0] - q[0] : 0, c[1] - q[1], c[2] - q[2]) < far) continue;
+      if (bad.has(i) || (this.examples.length > 1 && this.atExample(c))) continue;
+      // at least `fromQuery` boxes from every example (straight-line, in voxels of the search level)
+      if (far > 0 && this.examples.some((e) => Math.hypot(d3 ? c[0] - e.c[0] : 0, c[1] - e.c[1], c[2] - e.c[2]) < far)) continue;
       if (hits.every((h) => Math.abs(h.center[1] - c[1]) >= gap || Math.abs(h.center[2] - c[2]) >= gap || (d3 && Math.abs(h.center[0] - c[0]) >= gap))) {
         hits.push({ center: c, score: s, index: i });
         if (hits.length >= N) break;
@@ -675,6 +828,35 @@ export class Search {
     }
     this.state.hits = hits;
   }
+}
+
+/** The median of the defined values of `a`. */
+function median(a: Float32Array): number {
+  const v = Array.from(a).filter((x) => x === x).sort((x, y) => x - y);
+  return v.length ? v[v.length >> 1] : 0;
+}
+
+/** A patch shrunk to `p` x `p` (area average). */
+function shrink(pt: Patch, p: number): Patch {
+  const P = pt.size, C = pt.channels, k = P / p, d = new Float32Array(p * p * C);
+  for (let y = 0; y < p; y++) for (let x = 0; x < p; x++) for (let c = 0; c < C; c++) {
+    let s = 0, n = 0;
+    for (let yy = Math.floor(y * k); yy < Math.ceil((y + 1) * k); yy++)
+      for (let xx = Math.floor(x * k); xx < Math.ceil((x + 1) * k); xx++) { s += pt.data[(yy * P + xx) * C + c]; n++; }
+    d[(y * p + x) * C + c] = s / n;
+  }
+  return { data: d, size: p, channels: C };
+}
+
+/** A drawing as the cheap scan's query window: shrunk to the window, repeated through its
+ * depth, with `margin` of its median around it. */
+function sketchWindow(sk: Patch, w: Dims, m: Dims): Region {
+  const lum = luminance({ data: sk.data, shape: [1, sk.size, sk.size], channels: sk.channels });
+  const s = shrink({ data: lum, size: sk.size, channels: 1 }, w[1]), med = median(lum);
+  const shape: Vec3 = [w[0] + 2 * m[0], w[1] + 2 * m[1], w[2] + 2 * m[2]], d = new Float32Array(shape[0] * shape[1] * shape[2]).fill(med);
+  for (let z = m[0]; z < m[0] + w[0]; z++) for (let y = 0; y < w[1]; y++)
+    d.set(s.data.subarray(y * w[2], (y + 1) * w[2]), (z * shape[1] + y + m[1]) * shape[2] + m[2]);
+  return { data: d, shape, channels: 1 };
 }
 
 /** Token mode: one plane of a tile, its crops and where its windows may be centred. */

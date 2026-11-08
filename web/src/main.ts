@@ -3,12 +3,15 @@
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
-import { Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
+import { NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
+import type { Patch } from "./embedder.ts";
+import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { PrecomputedSource } from "./precomputed.ts";
+import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -173,27 +176,27 @@ function toScreen(fx: number, fy: number) {
 
 function overlays() {
   if (ngv) {  // the boxes as a Neuroglancer annotation layer
-    if (!search) { if (ngBoxesKey !== "none") { ngBoxesKey = "none"; ngv.setBoxes(null, []); } return; }
+    if (!search) { if (ngBoxesKey !== "none") { ngBoxesKey = "none"; ngv.setBoxes([], []); } return; }
     const st = search.state, f = 2 ** st.working, side = st.patch * f, d3 = src?.dims === 3;
     const box = (c: Vec3, lab?: string) => ({ fz: d3 ? c[0] * f : 0, fy: c[1] * f, fx: c[2] * f, side, label: lab });
-    const key = `${st.hits.length}|${st.hits[0]?.index}|${st.hits[st.hits.length - 1]?.index}`;
+    const key = `${st.examples}|${st.hits.length}|${st.hits[0]?.index}|${st.hits[st.hits.length - 1]?.index}`;
     if (key === ngBoxesKey) return;  // a state restore per change, not per frame
     ngBoxesKey = key;
-    ngv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, `#${k + 1}`)));
+    ngv.setBoxes(queryBoxes(box), st.hits.slice(0, 30).map((h, k) => box(h.center, `#${k + 1}`)));
     return;
   }
   if (gv) {  // the boxes as outlines on the globe
-    if (!search) { gv.setBoxes(null, []); return; }
+    if (!search) { gv.setBoxes([], []); return; }
     const st = search.state, f = 2 ** st.working, side = st.patch * f;
     const box = (c: Vec3, lab?: string) => ({ fx: c[2] * f, fy: c[1] * f, side, label: lab });
-    gv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
+    gv.setBoxes(queryBoxes(box), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
     return;
   }
   if (olv) {  // the boxes as OpenLayers features
-    if (!search) { olv.setBoxes(null, []); return; }
+    if (!search) { olv.setBoxes([], []); return; }
     const st = search.state, f = 2 ** st.working, side = st.patch * f;
     const box = (c: Vec3, lab?: string) => ({ fx: c[2] * f, fy: c[1] * f, side, label: lab });
-    olv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
+    olv.setBoxes(queryBoxes(box), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
     return;
   }
   if (!search || !src) return;
@@ -207,7 +210,12 @@ function overlays() {
     if (label) { ctx.fillStyle = color; ctx.font = `${Math.max(11, 12 * (window.devicePixelRatio || 1))}px system-ui`; ctx.fillText(label, x - side / 2 + 2, y - side / 2 - 3); }
   };
   st.hits.slice(0, 30).forEach((h, k) => box(h.center, "#ffd24a", String(k + 1)));
-  box(search.query, "#5ab0ff", "query", 3);
+  search.exampleCenters().forEach((c, k) => { if (c.every(Number.isFinite)) box(c, "#5ab0ff", k ? `example ${k + 1}` : "query", 3); });
+}
+
+/** The query's boxes, one per example ("query", then "example 2", ...). */
+function queryBoxes<B>(box: (c: Vec3, label?: string) => B): B[] {
+  return search ? search.exampleCenters().flatMap((c, k) => (c.every(Number.isFinite) ? [box(c, k ? `example ${k + 1}` : "query")] : [])) : [];
 }
 
 /** The level a click searches at (the one on screen, leaving room for coarser levels). */
@@ -380,7 +388,7 @@ canvas.addEventListener("pointermove", (e) => {
 canvas.addEventListener("pointerup", (e) => {
   if (drag && !drag.moved) {
     const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-    query((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr);
+    query((e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr, e.shiftKey);
   }
   drag = null;
 });
@@ -488,7 +496,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   hover.style.display = tiled ? "none" : "block";
   if (volume) {
     ngv = new NgViewer(canvas.parentElement!, s as OmeZarrSource | PrecomputedSource, { cx: v.cx, cy: v.cy, z: v.z ?? view.z, scale: v.scale }, hover, {
-      click: (fz, fy, fx) => queryAt(fx, fy, fz),
+      click: (fz, fy, fx, add) => queryAt(fx, fy, fz, add),
       hoverBox: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy, fz) => showCursor(fx, fy, fz),
@@ -498,14 +506,14 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   }
   if (tiled) {
     olv = new OlViewer(olDiv, s as TileSource, v, {
-      click: (fx, fy) => queryAt(fx, fy),
+      click: (fx, fy, add) => queryAt(fx, fy, undefined, add),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy) => showCursor(fx, fy),
     });
   }
   $("attrib").textContent = `${s.name}: ${sizeText(s)}` + (s.attribution ? `. Data: ${s.attribution}` : "");
-  $("hint").textContent = (p?.note ? p.note + " " : "") + "Drag to pan, scroll to zoom, click to search.";
+  $("hint").textContent = (p?.note ? p.note + " " : "") + "Drag to pan, scroll to zoom, click to search; shift-click adds another example.";
   $("hint").classList.remove("gone");
   $("dsname").textContent = p ? p.label : s.name;
   const [z0, y0, x0] = s.levels[0].shape;
@@ -616,6 +624,11 @@ function clearSearch() {
   $<HTMLCanvasElement>("qcanvas").getContext("2d")?.clearRect(0, 0, 999, 999);
   $("link").style.display = "none";
   $("wheresec").hidden = true;
+  olv?.setHeat(null);
+  heatCache = null;
+  qDrawn = "";
+  setAdding(false);
+  $<HTMLButtonElement>("addex").disabled = true;
   render();
 }
 $("clear").addEventListener("click", () => { clearSearch(); idle(); });
@@ -645,27 +658,64 @@ function regionFor(W: number, P: number): [Vec3, Vec3] {
   return around(1);
 }
 
-function query(px: number, py: number) {  // canvas viewer: device pixels to full resolution
-  queryAt(view.cx + (px - canvas.width / 2) * view.scale, view.cy + (py - canvas.height / 2) * view.scale);
+function query(px: number, py: number, add = false) {  // canvas viewer: device pixels to full resolution
+  queryAt(view.cx + (px - canvas.width / 2) * view.scale, view.cy + (py - canvas.height / 2) * view.scale, undefined, add);
 }
 
-function queryAt(fx: number, fy: number, fz?: number) {
+const combineText = () => ($<HTMLSelectElement>("combine").value === "any" ? "any one of them" : "their mean");
+/** A short message over the image for a few seconds. */
+let toastTimer = 0;
+function toast(msg: string) {
+  const h = $("hint");
+  h.textContent = msg;
+  h.classList.remove("gone");
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => h.classList.add("gone"), 3500);
+}
+
+// more examples of the same thing: shift-click, or "+ example" and then a click (one example)
+let adding = false;
+function setAdding(on: boolean) {
+  adding = on;
+  $("addex").classList.toggle("on", on);
+  $("stage").classList.toggle("adding", on);
+}
+$("addex").addEventListener("click", () => setAdding(!adding));
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") setAdding(false); });
+
+function addExampleAt(fx: number, fy: number, fz?: number) {
+  const s = search!, W = s.state.working, P = s.state.patch, f = 2 ** W, L = src!.levels[W].shape;
+  const c: Vec3 = [src!.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
+  if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { toast("too close to the edge"); return; }
+  toast(`adding example ${s.state.examples + 1}\u2026`);
+  s.addExample(c).then((err) => toast(err ?? `${s.state.examples} examples: hits now match ${combineText()}`));
+}
+
+function queryAt(fx: number, fy: number, fz?: number, add = false) {
   if (!src) return;
-  const s = src, n = s.levels.length;
+  if ((add || adding) && search && search.state.phase !== "error") { setAdding(false); addExampleAt(fx, fy, fz); return; }
+  const s = src;
   const P = Number($<HTMLSelectElement>("patch").value);
   const W = searchLevel();   // search at the level being viewed (as the hover box shows)
   const f = 2 ** W;
   const c: Vec3 = [s.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
+  begin(c, W, P);
+}
+
+/** A new search for the box at `c` (level W, side P), or for a drawing. */
+function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
+  const s = src!;
   clearSearch();
   warm();
   $("hint").classList.add("gone");
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
-                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(),
+                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
                                    roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
   $<HTMLButtonElement>("clear").disabled = false;
+  $<HTMLButtonElement>("addex").disabled = false;
   let queued = false;
   const me = search;
   search.on(() => {  // at most one panel update per frame, always with the latest state
@@ -676,8 +726,7 @@ function queryAt(fx: number, fy: number, fz?: number) {
   search.start();
 }
 
-function drawPatch(cv: HTMLCanvasElement, pix: Uint8Array, P: number, C: number) {
-  cv.width = P; cv.height = P;
+function patchImage(pix: Uint8Array, P: number, C: number): ImageData {
   const img = new ImageData(P, P);
   for (let i = 0; i < P * P; i++) {
     img.data[4 * i] = pix[i * C];
@@ -685,7 +734,21 @@ function drawPatch(cv: HTMLCanvasElement, pix: Uint8Array, P: number, C: number)
     img.data[4 * i + 2] = pix[i * C + (C === 3 ? 2 : 0)];
     img.data[4 * i + 3] = 255;
   }
-  cv.getContext("2d")!.putImageData(img, 0, 0);
+  return img;
+}
+function drawPatch(cv: HTMLCanvasElement, pix: Uint8Array, P: number, C: number) {
+  cv.width = P; cv.height = P;
+  cv.getContext("2d")!.putImageData(patchImage(pix, P, C), 0, 0);
+}
+/** The query's examples side by side in a square (one: the patch itself). */
+let qDrawn = "";
+function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: number) {
+  const n = pixs.length, g = Math.ceil(Math.sqrt(n));
+  cv.width = g * P; cv.height = g * P;
+  const ctx2 = cv.getContext("2d")!;
+  ctx2.fillStyle = "#0b0e12"; ctx2.fillRect(0, 0, cv.width, cv.height);
+  pixs.forEach((pix, i) => ctx2.putImageData(patchImage(pix, P, C), (i % g) * P, Math.floor(i / g) * P));
+  cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
 }
 
 const fmt = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} KB`);
@@ -697,7 +760,11 @@ const num = (v: number) => v.toLocaleString("en-US");
 function panel(st: State) {
   if (!search || !src) return;
   const s = search, C = src.channels, P = st.patch;
-  if (st.phase !== "query") { drawPatch($<HTMLCanvasElement>("qcanvas"), s.patchPixels(-1), P, C); $("qcanvas").classList.remove("none"); }
+  if (st.phase !== "query" && qDrawn !== `${st.examples}`) {
+    drawExamples($<HTMLCanvasElement>("qcanvas"), s.examplePixels(), P, C);
+    $("qcanvas").classList.remove("none");
+    qDrawn = `${st.examples}`;
+  }
   // tiles read, discounted by the patches still waiting to be compared
   const frac = st.tilesTotal ? (st.tilesRead / st.tilesTotal) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
   const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : (100 * frac).toFixed(2);
@@ -713,7 +780,9 @@ function panel(st: State) {
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `read in the order of the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
                                                          : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
-    `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}`,
+    st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " (a drawing and places)" : ""} (shift-click adds more): hits match ${combineText()}`
+      : s.opt.sketch ? "searching for your drawing; shift-click adds a real example"
+      : `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}; shift-click adds another example`,
   ];
   $("status").textContent = lines.filter(Boolean).join("\n");
   ($("bar").firstElementChild as HTMLElement).style.width = `${(100 * frac).toFixed(2)}%`;
@@ -724,11 +793,13 @@ function panel(st: State) {
   const box = $("hits");
   const sp = spread();
   $("hitcount").textContent = !st.hits.length ? "" : `${st.hits.length} best` + (sp.between > 1 ? `, ${sp.between} boxes apart` : ", no overlaps")
-    + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the query` : "");
+    + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "");
   if (!st.hits.length) return;
   if (box.querySelector(".empty")) box.innerHTML = "";
-  const q = s.query;
-  const shown = st.hits.map((h, rank) => ({ h, rank, d: distance(h.center, q, st.working) }));
+  const shown = st.hits.map((h, rank) => {
+    const near = s.nearestExample(h.center);
+    return { h, rank, d: near ? distance(h.center, near, st.working) : { v: 0, text: "" } };
+  });
   if (hitSort !== "best") shown.sort((a, b) => (hitSort === "near" ? a.d.v - b.d.v : b.d.v - a.d.v));
   shown.forEach(({ h, rank, d }, k) => {
     let el = hitEls[k];
@@ -765,6 +836,7 @@ let wherePanels: { a: number; b: number; x0: number; y0: number; sa: number; sb:
 function drawWhere(st: State) {
   if (!search || !src || !st.tilesTotal) { $("wheresec").hidden = true; return; }
   $("wheresec").hidden = false;
+  $("heatimg").hidden = !olv;  // the heat over the image: 2-D maps
   const dpr = window.devicePixelRatio || 1, W = st.working, f = 2 ** W, ch = src.levels[W].chunk, d3 = src.dims === 3;
   const [rlo, rhi] = search.regionBox, ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
   // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
@@ -780,16 +852,22 @@ function drawWhere(st: State) {
   whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
   const g = whereCv.getContext("2d")!;
   g.clearRect(0, 0, whereCv.width, whereCv.height);
-  const tiles = search.readTiles(), view = currentView();
+  const tiles = search.readTiles(), view = currentView(), heat = heatImages(st);
   wherePanels.forEach((p, k) => {
     const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
-    if (specs[k].name) { g.fillStyle = "#5f6977"; g.font = `${10.5 * dpr}px system-ui`; g.fillText(specs[k].name, p.x0, p.y0 - 4 * dpr); }
+    if (specs[k].name) {  // the long label if it fits over the panel, else the axes, else none
+      g.fillStyle = "#5f6977"; g.font = `${10.5 * dpr}px system-ui`;
+      const room = p.w + (k < wherePanels.length - 1 ? gap * 0.8 : cw - p.x0 - p.w), short = specs[k].name.replace(/^.*\((.*)\)$/, "$1");
+      const text = g.measureText(specs[k].name).width <= room ? specs[k].name : g.measureText(short).width <= room ? short : "";
+      if (text) g.fillText(text, p.x0, p.y0 - 4 * dpr);
+    }
     g.fillStyle = "#0b0e12"; g.fillRect(p.x0, p.y0, p.w, p.h);
     g.strokeStyle = "#313946"; g.lineWidth = dpr; g.strokeRect(p.x0, p.y0, p.w, p.h);
     g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();  // everything inside the region's outline
     g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
     for (const t of tiles) g.fillRect(X(t[p.a] * ch[p.a]), Y(t[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
     g.globalAlpha = 1;
+    if (heat?.[k]) { g.imageSmoothingEnabled = false; g.drawImage(heat[k], Math.round(p.x0), Math.round(p.y0)); }
     if (view) {  // what is on screen: a rectangle from above, the slice from the side
       g.strokeStyle = "#ffffffcc"; g.lineWidth = dpr;
       if (p.a === 0) { g.beginPath(); g.moveTo(X(view.z / f), Y(view.y0 / f)); g.lineTo(X(view.z / f), Y(view.y1 / f)); g.stroke(); }
@@ -799,12 +877,55 @@ function drawWhere(st: State) {
       g.fillStyle = "#ffd24a";
       g.beginPath(); g.arc(X(hh.center[p.a]), Y(hh.center[p.b]), (i < 3 ? 3.2 : 2.2) * dpr, 0, 7); g.fill();
     });
-    const q = search!.query;
     g.strokeStyle = "#5ab0ff"; g.lineWidth = 2 * dpr;
-    g.beginPath(); g.arc(X(q[p.a]), Y(q[p.b]), 4.5 * dpr, 0, 7); g.stroke();
+    for (const q of search!.exampleCenters()) if (q.every(Number.isFinite)) { g.beginPath(); g.arc(X(q[p.a]), Y(q[p.b]), 4.5 * dpr, 0, 7); g.stroke(); }
     g.restore();
   });
 }
+
+// ---------------------------------------------------------------------------------------
+// the similarity heat: every place compared, coloured by its score (the best `top` share of
+// scores, faint to solid), in the map above and, on 2-D maps, over the image
+// ---------------------------------------------------------------------------------------
+const heatTop = $<HTMLInputElement>("heattop"), heatOn = $<HTMLInputElement>("heaton"), heatOp = $<HTMLInputElement>("heatop");
+$("heatgrad").style.background = HEAT_GRADIENT;
+let heatCache: { key: string; ver: number; n: number; at: number; imgs: HTMLCanvasElement[] } | null = null;
+let heatTimer = 0;
+/** The heat pictures for the map's panels, rebuilt at most about once a second while the
+ * search runs (and at once when the settings or the map's size change). */
+function heatImages(st: State): HTMLCanvasElement[] | null {
+  const s = search!, h = s.heat();
+  if (!h.n) return null;
+  const top = Number(heatTop.value) / 100, onImg = !!olv && heatOn.checked;
+  const key = `${top}|${onImg}|${heatOp.value}|${wherePanels.map((p) => `${Math.round(p.w)}x${Math.round(p.h)}`).join()}`;
+  const now = performance.now(), c = heatCache;
+  if (c && c.key === key && ((c.ver === h.version && c.n === h.n) || now - c.at < 1000)) {
+    if (!(c.ver === h.version && c.n === h.n) && !heatTimer)  // changed meanwhile: once more later
+      heatTimer = window.setTimeout(() => { heatTimer = 0; scheduleWhere(); }, 1000 - (now - c.at));
+    return c.imgs;
+  }
+  const [lo, hi] = heatRange(h, top), [rlo, rhi] = s.regionBox, P = st.patch, f = 2 ** st.working;
+  const foot = src!.dims === 3 || s.opt.method === "tokens" ? P / 2 : P;  // the spacing of the places compared
+  const imgs = wherePanels.map((p, k) => {
+    const w = Math.max(1, Math.round(p.w)), ht = Math.max(1, Math.round(p.h));
+    return heatCanvas(heatGrid(h, w, ht, p.a, p.b, rlo, p.sa, p.sb, foot), w, ht, lo, hi, c?.imgs[k]);
+  });
+  if (olv) {  // over the image: one cell per place, coarser if the region is huge
+    if (!onImg) olv.setHeat(null);
+    else {
+      const ext = [rhi[1] - rlo[1], rhi[2] - rlo[2]], cell = foot * Math.max(1, Math.ceil(Math.sqrt((ext[0] / foot) * (ext[1] / foot) / 4e6)));
+      const gw = Math.ceil(ext[1] / cell), gh = Math.ceil(ext[0] / cell);
+      const cv = heatCanvas(heatGrid(h, gw, gh, 2, 1, rlo, 1 / cell, 1 / cell, foot), gw, gh, lo, hi);
+      olv.setHeat({ canvas: cv, x0: rlo[2] * f, y0: rlo[1] * f, x1: (rlo[2] + gw * cell) * f, y1: (rlo[1] + gh * cell) * f }, Number(heatOp.value) / 100);
+    }
+  }
+  $("heatlo").textContent = lo.toFixed(2);
+  $("heathi").textContent = hi.toFixed(2);
+  $("heatval").textContent = `${heatTop.value}%`;
+  heatCache = { key, ver: h.version, n: h.n, at: now, imgs };
+  return imgs;
+}
+for (const el of [heatTop, heatOn, heatOp]) el.addEventListener("input", () => { $("heatval").textContent = `${heatTop.value}%`; if (search) drawWhere(search.state); });
 let whereQueued = false;
 /** Redraw the map at the next frame (the view moved). */
 function scheduleWhere() {
@@ -857,9 +978,10 @@ function goTo(i: number) {
 // match options (test 5 compared them on labelled EM; see README "How matching works")
 function matchOptions(): MatchOptions {
   return { focus: $<HTMLSelectElement>("focus").value as Focus, rotations: $<HTMLInputElement>("rot").checked,
-           scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked };
+           scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked,
+           combine: $<HTMLSelectElement>("combine").value as "mean" | "any" };
 }
-for (const id of ["focus", "rot", "scl", "adapt"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
+for (const id of ["focus", "rot", "scl", "adapt", "combine"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
 function spread(): Spread { return { fromQuery: Number($<HTMLSelectElement>("far").value), between: Number($<HTMLSelectElement>("between").value) }; }
 for (const id of ["far", "between"]) $(id).addEventListener("change", () => search?.setSpread(spread()));
 let hitSort = "best";
@@ -870,15 +992,15 @@ $("hitsort").addEventListener("click", (e) => {
   for (const b of $("hitsort").querySelectorAll("button")) b.classList.toggle("on", b.dataset.k === k);
   if (search) panel(search.state);
 });
-$("method").addEventListener("change", () => {  // candidates are embedded differently: search again
-  if (search) { const q = search.query, f = 2 ** search.state.working; queryAt(q[2] * f, q[1] * f, q[0] * f); }
-});
+/** The same query again (same place or drawing, level and box), as a new search. */
+function again() { if (search) begin(search.query, search.state.working, search.state.patch, search.opt.sketch); }
+$("method").addEventListener("change", again);  // candidates are embedded differently: search again
 $("detail").addEventListener("change", async () => {
   const det = $<HTMLSelectElement>("detail");
   det.dataset.touched = "1";
   emb.input = Number(det.value);
   await warmUp();
-  if (search) { const q = search.query, f = 2 ** search.state.working; queryAt(q[2] * f, q[1] * f, q[0] * f); }  // embeddings differ: search again
+  again();  // embeddings differ: search again
 });
 
 // the map / globe toggle (planetary mosaics)
@@ -896,7 +1018,7 @@ globeBtn.addEventListener("click", async () => {
     globeBtn.textContent = "map";
     olDiv.style.display = "none"; globeDiv.style.display = "block";
     gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
-      click: (fx, fy) => queryAt(fx, fy),
+      click: (fx, fy, add) => queryAt(fx, fy, undefined, add),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy) => showCursor(fx, fy),
@@ -905,8 +1027,61 @@ globeBtn.addEventListener("click", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------------------
+// drawing what to find: a box at the search level, drawn in the view's own greys
+// ---------------------------------------------------------------------------------------
+const pad = new SketchPad($<HTMLCanvasElement>("padcv"));
+let padAt: { W: number; P: number } | null = null;
+/** The view's centre at level W (z, y, x). */
+function viewCentre(W: number): Vec3 {
+  const v = currentView()!, f = 2 ** W;
+  return [src!.dims === 3 ? Math.floor(v.z / f) : 0, Math.floor((v.y0 + v.y1) / 2 / f), Math.floor((v.x0 + v.x1) / 2 / f)];
+}
+/** Luminance of the box of side `side` at the view's centre, level W. */
+async function viewLum(W: number, side: number): Promise<Float32Array> {
+  const c = viewCentre(W), h = side / 2;
+  const r = await src!.read(W, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
+  const n = side * side, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = r.channels === 3 ? 0.299 * r.data[3 * i] + 0.587 * r.data[3 * i + 1] + 0.114 * r.data[3 * i + 2] : r.data[i];
+  return out;
+}
+async function openPad() {
+  if (!src) return;
+  const W = searchLevel(), P = Number(patchSel.value);
+  padAt = { W, P };
+  $("pad").hidden = false;
+  $("padhelp").textContent = `One box of ${patchSize()}, in this data's own greys (from the view).`;
+  pad.reset(P, { dark: 40, mid: 128, light: 215, noise: 0 });
+  try {  // the greys and grain of what is on screen
+    const side = Math.min(4 * P, 512);
+    pad.reset(P, tonesOf(await viewLum(W, side), side, side));
+  } catch { /* the defaults */ }
+}
+$("drawbtn").addEventListener("click", () => ($("pad").hidden ? openPad() : ($("pad").hidden = true)));
+$("padx").addEventListener("click", () => { $("pad").hidden = true; });
+$("padtone").addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest("button")?.dataset.t as Tone | undefined;
+  if (!t) return;
+  pad.tone = t;
+  for (const b of $("padtone").querySelectorAll("button")) b.classList.toggle("on", b.dataset.t === t);
+});
+$("padsize").addEventListener("click", (e) => {
+  const r = (e.target as HTMLElement).closest("button")?.dataset.r;
+  if (!r) return;
+  pad.radius = Number(r);
+  for (const b of $("padsize").querySelectorAll("button")) b.classList.toggle("on", b.dataset.r === r);
+});
+$("padblank").addEventListener("click", () => pad.reset(pad.P, pad.tones));
+$("padview").addEventListener("click", async () => { if (padAt) pad.load(await viewLum(padAt.W, padAt.P)); });
+$("padgo").addEventListener("click", () => {
+  if (!src || !padAt) return;
+  const sk = pad.patch(src.channels, $<HTMLInputElement>("padtex").checked);
+  $("pad").hidden = true;
+  begin(NOWHERE, padAt.W, padAt.P, sk);
+});
+
 // for debugging from the console
-(window as any).coresample = { get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; } };
+(window as any).coresample = { get src() { return src; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; } };
 
 // start
 const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");

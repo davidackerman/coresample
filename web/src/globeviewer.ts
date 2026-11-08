@@ -42,7 +42,7 @@ export class GlobeViewer {
   ready: Promise<void>;
 
   constructor(private div: HTMLElement, private src: TileSource, private spec: GlobeSpec, init: { cx: number; cy: number; scale: number },
-              private on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void;
+              private on: { click: (fx: number, fy: number, add: boolean) => void; hover: () => { side: number; text: string } | null; moved: () => void;
                             pointer?: (fx: number, fy: number) => void }) {
     this.W = src.levels[0].shape[2];
     this.H = src.levels[0].shape[1];
@@ -76,14 +76,16 @@ export class GlobeViewer {
     }));
     this.goTo(init.cx, init.cy, init.scale, false);
     const h = new C.ScreenSpaceEventHandler(this.viewer.scene.canvas);
-    h.setInputAction((e: any) => {
+    const click = (add: boolean) => (e: any) => {
       const ll = this.pick(e.position);
       if (!ll) return;
       this.lastMouse = null;
       this.refreshHover();
       const [fx, fy] = this.pixel(ll[0], ll[1]);
-      this.on.click(fx, fy);
-    }, C.ScreenSpaceEventType.LEFT_CLICK);
+      this.on.click(fx, fy, add);
+    };
+    h.setInputAction(click(false), C.ScreenSpaceEventType.LEFT_CLICK);
+    h.setInputAction(click(true), C.ScreenSpaceEventType.LEFT_CLICK, C.KeyboardEventModifier.SHIFT);  // another example
     h.setInputAction((e: any) => {
       this.lastMouse = e.endPosition;
       this.refreshHover();
@@ -160,11 +162,11 @@ export class GlobeViewer {
     this.hoverE = this.entity({ fx, fy, side: hb.side, label: hb.text }, "#5ab0ff", true);
   }
 
-  setBoxes(query: GBox | null, hits: GBox[]) {
+  setBoxes(queries: GBox[], hits: GBox[]) {
     if (!this.viewer) return;
     for (const e of this.boxes) this.viewer.entities.remove(e);
     this.boxes = hits.map((b) => this.entity(b, "#ffd24a"));
-    if (query) this.boxes.push(this.entity(query, "#5ab0ff"));
+    for (const q of queries) this.boxes.push(this.entity(q, "#5ab0ff"));
   }
 
   destroy() { this.viewer?.destroy(); this.div.innerHTML = ""; }

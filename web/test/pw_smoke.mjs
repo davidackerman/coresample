@@ -18,7 +18,7 @@ page.on("pageerror", (e) => console.log("[pageerror]", e.message));
 page.on("crash", () => console.log("[crash] renderer crashed"));
 browser.on("disconnected", () => console.log("[disconnected]"));
 const t0 = Date.now(), el = (s) => ((Date.now() - t0) / 1000).toFixed(0) + "s";
-await page.goto(`http://127.0.0.1:5180/?d=${preset}`);
+await page.goto(preset.includes("=") ? `http://127.0.0.1:5180/?${preset}` : `http://127.0.0.1:5180/?d=${preset}`);
 await page.waitForTimeout(Number(process.env.PW_WAIT ?? 15000));
 await page.screenshot({ path: `${out}_view.png` });
 console.log(el(), "model:", await page.textContent("#model"));
