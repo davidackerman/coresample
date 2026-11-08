@@ -15,6 +15,7 @@ export interface Preset {
   patch?: number;
   note?: string;
   globe?: GlobeSpec;  // planetary mosaics: also viewable on a globe
+  geo?: "equirect" | "mercator";  // how pixels map to longitude and latitude (maps of a body)
   layers?: Layer[];   // more layers over the same space (segmentations, other channels): shown in Neuroglancer
 }
 
@@ -41,7 +42,7 @@ const S2_W = 256 * 2 ** 14;
 
 export const PRESETS: Preset[] = [
   {
-    id: "mars-ctx", label: "Mars: CTX global mosaic", detail: "5 m/px, Murray Lab / Esri", kind: "planetary map", count: CTX_W * CTX_H,
+    id: "mars-ctx", geo: "equirect", label: "Mars: CTX global mosaic", detail: "5 m/px, Murray Lab / Esri", kind: "planetary map", count: CTX_W * CTX_H,
     open: async () => new TileSource({
       name: "Mars CTX mosaic (Murray Lab)", tileSize: 512, maxZoom: 12, width: CTX_W, height: CTX_H, channels: 1,
       unit: "m", pixelSize: 5.05, attribution: "NASA/JPL/MSSS/Caltech Murray Lab/Esri (OnMars)",
@@ -54,7 +55,7 @@ export const PRESETS: Preset[] = [
     note: "Start: Jezero crater. Click a crater, dune field or channel.",
   },
   {
-    id: "moon-wac", label: "Moon: LRO WAC global mosaic", detail: "100 m/px, NASA Trek", kind: "planetary map", count: WAC_W * WAC_H,
+    id: "moon-wac", geo: "equirect", label: "Moon: LRO WAC global mosaic", detail: "100 m/px, NASA Trek", kind: "planetary map", count: WAC_W * WAC_H,
     open: async () => new TileSource({
       name: "Moon LRO WAC (NASA Trek)", tileSize: 256, maxZoom: 8, width: WAC_W, height: WAC_H, channels: 1,
       unit: "m", pixelSize: 100, attribution: "NASA/GSFC/Arizona State University (NASA Trek)",
@@ -85,7 +86,7 @@ export const PRESETS: Preset[] = [
     view: { cx: 7287, cy: 4220, scale: 8 },
   },
   {
-    id: "s2", label: "Earth: Sentinel-2 cloudless 2024", detail: "10 m/px, EOX", kind: "satellite", count: S2_W * S2_W,
+    id: "s2", geo: "mercator", label: "Earth: Sentinel-2 cloudless 2024", detail: "10 m/px, EOX", kind: "satellite", count: S2_W * S2_W,
     open: async () => new TileSource({
       name: "Sentinel-2 cloudless 2024 (EOX)", tileSize: 256, maxZoom: 14, channels: 3, unit: "m", pixelSize: 9.55,
       attribution: "Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024), CC BY-NC-SA 4.0",

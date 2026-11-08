@@ -283,6 +283,16 @@ export let decodeImage = async (blob: Blob): Promise<{ data: Uint8ClampedArray; 
 };
 export function setDecoder(f: typeof decodeImage) { decodeImage = f; }
 
+/** Whether an image file arrived whole: a PNG ends with its IEND chunk, a JPEG with its
+ * end-of-image marker; anything else is taken as whole. */
+async function complete(b: Blob): Promise<boolean> {
+  if (b.size < 16) return false;
+  const head = new Uint8Array(await b.slice(0, 4).arrayBuffer()), tail = new Uint8Array(await b.slice(b.size - 12).arrayBuffer());
+  if (head[0] === 0x89 && head[1] === 0x50) return tail[4] === 0x49 && tail[5] === 0x45 && tail[6] === 0x4e && tail[7] === 0x44;  // ...IEND + CRC
+  if (head[0] === 0xff && head[1] === 0xd8) { for (let i = 0; i < 11; i++) if (tail[i] === 0xff && tail[i + 1] === 0xd9) return true; return false; }
+  return true;
+}
+
 export class TileSource implements Source {
   name: string;
   dims: 2 | 3 = 2;
@@ -337,6 +347,9 @@ export class TileSource implements Source {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const blob = await r.blob();
             this.bytesRead += blob.size;
+            // some caches serve cut-off images (Esri's Mars CTX at zooms 7 and 11): drawn, the
+            // missing rows are black bands. Such a tile is rebuilt from its parent's quarter.
+            if (!(await complete(blob))) return (await this.fromParent(zoom, x, y)) ?? blob;
             return blob;
           } catch (e) {
             // a server error without CORS headers reaches the page as a failed fetch (TypeError):
@@ -350,6 +363,22 @@ export class TileSource implements Source {
       this.blobs.set(key, b, 1);
     }
     return b;
+  }
+
+  /** Tile (zoom, x, y) cut from the matching quarter of its parent (or grandparent...),
+   * scaled up to a tile: for tiles the server sent cut off. Browser only (null elsewhere). */
+  private async fromParent(zoom: number, x: number, y: number, depth = 1): Promise<Blob | null> {
+    if (typeof OffscreenCanvas === "undefined" || depth > 3 || zoom - depth < (this.spec.minZoom ?? 0)) return null;
+    const pz = zoom - depth, k = 2 ** depth, parent = await this.blob(pz, Math.floor(x / k), Math.floor(y / k));
+    if (!parent || !(await complete(parent))) return this.fromParent(zoom, x, y, depth + 1);
+    try {
+      const img = await createImageBitmap(parent), ts = this.spec.tileSize, part = img.width / k;
+      const cv = new OffscreenCanvas(ts, ts), g = cv.getContext("2d")!;
+      g.imageSmoothingEnabled = true;
+      g.drawImage(img, (x % k) * part, (y % k) * part, part, part, 0, 0, ts, ts);
+      img.close();
+      return await cv.convertToBlob({ type: "image/png" });
+    } catch { return null; }
   }
 
   private tile(zoom: number, x: number, y: number) {

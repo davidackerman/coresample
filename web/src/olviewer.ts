@@ -37,7 +37,8 @@ export class OlViewer {
   private dpr = window.devicePixelRatio || 1;
 
   constructor(target: HTMLElement, src: TileSource, init: { cx: number; cy: number; scale: number },
-              on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void }) {
+              on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void;
+                    pointer?: (fx: number, fy: number) => void }) {
     const s = src.spec, ts = s.tileSize;
     const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
     const extent = [0, -H, W, 0];
@@ -89,7 +90,9 @@ export class OlViewer {
       if (e.dragging) return;
       this.lastPixel = e.pixel;
       this.refreshHover();
+      on.pointer?.(e.coordinate[0], -e.coordinate[1]);
     });
+    this.map.on("moveend", () => on.moved());  // panned as well as zoomed
     target.addEventListener("pointerleave", () => { this.lastPixel = null; this.refreshHover(); });
     // zooming changes the search level (and so the box) without the pointer moving
     this.view.on("change:resolution", () => { this.refreshHover(); on.moved(); });

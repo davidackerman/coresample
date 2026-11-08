@@ -129,6 +129,7 @@ let gen = 0;
 const off = document.createElement("canvas");
 async function render() {
   if (!src) return;
+  saveView();
   if (olv || ngv || gv) { overlays(); return; }
   const g = ++gen;
   const L = displayLevel();
@@ -291,6 +292,75 @@ function drawHover() {
   hctx.fillText(label, lx, ly);
 }
 
+// ---------------------------------------------------------------------------------------
+// coordinates: under the cursor, for the query, typed in to go somewhere
+// ---------------------------------------------------------------------------------------
+/** Longitude and latitude of a full-resolution pixel on a map of a body, or null. */
+function lonLat(fx: number, fy: number): [number, number] | null {
+  if (!src || !preset?.geo) return null;
+  const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
+  if (preset.geo === "equirect") return [(fx / W) * 360 - 180, 90 - (fy / H) * 180];
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * fy) / W))) * 180) / Math.PI;  // web mercator: a square world
+  return [(fx / W) * 360 - 180, lat];
+}
+function pixelOf(lon: number, lat: number): [number, number] | null {
+  if (!src || !preset?.geo) return null;
+  const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
+  if (preset.geo === "equirect") return [((lon + 180) / 360) * W, ((90 - lat) / 180) * H];
+  const r = (lat * Math.PI) / 180;
+  return [((lon + 180) / 360) * W, ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * W];
+}
+/** "x 2,999,500  y 833,700  z 2,666" plus degrees on a body or the physical position. */
+function coordText(fx: number, fy: number, fz?: number): string {
+  if (!src) return "";
+  const n = (v: number) => Math.round(v).toLocaleString("en-US");
+  let t = `x ${n(fx)}  y ${n(fy)}` + (src.dims === 3 && fz !== undefined ? `  z ${n(fz)}` : "");
+  const ll = lonLat(fx, fy);
+  if (ll) t += `  (${Math.abs(ll[1]).toFixed(3)}\u00b0 ${ll[1] >= 0 ? "N" : "S"}, ${Math.abs(ll[0]).toFixed(3)}\u00b0 ${ll[0] >= 0 ? "E" : "W"})`;
+  else {
+    const sc = src.levels[0].scale, parts = [fx * sc[2], fy * sc[1], ...(src.dims === 3 && fz !== undefined ? [fz * sc[0]] : [])].map(fmtLen);
+    if (parts.every(Boolean)) t += `  (${parts.join(", ")})`;
+  }
+  return t;
+}
+function showCursor(fx: number, fy: number, fz?: number) { $("cursor").textContent = coordText(fx, fy, fz); }
+$("goto").addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key !== "Enter" || !src) return;
+  const v = ($<HTMLInputElement>("goto").value.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+  if (v.length < 2) return;
+  let fx = v[0], fy = v[1], fz = v[2];
+  // on a map of a body, two numbers that look like degrees are latitude, longitude
+  if (preset?.geo && v.length === 2 && Math.abs(v[0]) <= 90 && Math.abs(v[1]) <= 360) {
+    const p = pixelOf(v[1] > 180 ? v[1] - 360 : v[1], v[0]);
+    if (p) [fx, fy] = p;
+  }
+  jumpTo(fx, fy, fz);
+});
+/** Centre every viewer on a full-resolution position, keeping the zoom. */
+function jumpTo(fx: number, fy: number, fz?: number) {
+  if (!src) return;
+  const scale = zoomScale(), z = fz ?? (ngv ? ngv.center().z : view.z);
+  if (gv) gv.goTo(fx, fy, scale);
+  if (olv) olv.goTo(fx, fy, scale);
+  if (ngv) ngv.goTo(fx, fy, z, null);
+  view.cx = fx; view.cy = fy;
+  if (src.dims === 3) { view.z = Math.round(z); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
+  render();
+  saveView();
+}
+/** The view in the address bar (?v=x,y,z,scale), so a link opens this place. */
+let viewTimer = 0;
+function saveView() {
+  clearTimeout(viewTimer);
+  viewTimer = window.setTimeout(() => {
+    const v = currentView();
+    if (!v || !src) return;
+    const u = new URL(location.href);
+    u.searchParams.set("v", [(v.x0 + v.x1) / 2, (v.y0 + v.y1) / 2, v.z, zoomScale()].map((x) => +x.toFixed(2)).join(","));
+    history.replaceState(null, "", u);
+  }, 600);
+}
+
 // pan / zoom / click
 let drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
 canvas.addEventListener("pointerdown", (e) => {
@@ -300,6 +370,7 @@ canvas.addEventListener("pointerdown", (e) => {
 canvas.addEventListener("pointermove", (e) => {
   const rr = canvas.getBoundingClientRect(), dd = window.devicePixelRatio || 1;
   mouse = { x: (e.clientX - rr.left) * dd, y: (e.clientY - rr.top) * dd };
+  showCursor(view.cx + (mouse.x - canvas.width / 2) * view.scale, view.cy + (mouse.y - canvas.height / 2) * view.scale, view.z);
   drawHover();
   if (!drag) return;
   const dpr = window.devicePixelRatio || 1, dx = (e.clientX - drag.x) * dpr, dy = (e.clientY - drag.y) * dpr;
@@ -419,7 +490,8 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
     ngv = new NgViewer(canvas.parentElement!, s as OmeZarrSource | PrecomputedSource, { cx: v.cx, cy: v.cy, z: v.z ?? view.z, scale: v.scale }, hover, {
       click: (fz, fy, fx) => queryAt(fx, fy, fz),
       hoverBox: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
-      moved: () => drawHover(),
+      moved: () => { drawHover(); saveView(); },
+      pointer: (fx, fy, fz) => showCursor(fx, fy, fz),
     }, p?.layers ?? []);
     hover.parentElement!.appendChild(hover);  // the hover canvas above the viewer's frame
     $("zbar").style.display = "none";  // Neuroglancer moves through z itself
@@ -428,7 +500,8 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
     olv = new OlViewer(olDiv, s as TileSource, v, {
       click: (fx, fy) => queryAt(fx, fy),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
-      moved: () => drawHover(),
+      moved: () => { drawHover(); saveView(); },
+      pointer: (fx, fy) => showCursor(fx, fy),
     });
   }
   $("attrib").textContent = `${s.name}: ${sizeText(s)}` + (s.attribution ? `. Data: ${s.attribution}` : "");
@@ -445,13 +518,21 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   fillLevels(s);
   const u = new URL(location.href);
   u.searchParams.set("d", p ? p.id : "custom");
+  u.searchParams.delete("v");  // a view belongs to its dataset
   history.replaceState(null, "", u);
   resize();
 }
 
+/** A view from the address bar (?v=x,y,z,scale), once, for the first dataset opened. */
+let startView: Preset["view"] | null = (() => {
+  const v = (new URL(location.href).searchParams.get("v") ?? "").split(",").map(Number);
+  return v.length === 4 && v.every(Number.isFinite) ? { cx: v[0], cy: v[1], z: v[2], scale: v[3] } : null;
+})();
+function takeStartView() { const v = startView; startView = null; return v; }
+
 async function openPreset(p: Preset) {
   $("phase").textContent = `Opening ${p.label}`;
-  try { await setSource(await p.open(), p.view, p); idle(); }
+  try { await setSource(await p.open(), takeStartView() ?? p.view, p); idle(); }
   catch (e) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; }
 }
 function idle() {
@@ -485,7 +566,7 @@ async function openCustom(text: string) {
       catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
     }
     const L0 = s.levels[0].shape;
-    await setSource(s, { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+    await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
     const u = new URL(location.href);  // a link that opens this data again
     u.searchParams.delete("d"); u.searchParams.set("url", text);
     history.replaceState(null, "", u);
@@ -630,6 +711,7 @@ function panel(st: State) {
     st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     st.coarse >= 0 ? `level ${st.working}, ranked by a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
+    `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}`,
   ];
   $("status").textContent = lines.filter(Boolean).join("\n");
   ($("bar").firstElementChild as HTMLElement).style.width = `${(100 * frac).toFixed(2)}%`;
@@ -677,43 +759,39 @@ function panel(st: State) {
 // (x-z), with the tiles read, the hits, the query and the view
 // ---------------------------------------------------------------------------------------
 const whereCv = $<HTMLCanvasElement>("where");
-let wherePanels: { a: number; b: number; x0: number; y0: number; s: number; w: number; h: number }[] = [];
+let wherePanels: { a: number; b: number; x0: number; y0: number; sa: number; sb: number; w: number; h: number }[] = [];
 function drawWhere(st: State) {
   if (!search || !src || !st.tilesTotal) { $("wheresec").hidden = true; return; }
   $("wheresec").hidden = false;
   const dpr = window.devicePixelRatio || 1, W = st.working, f = 2 ** W, ch = src.levels[W].chunk, d3 = src.dims === 3;
   const [rlo, rhi] = search.regionBox, ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
-  const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, gap = 16 * dpr;
-  const specs = d3 ? [{ a: 2, b: 1, name: "top (x-y)" }, { a: 2, b: 0, name: "side (x-z)" }] : [{ a: 2, b: 1, name: "" }];
-  wherePanels = [];
-  let y = 0;
-  for (const sp of specs) {
-    const sc = Math.min((cw - 2) / ext[sp.a], maxH / Math.max(1, ext[sp.b]));
-    const w = ext[sp.a] * sc, h = Math.max(6 * dpr, ext[sp.b] * sc);
-    wherePanels.push({ a: sp.a, b: sp.b, x0: (cw - w) / 2, y0: y + (sp.name ? 14 * dpr : 0), s: sc, w, h });
-    y += h + (sp.name ? 14 * dpr : 0) + gap;
-  }
-  whereCv.width = cw; whereCv.height = y - gap + 2;
-  whereCv.style.height = `${(y - gap + 2) / dpr}px`;
+  // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
+  // one scale across, y stretched to a readable height if the volume is thin in y
+  const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
+  const specs = d3 ? [{ a: 2, name: "from above (x, y)" }, { a: 0, name: "from the side (z, y)" }] : [{ a: 2, name: "" }];
+  const across = specs.reduce((t, sp) => t + ext[sp.a], 0);
+  const sa = Math.min((cw - 2 - gap * (specs.length - 1)) / across, maxH / Math.max(1, ext[1]));
+  const sb = Math.max(sa, minH / Math.max(1, ext[1])), h = ext[1] * sb, y0 = d3 ? top : 0;
+  let x = (cw - (across * sa + gap * (specs.length - 1))) / 2;
+  wherePanels = specs.map((sp) => { const w = ext[sp.a] * sa, p = { a: sp.a, b: 1, x0: x, y0, sa, sb, w, h }; x += w + gap; return p; });
+  whereCv.width = cw; whereCv.height = y0 + h + 2;
+  whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
   const g = whereCv.getContext("2d")!;
   g.clearRect(0, 0, whereCv.width, whereCv.height);
   const tiles = search.readTiles(), view = currentView();
   wherePanels.forEach((p, k) => {
-    const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.s, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.s;
+    const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
     if (specs[k].name) { g.fillStyle = "#5f6977"; g.font = `${10.5 * dpr}px system-ui`; g.fillText(specs[k].name, p.x0, p.y0 - 4 * dpr); }
     g.fillStyle = "#0b0e12"; g.fillRect(p.x0, p.y0, p.w, p.h);
     g.strokeStyle = "#313946"; g.lineWidth = dpr; g.strokeRect(p.x0, p.y0, p.w, p.h);
     g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();  // everything inside the region's outline
     g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
-    for (const t of tiles) {
-      const x = X(t[p.a] * ch[p.a]), yy = Y(t[p.b] * ch[p.b]);
-      g.fillRect(x, yy, Math.max(1, ch[p.a] * p.s), Math.max(1, ch[p.b] * p.s));
-    }
+    for (const t of tiles) g.fillRect(X(t[p.a] * ch[p.a]), Y(t[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
     g.globalAlpha = 1;
-    if (view) {  // what is on screen: a rectangle from above, the slice's span from the side
+    if (view) {  // what is on screen: a rectangle from above, the slice from the side
       g.strokeStyle = "#ffffffcc"; g.lineWidth = dpr;
-      if (p.b === 0) { g.beginPath(); g.moveTo(X(view.x0 / f), Y(view.z / f)); g.lineTo(X(view.x1 / f), Y(view.z / f)); g.stroke(); }
-      else g.strokeRect(X(view.x0 / f), Y(view.y0 / f), (view.x1 - view.x0) / f * p.s, (view.y1 - view.y0) / f * p.s);
+      if (p.a === 0) { g.beginPath(); g.moveTo(X(view.z / f), Y(view.y0 / f)); g.lineTo(X(view.z / f), Y(view.y1 / f)); g.stroke(); }
+      else g.strokeRect(X(view.x0 / f), Y(view.y0 / f), ((view.x1 - view.x0) / f) * p.sa, ((view.y1 - view.y0) / f) * p.sb);
     }
     st.hits.slice(0, 30).forEach((hh, i) => {
       g.fillStyle = "#ffd24a";
@@ -746,9 +824,10 @@ whereCv.addEventListener("click", (e) => {  // go to the place clicked, keeping 
   const px = (e.clientX - r.left) * dpr, py = (e.clientY - r.top) * dpr, f = 2 ** search.state.working;
   const p = wherePanels.find((q) => px >= q.x0 && px <= q.x0 + q.w && py >= q.y0 && py <= q.y0 + q.h);
   if (!p) return;
-  const [rlo] = search.regionBox, va = rlo[p.a] + (px - p.x0) / p.s, vb = rlo[p.b] + (py - p.y0) / p.s;
-  const v = currentView()!, cur = { x: (v.x0 + v.x1) / 2, y: (v.y0 + v.y1) / 2, z: v.z };
-  const fx = va * f, fy = p.b === 1 ? vb * f : cur.y, fz = p.b === 0 ? vb * f : cur.z, scale = zoomScale();
+  const [rlo] = search.regionBox, va = rlo[p.a] + (px - p.x0) / p.sa, vb = rlo[p.b] + (py - p.y0) / p.sb;
+  const v = currentView()!, cur = { x: (v.x0 + v.x1) / 2, z: v.z };
+  // from above: x and y; from the side: z and y (x stays)
+  const fx = p.a === 2 ? va * f : cur.x, fy = vb * f, fz = p.a === 0 ? va * f : cur.z, scale = zoomScale();
   if (gv) gv.goTo(fx, fy, scale);
   if (olv) olv.goTo(fx, fy, scale);
   if (ngv) ngv.goTo(fx, fy, fz, null);
@@ -817,7 +896,8 @@ globeBtn.addEventListener("click", async () => {
     gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
       click: (fx, fy) => queryAt(fx, fy),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
-      moved: () => drawHover(),
+      moved: () => { drawHover(); saveView(); },
+      pointer: (fx, fy) => showCursor(fx, fy),
     });
     try { await gv.ready; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
   }

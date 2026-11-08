@@ -65,6 +65,9 @@
   #hint { position: absolute; left: 12px; top: 12px; background: #000b; padding: 5px 10px; border-radius: 14px; color: var(--dim); max-width: 60%; pointer-events: none; font-size: 12px; transition: opacity .6s; }
   #hint.gone { opacity: 0; }
   #attrib { position: absolute; left: 12px; bottom: 8px; right: 12px; color: #aab; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }
+  #coords { position: absolute; right: 12px; bottom: 26px; display: flex; gap: 8px; align-items: center; background: #000b; padding: 3px 4px 3px 10px; border-radius: 14px; font-size: 11.5px; color: #cfd6df; font-variant-numeric: tabular-nums; }
+  #cursor:empty { display: none; }
+  #goto { width: 170px; padding: 2px 8px; font-size: 11.5px; border-radius: 10px; background: #0008; }
   #zbar { position: absolute; right: 12px; top: 12px; display: none; align-items: center; gap: 6px; background: #000b; padding: 5px 10px; border-radius: 14px; }
 
   /* side panel */
@@ -164,6 +167,8 @@
     <div id="hint">Drag to pan, scroll to zoom. Click to search for what is in the dashed box.</div>
     <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
     <div id="attrib"></div>
+    <div id="coords"><span id="cursor" title="Under the cursor: full-resolution pixels (and longitude/latitude or physical position)"></span>
+      <input id="goto" placeholder="go to: x, y[, z] or lat, lon" title="Pixels of the full-resolution image (x, y, and z for a volume); on Mars, the Moon and Earth also latitude, longitude in degrees"></div>
   </div>
   <aside>
     <div class="sec">
