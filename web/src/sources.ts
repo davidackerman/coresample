@@ -242,6 +242,9 @@ export interface TileSpec {
   link?: (zoom: number, x: number, y: number) => string | null;
   /** Requests in flight at once (a cutout service rate-limits; plain tile CDNs do not). */
   maxConcurrent?: number;
+  /** Zooms whose tiles are broken on the server (truncated, or error pages): the viewer skips
+   * them and searches read the next finer zoom, halved. */
+  skipZooms?: number[];
 }
 
 /** Decodes an image to RGBA pixels; the browser's decoder by default (tests swap it). */
@@ -336,6 +339,7 @@ export class TileSource implements Source {
   }
 
   async read(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
+    if (level > 0 && this.spec.skipZooms?.includes(this.spec.maxZoom - level)) return this.readHalved(level, lo, hi);
     const ts = this.spec.tileSize, ov = this.spec.overlap ?? 0;
     const zoom = this.spec.maxZoom - level;
     const shape: Vec3 = [1, hi[1] - lo[1], hi[2] - lo[2]];
@@ -367,6 +371,25 @@ export class TileSource implements Source {
         }));
     await Promise.all(jobs);
     return { data: out, shape, channels: C };
+  }
+
+  /** A level whose zoom the server breaks: the next finer level over twice the box, each 2 x 2
+   * block averaged (no data stays no data unless the block has some). */
+  private async readHalved(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
+    const fine = await this.read(level - 1, [0, lo[1] * 2, lo[2] * 2], [1, hi[1] * 2, hi[2] * 2]);
+    const C = this.channels, h = hi[1] - lo[1], w = hi[2] - lo[2], fw = w * 2;
+    const out = new Float32Array(h * w * C);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++)
+        for (let c = 0; c < C; c++) {
+          let sum = 0, n = 0;
+          for (const [dy, dx] of [[0, 0], [0, 1], [1, 0], [1, 1]]) {
+            const v = fine.data[((2 * y + dy) * fw + (2 * x + dx)) * C + c];
+            if (v === v) { sum += v; n++; }
+          }
+          out[(y * w + x) * C + c] = n ? sum / n : NaN;
+        }
+    return { data: out, shape: [1, h, w], channels: C };
   }
 
   link(level: number, center: Vec3): string | null {

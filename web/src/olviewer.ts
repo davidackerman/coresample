@@ -42,23 +42,27 @@ export class OlViewer {
     const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
     const extent = [0, -H, W, 0];
     const projection = new Projection({ code: `coresample:${src.name}`, units: "pixels", extent });
-    const resolutions = Array.from({ length: s.maxZoom + 1 }, (_, z) => 2 ** (s.maxZoom - z));
+    // the server's broken zooms left out: OpenLayers draws the neighbouring zooms there
+    const zooms = Array.from({ length: s.maxZoom + 1 }, (_, z) => z).filter((z) => !s.skipZooms?.includes(z));
+    const resolutions = zooms.map((z) => 2 ** (s.maxZoom - z));
     const tileGrid = new TileGrid({ extent, origin: [0, 0], resolutions, tileSize: ts });
     const tiles = new TileLayer({
       source: new TileImage({
         projection, tileGrid, transition: 150, wrapX: false,
-        tileUrlFunction: (c) => (c ? s.url(c[0], c[1], c[2]) : undefined),
+        tileUrlFunction: (c) => (c ? s.url(zooms[c[0]], c[1], c[2]) : undefined),
         // tiles come through the source's own cached fetch, so viewing and searching share
         // every download (and its retries and rate limit)
         tileLoadFunction: (tile, _url) => {
-          const [z, x, y] = tile.getTileCoord();
+          const [zi, x, y] = tile.getTileCoord(), z = zooms[zi];
           const img = (tile as ImageTile).getImage() as HTMLImageElement;
           src.blob(z, x, y).then((b) => {
             if (!b) { tile.setState(TileState.ERROR); return; }
+            // keep the object URL alive well past "load": Chrome decodes images lazily when they
+            // are drawn, and a URL revoked at load left tiles drawn only partly (cut off, black)
             const u = URL.createObjectURL(b);
-            img.onload = () => URL.revokeObjectURL(u);
-            img.onerror = () => { URL.revokeObjectURL(u); tile.setState(TileState.ERROR); };
+            img.onerror = () => tile.setState(TileState.ERROR);
             img.src = u;
+            setTimeout(() => URL.revokeObjectURL(u), 120_000);
           });
         },
         attributions: src.attribution,
