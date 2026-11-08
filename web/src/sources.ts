@@ -174,6 +174,13 @@ export class OmeZarrSource implements Source {
   /** Neuroglancer's global dimensions for this image (x, y and z in metres, at the finest
    * level), so a viewer can open at a place without first fitting the view to the data; null
    * when there are axes besides z, y, x and channel, or the unit is not a length. */
+  /** The axes the viewer should show, by its names for them: x and y, and z for a volume (an
+   * image with time or a z of extent 1 would otherwise open on its first three axes, t-z-y). */
+  ngDisplay(): string[] {
+    const name = (i: number) => this.axisInfo[i].name;
+    return this.dims === 3 && this.axes.z >= 0 ? [name(this.axes.x), name(this.axes.y), name(this.axes.z)] : [name(this.axes.x), name(this.axes.y)];
+  }
+
   ngDimensions(): Record<string, [number, string]> | null {
     const metres: Record<string, number> = { angstrom: 1e-10, nanometer: 1e-9, micrometer: 1e-6, millimeter: 1e-3, centimeter: 1e-2, meter: 1 };
     const names = this.axisInfo.map((a) => a.name.toLowerCase());
