@@ -299,19 +299,19 @@ embeddings for the tiles it has read (test 5's cache), so only the order differs
 queries; p@10 after reading a share of the tiles, and in brackets the download including what
 the order itself needed:
 
-| order | mito, 1% of tiles | mito, 5% | vesicles, 1% | vesicles, 5% |
-|---|---|---|---|---|
-| random | 0.06 (1.0%) | 0.27 (4.8%) | 0.76 (1.0%) | 0.81 (5.0%) |
-| cheap scan (the page before) | 0.33 (2.6%) | 0.41 (7.5%) | 0.79 (2.4%) | 0.83 (7.3%) |
-| model at W+1 | 0.43 (12.0%) | 0.51 (17.0%) | 0.79 (12.1%) | 0.80 (17.0%) |
-| **model at W+2** | **0.42 (2.6%)** | **0.53 (7.6%)** | 0.82 (2.4%) | 0.80 (7.3%) |
+| order | mito, 1% of tiles | mito, 5% | vesicles, 1% | vesicles, 5% | mito whole volume, 1% | 5% |
+|---|---|---|---|---|---|---|
+| random | 0.06 (1.0%) | 0.27 (4.8%) | 0.76 (1.0%) | 0.81 (5.0%) | 0.25 (1.0%) | 0.38 (5.0%) |
+| cheap scan (the page before) | 0.33 (2.6%) | 0.41 (7.5%) | 0.79 (2.4%) | 0.83 (7.3%) | 0.35 (2.6%) | 0.34 (8.0%) |
+| model at W+1 | 0.43 (12.0%) | 0.51 (17.0%) | 0.79 (12.1%) | 0.80 (17.0%) | 0.43 (12.3%) | 0.48 (18.0%) |
+| **model at W+2** | **0.42 (2.6%)** | **0.53 (7.6%)** | 0.82 (2.4%) | 0.80 (7.3%) | **0.41 (2.7%)** | **0.43 (8.4%)** |
 
-(Every tile read: p@10 0.48 mito, 0.81 vesicles.) **The model two levels up finds the mito
-tiles sooner than the cheap scan at the same download**: after 1% of the tiles it is already at
-the all-tiles precision. W+1 does as well but costs about 10% of the working level to look at.
-On vesicles every order is near the ceiling from the start (they are everywhere), so the order
-does not matter there. The whole-volume mito run is still going. The page now has this as the
-"rough pass" (GPU by default).
+(Every tile read: p@10 0.48 mito, 0.81 vesicles, 0.44 whole-volume mito.) **The model two
+levels up finds the mito tiles sooner than the cheap scan at the same download**, in the
+subvolume and in the whole volume: after 1% of the tiles it is at or near the all-tiles
+precision. W+1 does as well but costs about 10% of the working level to look at. On vesicles
+every order is near the ceiling from the start (they are everywhere), so the order does not
+matter there. The page has this as the "rough pass" (GPU by default).
 
 ## Test 9: several examples (follow-up)
 
