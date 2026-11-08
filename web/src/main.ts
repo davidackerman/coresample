@@ -663,7 +663,8 @@ function queryAt(fx: number, fy: number, fz?: number) {
   $("hint").classList.add("gone");
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
-                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread() });
+                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(),
+                                   roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
   $<HTMLButtonElement>("clear").disabled = false;
   let queued = false;
   const me = search;
@@ -710,7 +711,8 @@ function panel(st: State) {
   const lines = st.phase === "error" ? [st.message] : [
     st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
-    st.coarse >= 0 ? `level ${st.working}, ranked by a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
+    st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `read in the order of the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
+                                                         : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
     `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}`,
   ];
   $("status").textContent = lines.filter(Boolean).join("\n");
