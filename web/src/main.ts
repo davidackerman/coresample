@@ -4,6 +4,7 @@ import { PRESETS, type Preset } from "./datasets.ts";
 import { Embedder } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
 import { Search, coarseLevelFor, type State } from "./search.ts";
+import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
@@ -22,12 +23,16 @@ const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale
 let search: Search | null = null;
 let olv: OlViewer | null = null;  // OpenLayers for tile pyramids
 let ngv: NgViewer | null = null;
-let ngBoxesKey = "";  // Neuroglancer for OME-Zarr (2-D and 3-D); the canvas viewer only as a fallback
+let ngBoxesKey = "";
+let gv: GlobeViewer | null = null;  // CesiumJS globe for planetary mosaics (toggled)
+const globeDiv = document.createElement("div");
+globeDiv.style.cssText = "position:absolute;inset:0;display:none;background:#000";  // Neuroglancer for OME-Zarr (2-D and 3-D); the canvas viewer only as a fallback
 const olDiv = document.createElement("div");
 olDiv.style.cssText = "position:absolute;inset:0;display:none;background:#000";
 canvas.after(olDiv);
+olDiv.after(globeDiv);
 /** Full-resolution pixels per device pixel, whichever viewer is showing. */
-const zoomScale = () => (olv ? olv.scale() : ngv ? ngv.scale() : view.scale);
+const zoomScale = () => (gv ? gv.scale() : olv ? olv.scale() : ngv ? ngv.scale() : view.scale);
 let hitEls: HTMLElement[] = [];
 
 // ---------------------------------------------------------------------------------------
@@ -108,7 +113,7 @@ let gen = 0;
 const off = document.createElement("canvas");
 async function render() {
   if (!src) return;
-  if (olv || ngv) { overlays(); return; }
+  if (olv || ngv || gv) { overlays(); return; }
   const g = ++gen;
   const L = displayLevel();
   // a coarse level first (instant from cache when panning), then the one for this zoom
@@ -158,6 +163,13 @@ function overlays() {
     if (key === ngBoxesKey) return;  // a state restore per change, not per frame
     ngBoxesKey = key;
     ngv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, `#${k + 1}`)));
+    return;
+  }
+  if (gv) {  // the boxes as outlines on the globe
+    if (!search) { gv.setBoxes(null, []); return; }
+    const st = search.state, f = 2 ** st.working, side = st.patch * f;
+    const box = (c: Vec3, lab?: string) => ({ fx: c[2] * f, fy: c[1] * f, side, label: lab });
+    gv.setBoxes(box(search.query, "query"), st.hits.slice(0, 30).map((h, k) => box(h.center, String(k + 1))));
     return;
   }
   if (olv) {  // the boxes as OpenLayers features
@@ -220,6 +232,7 @@ function patchSize(): string {
 function drawHover() {
   $("psize").textContent = src ? `= ${patchSize().split("= ")[1] ?? patchSize()}` : "";
   if (ngv) { ngv.drawHover(); return; }  // Neuroglancer's mouse is in its frame; it draws the box
+  if (gv) return;  // the globe draws its own
   hctx.clearRect(0, 0, hover.width, hover.height);
   if (!src || !mouse || drag?.moved || olv) return;
   const P = Number($<HTMLSelectElement>("patch").value), side = (P * 2 ** searchLevel()) / view.scale;
@@ -317,6 +330,11 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   src = s;
   preset = p;
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
+  gv?.destroy();
+  gv = null;
+  globeDiv.style.display = "none";
+  globeBtn.textContent = "globe";
+  globeBtn.style.display = p?.globe ? "" : "none";
   olv?.destroy();
   olv = null;
   ngv?.destroy();
@@ -411,7 +429,7 @@ $("more").addEventListener("click", () => {
 function regionFor(W: number, P: number): [Vec3, Vec3] {
   const s = src!, L = s.levels[W], f = 2 ** W, d3 = s.dims === 3;
   const whole: [Vec3, Vec3] = [[0, 0, 0], [...L.shape] as Vec3];
-  const vis = olv ? olv.extentPx() : ngv ? ngv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
+  const vis = gv ? gv.extentPx() : olv ? olv.extentPx() : ngv ? ngv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
                                       y0: view.cy - (canvas.height * view.scale) / 2, y1: view.cy + (canvas.height * view.scale) / 2 };
   const around = (k: number): [Vec3, Vec3] => {
     const hw = ((vis.x1 - vis.x0) * k) / 2 / f, hh = ((vis.y1 - vis.y0) * k) / 2 / f;
@@ -516,6 +534,7 @@ function panel(st: State) {
 function goTo(i: number) {
   if (!search || !src) return;
   const c = search.center(i), f = 2 ** search.state.working;
+  if (gv) gv.goTo(c[2] * f, c[1] * f, f);
   if (olv) olv.goTo(c[2] * f, c[1] * f, f);
   if (ngv) ngv.goTo(c[2] * f, c[1] * f, c[0] * f, f);
   view.cx = c[2] * f; view.cy = c[1] * f;
@@ -527,8 +546,31 @@ function goTo(i: number) {
   render();
 }
 
+// the map / globe toggle (planetary mosaics)
+const globeBtn = $<HTMLButtonElement>("globe");
+globeBtn.addEventListener("click", async () => {
+  if (!src || !preset?.globe || !(src instanceof TileSource)) return;
+  if (gv) {  // back to the map, at the globe's place
+    const e = gv.extentPx(), s = gv.scale();
+    gv.destroy(); gv = null;
+    globeDiv.style.display = "none"; olDiv.style.display = "block";
+    olv?.goTo((e.x0 + e.x1) / 2, (e.y0 + e.y1) / 2, s);
+    globeBtn.textContent = "globe";
+  } else {
+    const at = olv ? { ...olv.center(), scale: olv.scale() } : { cx: view.cx, cy: view.cy, scale: view.scale };
+    globeBtn.textContent = "map";
+    olDiv.style.display = "none"; globeDiv.style.display = "block";
+    gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
+      click: (fx, fy) => queryAt(fx, fy),
+      hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
+      moved: () => drawHover(),
+    });
+    try { await gv.ready; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
+  }
+});
+
 // for debugging from the console
-(window as any).coresample = { get ngv() { return ngv; }, get olv() { return olv; }, get search() { return search; } };
+(window as any).coresample = { get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; } };
 
 // start
 const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");

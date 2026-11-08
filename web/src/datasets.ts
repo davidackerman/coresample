@@ -1,5 +1,6 @@
 // Preset datasets: public, read straight from their hosts (every one answers CORS), each a
 // pyramid already published by its owner. View centres are in full-resolution pixels.
+import type { GlobeSpec } from "./globeviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source } from "./sources.ts";
 
 export interface Preset {
@@ -10,6 +11,7 @@ export interface Preset {
   view: { cx: number; cy: number; z?: number; scale: number };
   patch?: number;
   note?: string;
+  globe?: GlobeSpec;  // planetary mosaics: also viewable on a globe
 }
 
 // equirectangular and web-mercator placement of a longitude/latitude, for the map-like sources
@@ -32,6 +34,8 @@ export const PRESETS: Preset[] = [
       url: (z, x, y) => `https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/${z}/${y}/${x}`,
     }),
     view: { ...equirect(CTX_W, CTX_H, 77.45, 18.44), scale: 16 },  // Jezero crater
+    globe: { radii: [3396190, 3396190, 3376200], template: "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
+             credit: "NASA/JPL/MSSS/Caltech Murray Lab/Esri" },
     note: "Start: Jezero crater. Click a crater, dune field or channel.",
   },
   {
@@ -42,6 +46,8 @@ export const PRESETS: Preset[] = [
       url: (z, x, y) => `https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/${z}/${y}/${x}.jpg`,
     }),
     view: { ...equirect(WAC_W, WAC_H, -11.4, -43.3), scale: 4 },  // Tycho
+    globe: { radii: [1737400, 1737400, 1737400], template: "https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
+             credit: "NASA/GSFC/Arizona State University (NASA Trek)" },
     note: "Start: Tycho crater.",
   },
   {
