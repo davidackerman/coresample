@@ -67,7 +67,9 @@ export class GlobeViewer {
     this.viewer.scene.globe.baseColor = C.Color.BLACK;
     this.viewer.scene.globe.showGroundAtmosphere = false;
     this.viewer.imageryLayers.addImageryProvider(new C.UrlTemplateImageryProvider({
-      url: this.spec.template, tileWidth: s.tileSize, tileHeight: s.tileSize, maximumLevel: s.maxZoom,
+      // stop below the server's first broken zoom (Cesium needs every level up to its maximum)
+      url: this.spec.template, tileWidth: s.tileSize, tileHeight: s.tileSize,
+      maximumLevel: Math.min(s.maxZoom, ...(s.skipZooms ?? []).filter((z) => z > 6).map((z) => z - 1)),
       tilingScheme: new C.GeographicTilingScheme({ ellipsoid: this.ellipsoid, numberOfLevelZeroTilesX: 2, numberOfLevelZeroTilesY: 1 }),
       credit: this.spec.credit ?? this.src.attribution,
     }));

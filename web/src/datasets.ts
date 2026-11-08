@@ -32,6 +32,7 @@ export const PRESETS: Preset[] = [
       name: "Mars CTX mosaic (Murray Lab)", tileSize: 512, maxZoom: 12, width: CTX_W, height: CTX_H, channels: 1,
       unit: "m", pixelSize: 5.05, attribution: "NASA/JPL/MSSS/Caltech Murray Lab/Esri (OnMars)",
       url: (z, x, y) => `https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/${z}/${y}/${x}`,
+      skipZooms: [5, 11],  // Esri's cache: zoom 11 tiles are truncated PNGs, zoom 5 returns error pages in places
     }),
     view: { ...equirect(CTX_W, CTX_H, 77.45, 18.44), scale: 16 },  // Jezero crater
     globe: { radii: [3396190, 3396190, 3376200], template: "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
