@@ -40,7 +40,8 @@ export interface MatchOptions {
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
 }
-export const DEFAULT_MATCH: MatchOptions = { focus: "center", rotations: false, scales: false, adapt: false };
+// the measured baseline: no variant beat it consistently across the three runs of test 5
+export const DEFAULT_MATCH: MatchOptions = { focus: "whole", rotations: false, scales: false, adapt: false };
 
 /** The finest level at least 2 levels above `W` (1 if need be) that can be scanned whole over
  * `region` within `budget` voxels while the query window stays >= 4 (>= 2) voxels; -1 if none. */
