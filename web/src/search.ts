@@ -4,7 +4,7 @@
 // reading, best-ranked tiles first, until every tile of the region is read or it is stopped;
 // results stream after every batch. Memory stays bounded: only the best few thousand candidates
 // (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those.
-import { PART, similarity, type Embedder, type Focus, type Patch } from "./embedder.ts";
+import { GRID, PART, similarity, type Embedder, type Focus, type Patch, type TokenGrid } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
@@ -25,6 +25,7 @@ export interface Options {
   maxCoarseVoxels?: number;
   topN?: number;
   keep?: number;              // candidates kept for re-ranking (the rest are dropped as read)
+  method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
@@ -43,6 +44,14 @@ export interface MatchOptions {
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
 }
+/** How candidates are embedded. "patches": every patch of the stride grid through the model on
+ * its own (test 5's baseline). "tokens": the Mars CTX explorer's way (test 7): each tile is cut
+ * into crops twice the patch size, each crop goes through the model once, and every window of
+ * the patch's size, at every token (1/8 of the patch), is the mean of its tokens. */
+export type Method = "patches" | "tokens";
+const WIN = GRID / 2;     // a patch spans 8 x 8 tokens of a crop twice its size
+const PER_PLANE = 8;      // windows kept per tile plane (best, non-overlapping)
+
 // the measured baseline: no variant beat it consistently across the three runs of test 5
 export const DEFAULT_MATCH: MatchOptions = { focus: "whole", rotations: false, scales: false, adapt: false };
 
@@ -108,8 +117,17 @@ export class Search {
   center(i: number): Vec3 { return this.items.get(i)!.c; }
   private qpix!: Uint8Array;
 
-  private async readPatches(centers: Vec3[]): Promise<{ patches: Patch[]; bytes: Uint8Array[] }> {
-    const P = this.opt.patch, h = P / 2, W = this.opt.working;
+  private get tokenMode() { return this.opt.method === "tokens"; }
+
+  /** What the query embeds from: its patch, or (token mode) the crop twice its size around it,
+   * whose central window of tokens is the query. */
+  private async queryBase(): Promise<Patch> {
+    if (!this.tokenMode) return (await this.readPatches([this.query])).patches[0];
+    return (await this.readPatches([this.query], 2 * this.opt.patch)).patches[0];
+  }
+
+  private async readPatches(centers: Vec3[], side = this.opt.patch): Promise<{ patches: Patch[]; bytes: Uint8Array[] }> {
+    const P = side, h = P / 2, W = this.opt.working;
     const patches: Patch[] = [], bytes: Uint8Array[] = [];
     await Promise.all(centers.map(async (c, i) => {
       const r = await this.src.read(W, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
@@ -132,7 +150,7 @@ export class Search {
       if (missingFraction(q.patches[0].data) > 0.05)
         throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
       this.qpix = q.bytes[0];
-      this.q0vars = await this.queryVariants(q.patches[0]);
+      this.q0vars = await this.queryVariants(await this.queryBase());
       this.qvars = this.q0vars.map((v) => Float32Array.from(v));
       // 1. cheap scan of the coarse level
       const C = this.chooseCoarse(), f = 2 ** (C - W);
@@ -235,6 +253,23 @@ export class Search {
     const W = this.opt.working, P = this.opt.patch, d3 = this.src.dims === 3;
     const ahead = d3 ? 6 : 3;
     while (!this.stopFlag) {
+      if (this.tokenMode) {  // a few tiles at a time, every crop of them through the model in one go
+        const limit = Math.min(budget, this.order.length);
+        if (this.next >= limit) break;
+        const tiles = this.order.slice(this.next, Math.min(limit, this.next + (this.emb.provider === "webgpu" ? 4 : 1)));
+        this.next += tiles.length;
+        const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
+        const grids = await this.emb.tokens(preps.flatMap((p) => p.crops));
+        const fresh: number[] = [];
+        let k = 0;
+        for (const p of preps) { fresh.push(...this.scoreWindows(p, grids.slice(k, k + p.crops.length))); k += p.crops.length; }
+        this.rank(fresh);
+        this.prune();
+        await new Promise((r) => setTimeout(r, 0));
+        this.emit({ tilesRead: this.next, patches: this.embedded, queued: 0,
+                    firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
+        continue;
+      }
       const B = this.emb.provider === "webgpu" ? 64 : 16;
       const limit = Math.min(budget, this.order.length);
       if (this.queue.length < 2 * B && this.next < limit) {
@@ -281,6 +316,104 @@ export class Search {
     for (const i of ids.slice(keep)) this.items.delete(i);
   }
 
+  /** Token mode: the crops (twice the patch, side by side) covering one tile's window centres,
+   * per plane of the stride grid in z. */
+  private async prepTokens(t: Vec3): Promise<TokPlane[]> {
+    const P = this.opt.patch, h = P / 2, S = 2 * P, W = this.opt.working, d3 = this.src.dims === 3;
+    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.region;
+    const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
+    // window centres this tile owns: inside the tile, at least half a patch inside the region
+    const ylo = Math.max(lo[1], rlo[1] + h), yhi = Math.min(hi[1], rhi[1] - h + 1);
+    const xlo = Math.max(lo[2], rlo[2] + h), xhi = Math.min(hi[2], rhi[2] - h + 1);
+    if (yhi <= ylo || xhi <= xlo) return [];
+    const zs: number[] = [];
+    if (!d3) zs.push(0);
+    else { const st = P / 2, first = rlo[0] + h; for (let z = first + Math.max(0, Math.ceil((lo[0] - first) / st)) * st; z < hi[0] && z <= rhi[0] - h; z += st) zs.push(z); }
+    if (!zs.length) return [];
+    const ny = Math.ceil((yhi - ylo + P) / S), nx = Math.ceil((xhi - xlo + P) / S);
+    const oy = ylo - h, ox = xlo - h;
+    let r: Region;
+    try { r = await this.src.read(W, [zs[0], oy, ox], [zs[zs.length - 1] + 1, oy + ny * S, ox + nx * S]); } catch { return []; }
+    const [, by, bx] = r.shape, C = r.channels, out: TokPlane[] = [];
+    for (const z of zs) {
+      const crops: Patch[] = [], ok: boolean[] = [];
+      for (let cy = 0; cy < ny; cy++) for (let cx = 0; cx < nx; cx++) {
+        const d = new Float32Array(S * S * C);
+        for (let y = 0; y < S; y++) {
+          const row = ((z - zs[0]) * by + cy * S + y) * bx + cx * S;
+          d.set(r.data.subarray(row * C, (row + S) * C), y * S * C);
+        }
+        const good = missingFraction(d) < 0.5;
+        ok.push(good);
+        crops.push({ data: good ? fillMissing(d) : d.fill(0), size: S, channels: C });
+      }
+      out.push({ z, oy, ox, ny, nx, ylo, yhi, xlo, xhi, crops, ok, region: r, z0: zs[0] });
+    }
+    return out;
+  }
+
+  /** Token mode: every window of WIN x WIN tokens in a plane's stitched grid, as the unit mean
+   * of its tokens, scored against the query; the best few (not overlapping) are kept. */
+  private scoreWindows(p: TokPlane, grids: TokenGrid[]): number[] {
+    const P = this.opt.patch, h = P / 2, tp = (2 * P) / GRID, D = grids[0]?.D ?? PART, d3 = this.src.dims === 3;
+    const Gy = p.ny * GRID, Gx = p.nx * GRID, m = this.opt.match ?? DEFAULT_MATCH;
+    // integral image of the stitched unit tokens: (Gy + 1) x (Gx + 1) x D
+    const I = new Float32Array((Gy + 1) * (Gx + 1) * D);
+    const bad = new Int32Array((Gy + 1) * (Gx + 1));  // integral count of tokens from missing crops
+    for (let y = 0; y < Gy; y++) {
+      const cy = Math.floor(y / GRID);
+      for (let x = 0; x < Gx; x++) {
+        const cx = Math.floor(x / GRID), k = cy * p.nx + cx, g = grids[k];
+        const src = g.tokens, so = ((y % GRID) * GRID + (x % GRID)) * D;
+        const o = ((y + 1) * (Gx + 1) + (x + 1)) * D, up = (y * (Gx + 1) + (x + 1)) * D, left = ((y + 1) * (Gx + 1) + x) * D, diag = (y * (Gx + 1) + x) * D;
+        for (let d = 0; d < D; d++) I[o + d] = src[so + d] + I[up + d] + I[left + d] - I[diag + d];
+        const bo = (y + 1) * (Gx + 1) + (x + 1);
+        bad[bo] = (p.ok[k] ? 0 : 1) + bad[y * (Gx + 1) + x + 1] + bad[(y + 1) * (Gx + 1) + x] - bad[y * (Gx + 1) + x];
+      }
+    }
+    const cand: { r: number; c: number; s: number; e: Float32Array }[] = [];
+    const v = new Float32Array(D);
+    for (let r = 0; r + WIN <= Gy; r++) for (let c = 0; c + WIN <= Gx; c++) {
+      const cyN = p.oy + (r + WIN / 2) * tp, cxN = p.ox + (c + WIN / 2) * tp;
+      if (cyN < p.ylo || cyN >= p.yhi || cxN < p.xlo || cxN >= p.xhi) continue;
+      const a = r * (Gx + 1) + c, b = r * (Gx + 1) + c + WIN, cc = (r + WIN) * (Gx + 1) + c, dd = (r + WIN) * (Gx + 1) + c + WIN;
+      if (bad[dd] - bad[b] - bad[cc] + bad[a] > 0) continue;  // touches a crop with no data
+      const q = this.query;
+      if (Math.abs(p.z - q[0]) < (d3 ? h : 1) && Math.abs(cyN - q[1]) < h && Math.abs(cxN - q[2]) < h) continue;  // the query itself
+      let n = 0;
+      for (let d = 0; d < D; d++) { const x = I[dd * D + d] - I[b * D + d] - I[cc * D + d] + I[a * D + d]; v[d] = x; n += x * x; }
+      n = Math.sqrt(n) || 1;
+      const e = new Float32Array(D);
+      for (let d = 0; d < D; d++) e[d] = v[d] / n;
+      this.sum ??= new Float64Array(D);
+      for (let d = 0; d < D; d++) this.sum[d] += e[d];
+      this.embedded++;
+      let s = -Infinity;
+      for (const qv of this.qvars) s = Math.max(s, similarity(e, qv, m.focus));
+      cand.push({ r, c, s, e });
+    }
+    // the best windows of this plane, not overlapping, become candidates
+    cand.sort((x, y) => y.s - x.s);
+    const kept: typeof cand = [], fresh: number[] = [];
+    for (const w of cand) {
+      if (kept.every((k) => Math.abs(k.r - w.r) >= WIN || Math.abs(k.c - w.c) >= WIN)) kept.push(w);
+      if (kept.length >= PER_PLANE) break;
+    }
+    const [, by, bx] = p.region.shape, C = p.region.channels;
+    for (const w of kept) {
+      const cy = Math.round(p.oy + (w.r + WIN / 2) * tp), cx = Math.round(p.ox + (w.c + WIN / 2) * tp);
+      const pix = new Uint8Array(P * P * C);
+      for (let y = 0; y < P; y++) for (let x = 0; x < P; x++) {
+        const src = (((p.z - p.z0) * by + (cy - h + y - p.oy)) * bx + (cx - h + x - p.ox)) * C;
+        for (let k = 0; k < C; k++) { const val = p.region.data[src + k]; pix[(y * P + x) * C + k] = val === val ? val : 0; }
+      }
+      const id = this.nextId++;
+      this.items.set(id, { c: [p.z, cy, cx], e: w.e, pix, s: w.s });
+      fresh.push(id);
+    }
+    return fresh;
+  }
+
   stop() { this.stopFlag = true; }
 
   /** The query's embeddings: the patch itself, plus its 7 other rotations/flips and its view at
@@ -301,7 +434,7 @@ export class Search {
       for (const flip of [false, true]) for (let k = 0; k < 4; k++) if (k || flip) patches.push({ data: rot(base.data, k, flip), size: P, channels: C });
     }
     if (m.scales) {
-      const W = this.opt.working, h = P / 2, q = this.query, d3 = this.src.dims === 3;
+      const W = this.opt.working, h = P / 2, q = this.query, d3 = this.src.dims === 3;  // P: the base's side
       for (const L of [W - 1, W + 1]) {
         if (L < 0 || L >= this.src.levels.length) continue;
         const f = 2 ** (W - L), c = [d3 ? Math.floor(q[0] * f) : 0, Math.floor(q[1] * f), Math.floor(q[2] * f)];
@@ -309,7 +442,18 @@ export class Search {
         if (informative(r.data)) patches.push({ data: r.data, size: P, channels: r.channels });
       }
     }
-    return this.emb.embed(patches);
+    if (!this.tokenMode) return this.emb.embed(patches);
+    // token mode: each variant's crop through the model, its central window of tokens averaged
+    return (await this.emb.tokens(patches)).map(({ tokens, g, D }) => {
+      const v = new Float32Array(D), o = (g - WIN) / 2;
+      for (let y = o; y < o + WIN; y++) for (let x = o; x < o + WIN; x++)
+        for (let d = 0; d < D; d++) v[d] += tokens[(y * g + x) * D + d];
+      let n = 0;
+      for (let d = 0; d < D; d++) n += v[d] * v[d];
+      n = Math.sqrt(n) || 1;
+      for (let d = 0; d < D; d++) v[d] /= n;
+      return v;
+    });
   }
 
   /** New match options: re-rank everything embedded so far (variants re-embedded if needed). */
@@ -317,8 +461,7 @@ export class Search {
     const old = this.opt.match ?? DEFAULT_MATCH;
     this.opt.match = m;
     if (m.rotations !== old.rotations || m.scales !== old.scales) {
-      const q = await this.readPatches([this.query]);
-      this.q0vars = await this.queryVariants(q.patches[0]);
+      this.q0vars = await this.queryVariants(await this.queryBase());
       this.applyFeedback();
     }
     this.rank();
@@ -381,6 +524,13 @@ export class Search {
     }
     this.state.hits = hits;
   }
+}
+
+/** Token mode: one plane of a tile, its crops and where its windows may be centred. */
+interface TokPlane {
+  z: number; z0: number; oy: number; ox: number; ny: number; nx: number;
+  ylo: number; yhi: number; xlo: number; xhi: number;
+  crops: Patch[]; ok: boolean[]; region: Region;
 }
 
 export type { Region };

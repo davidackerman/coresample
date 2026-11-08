@@ -1,0 +1,23 @@
+[mito] templates (30, 8, 8, 384) (39s); 15 planes
+[mito] plane 1/15 (40s)
+[mito] plane 11/15 (53s)
+[mito] template  p@10 0.46+/-0.04 (-0.020+/-0.034 vs base)  p@25 0.40+/-0.03 (-0.064+/-0.024)  r@100 0.585
+[mito] pooled    p@10 0.47+/-0.04 (-0.007+/-0.032 vs base)  p@25 0.46+/-0.03 (-0.001+/-0.023)  r@100 0.631
+[mito] baseline  p@10 0.48  p@25 0.46  r@100 0.589  (59s)
+[vesicle] templates (30, 8, 8, 384) (117s); 31 planes
+[vesicle] plane 1/31 (121s)
+[vesicle] plane 11/31 (162s)
+[vesicle] plane 21/31 (204s)
+[vesicle] plane 31/31 (241s)
+[vesicle] template  p@10 0.81+/-0.02 (+0.003+/-0.033 vs base)  p@25 0.80+/-0.02 (+0.003+/-0.026)  r@100 0.066
+[vesicle] pooled    p@10 0.86+/-0.02 (+0.057+/-0.035 vs base)  p@25 0.84+/-0.02 (+0.037+/-0.028)  r@100 0.070
+[vesicle] baseline  p@10 0.81  p@25 0.80  r@100 0.064  (241s)
+[mito_full] templates (30, 8, 8, 384) (82s); 48 planes
+[mito_full] plane 1/48 (86s)
+[mito_full] plane 11/48 (116s)
+[mito_full] plane 21/48 (150s)
+[mito_full] plane 31/48 (185s)
+[mito_full] plane 41/48 (221s)
+[mito_full] template  p@10 0.41+/-0.03 (-0.023+/-0.042 vs base)  p@25 0.39+/-0.03 (-0.044+/-0.025)  r@100 0.099
+[mito_full] pooled    p@10 0.41+/-0.05 (-0.023+/-0.043 vs base)  p@25 0.43+/-0.03 (-0.000+/-0.021)  r@100 0.116
+[mito_full] baseline  p@10 0.44  p@25 0.43  r@100 0.107  (247s)
