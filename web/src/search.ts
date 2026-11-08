@@ -425,9 +425,10 @@ export class Search {
   private async readTile(t: Vec3) {
     const P = this.opt.patch, h = P / 2, W = this.opt.working, d3 = this.src.dims === 3;
     const step = this.opt.stride ?? (d3 ? P / 2 : P);
-    // the grid starts at the region's corner in 3-D; in 2-D at 0, so with P dividing the tile
-    // size every patch lies inside one tile and a tile read downloads that tile alone
-    const ch = this.src.levels[W].chunk, o = d3 ? this.region[0] : [0, 0, 0], [llo, lhi] = this.limits;
+    // the grid starts at 0, on the chunk grid: in 2-D (stride P) every patch then lies inside one
+    // tile, so a tile read downloads that tile alone; in 3-D (stride P/2) half the patches along
+    // an axis reach into the chunk before, so a tile read takes the chunks before it (4, not 9)
+    const ch = this.src.levels[W].chunk, o = [0, 0, 0], [llo, lhi] = this.limits;
     const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
     const grid = (a: number) => {  // stride grid anchored at the region's corner, patch inside the limits
       const r: number[] = [];
@@ -543,7 +544,7 @@ export class Search {
   /** Keep a few tile reads going in the background (their patches join the queue as they land),
    * so the downloads overlap the model instead of taking turns with it. */
   private feed(limit: () => number, B: number) {
-    const ahead = this.src.dims === 3 ? 6 : 12;
+    const ahead = 32;
     const room = () => !this.stopFlag && !this.dry && this.inflight.size < ahead && this.queue.length < 4 * B;
     if (this.taking || !room()) return;
     this.taking = (async () => {
@@ -574,9 +575,12 @@ export class Search {
     if (!r) out = this.order.slice(this.next, this.next + n);
     else {
       const allowed = () => (this.readAll ? Infinity : Math.max(8, Math.ceil(DETAIL * r.scores.length)));
-      while ((r.cursor < this.order.length || r.ahead) && !this.stopFlag && (r.pool.length < n || this.next + n > allowed())) await this.roughRound();
+      const more = () => r.cursor < this.order.length || !!r.ahead;
+      while (!this.stopFlag && (r.pool.length < n || this.next + n > allowed()) && (this.roughBusy || more())) await this.roughOnce();
       if (r.dirty) { r.pool.sort((a, b) => b.s - a.s); r.dirty = false; }
       out = r.pool.splice(0, Math.max(0, Math.min(n, allowed() - this.next))).map((t) => t.t);
+      // the next round under way while these are read, so the reads never wait for it
+      if (!this.stopFlag && more() && allowed() - this.next - out.length < 48) void this.roughOnce();
     }
     this.next += out.length;
     this.readList.push(...out);
@@ -612,6 +616,12 @@ export class Search {
       } catch { return null; }
     }));
   }
+
+  /** A rough round: the one under way, or a new one (one at a time). */
+  private roughOnce(): Promise<void> {
+    return (this.roughBusy ??= this.roughRound().finally(() => (this.roughBusy = null)));
+  }
+  private roughBusy: Promise<void> | null = null;
 
   /** One round of the rough pass: the level-L chunks under the next tiles of the cheap order,
    * every place in them through the model, each tile under them scored by its best place. The

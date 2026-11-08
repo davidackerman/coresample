@@ -21,6 +21,7 @@ are used only to choose queries and grade hits; the search code never sees them.
 | [8](test8_levels.py) | What should decide which tiles are read first? | The model two levels up (the page's rough pass) |
 | [9](test9_examples.py) | Do several examples find more? | Yes where the class looks alike (vesicles +0.11 with 8) |
 | [10](test10_sketch.py) | Can a drawing be the query? | Not on EM |
+| [11](test11_context.py) | Can coarser levels rule out regions by their surroundings? | At 4x the box, three quarters at no loss (half the model's work); wider loses on mito |
 
 ## Run
 

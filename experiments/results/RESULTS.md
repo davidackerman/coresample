@@ -14,6 +14,7 @@ In short (details and numbers below):
 8. **The model two levels up** orders the reads best: its top 5% match reading everything (the page's rough pass reads its top 10%).
 9. **Several examples** help where the class looks alike (vesicles +0.11 with 8 averaged).
 10. **Drawings** find nothing on EM.
+11. **Surroundings 4x the box** rule out three quarters of the regions at no loss, halving the model's work (not the downloads).
 
 Dataset: `jrc_hela-2` (OpenOrganelle), EM `recon-1/em/fibsem-uint8`, 6368 x 1600 x 12000
 voxels at 5.24 x 4 x 4 nm, six 2x levels (s0 chunks 128^3, s1-s5 chunks 64^3, zstd 6),
@@ -409,6 +410,33 @@ land on blank, smooth areas). The page still has a drawing pad (bold shapes such
 the Moon do find crater-like boxes, by eye), labelled for that; on EM, adding real examples
 (test 9) is the way to say more about what you want.
 
+## Test 11: ruling out regions by their surroundings (follow-up)
+
+On a big volume the rough pass itself is the cost: one model run per working tile. Two levels
+further up the thing is a few pixels, so a coarser level can only see its surroundings. A box of
+P px at level W+2 (4x the box's width: the query with its surroundings) or W+3 (6-8x) scores
+every region against the query's surroundings, and the regions below the best `keep` share are
+ruled out before the rough pass looks at them (`test11_context.py`). Same 30 queries, 5% of the
+tiles read in detail; differences paired against the rough pass alone (the page now):
+
+| before the rough pass | mito p@10 / p@25 | vesicles | mito, whole volume | model runs | bytes |
+|---|---|---|---|---|---|
+| surroundings 4x, keep 50% | +0.04 +/- 0.01 / +0.02 +/- 0.01 | -0.01 / -0.00 | -0.03 +/- 0.02 / -0.01 | x0.67-0.71 | x1.00 |
+| surroundings 4x, keep 25% | +0.02 +/- 0.02 / +0.01 | -0.00 / +0.00 | -0.01 +/- 0.02 / -0.01 | x0.48-0.53 | x1.00 |
+| surroundings 6-8x, keep 25% | -0.02 +/- 0.04 / -0.05 +/- 0.03 | +0.01 / +0.00 | -0.05 +/- 0.03 / -0.03 +/- 0.02 | x0.45-0.48 | x0.88-0.90 |
+| adaptive (prune only if they predicted the first hits) | +0.01 / +0.02 | +0.01 / +0.01 | +0.01 / +0.00 | x0.61-0.81 | x1.02-1.06 |
+| surroundings 4x instead of the rough pass | 0.39 (vs 0.53) | 0.78 (vs 0.80) | 0.37 (vs 0.43) | x0.26-0.34 | |
+
+**Surroundings 4x the box rule out three quarters of the regions at no measurable cost on all
+three targets, halving the model's work**; they save no downloads (they come from the rough
+pass's own level). Wider ones (6-8x, a coarser level) save a tenth of the bytes but lose on mito
+(-0.05). Which scale matters depends on the target: the tiles holding the first hits sat at the
+74th-85th percentile by 4x surroundings, but at the 55th-58th by 6-8x for mito (76th for
+vesicles): mito are all over the cytoplasm, vesicles cluster. Deciding that per search
+(adaptive) never hurt but saved less than always ruling out by 4x, and the surroundings alone
+are no substitute for the rough pass. For the page this pays where the model is the limit (a
+slow GPU); on hemibrain the downloads still were. One labelled dataset.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
@@ -449,6 +477,11 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
   detail. Same spot, 90 s each, a stand-in model at 400 patches/s: 174 tiles read and ~100
   looked over (254 MB) before; 530 read and 5,688 looked over (213 MB) after, so 30x the
   ground covered. The model is now the limit (the rough pass is three quarters of its work).
+  Volumes (FlyEM hemibrain, JPEG, 90 s, a stand-in model at a user's 571 patches/s): the 3-D
+  grid starts at 0 too (0.62 to 0.31 MB per detail tile), 16 reads run at once (6 before; 32
+  gained nothing), the rough pass runs a round ahead in the background, and image decoding moved
+  to workers (the main thread was 78% busy, a third of it decoding): 937 to 2,150 tiles read in
+  detail and 10,248 to 22,976 looked over; the model is now busy 76% of the time.
 
 ## Kill rule
 
