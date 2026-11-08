@@ -25,9 +25,9 @@ import tensorstore as ts
 
 BUCKET = "janelia-cosem-datasets"
 BASE_URL = f"https://{BUCKET}.s3.amazonaws.com"
-ROOT = Path(__file__).resolve().parent
-CACHE = ROOT / "cache"
-RESULTS = ROOT / "results"
+HERE = Path(__file__).resolve().parent  # experiments/
+CACHE = HERE / "cache"
+RESULTS = HERE / "results"
 
 DATASET = "jrc_hela-2"
 EM_ZARR = f"{DATASET}/{DATASET}.zarr/recon-1/em/fibsem-uint8"

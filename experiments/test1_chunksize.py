@@ -9,7 +9,7 @@ without the resin/background confounder (foreground-only), across four encodings
 the same image: zarr uint8 zstd at s0, s1, s2 and N5 uint16 gzip at s0. As a yardstick
 it also scores a cheap pixel read: per-cell intensity std from EM s3 (1/512 of s0).
 
-    uv run python test1_chunksize.py
+    uv run python experiments/test1_chunksize.py
 """
 
 from __future__ import annotations

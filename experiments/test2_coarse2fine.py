@@ -12,7 +12,7 @@ For each target class and each query instance:
 Hit: a returned region (patch^3 box at the working level) contains an instance
 centroid. Data read is costed from the bucket listing's real chunk sizes.
 
-    uv run python test2_coarse2fine.py [--targets mito vesicle] [--queries 5]
+    uv run python experiments/test2_coarse2fine.py [--targets mito vesicle] [--queries 5]
 """
 
 from __future__ import annotations

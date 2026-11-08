@@ -17,7 +17,7 @@ import numpy as np
 from common import CACHE
 
 MODEL = "facebook/dinov2-small"
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
 os.environ.setdefault("HF_HOME", str(ROOT / ".hf"))
 
 _MEAN = np.array([0.485, 0.456, 0.406], np.float32)[:, None, None]

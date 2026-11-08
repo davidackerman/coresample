@@ -14,7 +14,7 @@ Variants (all from one pass of DINOv2-small over the patches, keeping its token 
 plus, for mito: input 224 instead of 112, and token max-sim (mean over query tokens of the best
 matching candidate token); and feedback: Rocchio vs the good hits as extra queries (max).
 
-    uv run python test5_matching.py [--targets mito vesicle] [--queries 10] [--full-mito]
+    uv run python experiments/test5_matching.py [--targets mito vesicle] [--queries 10] [--full-mito]
 """
 
 from __future__ import annotations

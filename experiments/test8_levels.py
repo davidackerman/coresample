@@ -14,7 +14,7 @@ only in which chunks come first. Same 30 queries as tests 5-7. Reported: p@10/p@
 hits among the chunks read after a fraction of them, and the bytes, including what the order
 itself needed (the coarse level for the cheap scan; level W+1 or W+2 for the model).
 
-    uv run python test8_levels.py [--targets mito vesicle mito_full]
+    uv run python experiments/test8_levels.py [--targets mito vesicle mito_full]
 """
 
 from __future__ import annotations

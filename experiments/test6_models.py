@@ -18,7 +18,7 @@ Matchers:
                  pickled code) and skipped if that loader refuses it
   texture        classical: rotation-invariant LBP histograms + Gabor energies (no learning)
 
-    uv run python test6_models.py [--targets vesicle mito_full] [--models ...] [--queries 30] [--tag _x]
+    uv run python experiments/test6_models.py [--targets vesicle mito_full] [--models ...] [--queries 30] [--tag _x]
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import numpy as np
 import test2_coarse2fine as t2
 from common import CACHE, RESULTS, Mirror
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
 os.environ.setdefault("HF_HOME", str(ROOT / ".hf"))
 import torch  # noqa: E402
 

@@ -1,7 +1,7 @@
 [project]
 name = "coresample"
 version = "0.0.0"
-description = "Feasibility tests: search multiscale array datasets for regions like this one, with no precomputation"
+description = "Search multiscale array datasets for regions like this one, with no precomputation: the Python experiments and command-line search"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy",

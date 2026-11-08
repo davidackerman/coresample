@@ -473,9 +473,10 @@ should be confirmed on another dataset before it is relied on.
 
 ## Reproduce
 
-`uv run python test1_chunksize.py`, then `test2_coarse2fine.py` (first run), the rerun with
+From the repository root, `uv run python experiments/test1_chunksize.py`, then `test2_coarse2fine.py` (first run), the rerun with
 `--methods hist+tex --sweep k methods coarsest --method-sweep all ncc --suffix _fix`, the whole
 volume with `--targets mito --region full --suffix _full --methods hist+tex --sweep k methods
 --method-sweep all --coarsest 4`, then `test3_combined.py` and `test3_combined.py --targets
 mito --region full --suffix _full`, and `report.py`. Raw numbers: `test1.json`,
-`test2_*.json`, `test3_*.json`, `summary.json`.
+`test2_*.json`, `test3_*.json`, `summary.json`. Tests 4-10 give their commands at the top of
+each script.

@@ -15,7 +15,7 @@ Empty chunks come from the s0 chunk sizes alone (Otsu on log size, no labels). T
 of a strategy is the bytes of the working-level chunks it read (from the listing) plus,
 for coarse-using strategies, the whole coarsest level over the region.
 
-    uv run python test3_combined.py [--targets mito vesicle] [--region full --suffix _full]
+    uv run python experiments/test3_combined.py [--targets mito vesicle] [--region full --suffix _full]
 """
 
 from __future__ import annotations
