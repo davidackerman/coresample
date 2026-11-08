@@ -288,6 +288,78 @@ patch, and places hits at 1/8 of a patch instead of half. The page has it as a m
 tokens (Mars CTX explorer)": the 224 px model now outputs its tokens (the page pools the
 "detailed" embedding from them; identical to the old export to 1.5e-7).
 
+## Test 8: what should decide which tiles are read first (follow-up)
+
+The page reads whole working-level tiles in the cheap scan's order (test 3). Test 2's cascade,
+which cut at every level, lost mito because the cheap scores cannot see them. Here the model
+itself, one or two levels coarser, decides the order instead of cutting: one patch of the same
+physical box per working tile at level W+1 or W+2 (P/2 or P/4 px), tiles ranked by their best
+coarse match, nothing skipped (`test8_levels.py`). Every order uses the same working-level
+embeddings for the tiles it has read (test 5's cache), so only the order differs. Same 30
+queries; p@10 after reading a share of the tiles, and in brackets the download including what
+the order itself needed:
+
+| order | mito, 1% of tiles | mito, 5% | vesicles, 1% | vesicles, 5% |
+|---|---|---|---|---|
+| random | 0.06 (1.0%) | 0.27 (4.8%) | 0.76 (1.0%) | 0.81 (5.0%) |
+| cheap scan (the page before) | 0.33 (2.6%) | 0.41 (7.5%) | 0.79 (2.4%) | 0.83 (7.3%) |
+| model at W+1 | 0.43 (12.0%) | 0.51 (17.0%) | 0.79 (12.1%) | 0.80 (17.0%) |
+| **model at W+2** | **0.42 (2.6%)** | **0.53 (7.6%)** | 0.82 (2.4%) | 0.80 (7.3%) |
+
+(Every tile read: p@10 0.48 mito, 0.81 vesicles.) **The model two levels up finds the mito
+tiles sooner than the cheap scan at the same download**: after 1% of the tiles it is already at
+the all-tiles precision. W+1 does as well but costs about 10% of the working level to look at.
+On vesicles every order is near the ceiling from the start (they are everywhere), so the order
+does not matter there. The whole-volume mito run is still going. The page now has this as the
+"rough pass" (GPU by default).
+
+## Test 9: several examples (follow-up)
+
+The page lets you add examples to a query (shift-click). Earth Engine's similarity search and
+similar.earth average the examples' embeddings; the alternative keeps them apart and scores each
+candidate by its best match among them. `test9_examples.py`: for each of the 30 queries, its
+k - 1 extra examples are other queries of the list (instances elsewhere, drawn at random,
+nested), every example's own patch left out of the hits. Change in p@10 from one example
+(paired, +/- standard error):
+
+| | mito, subvolume | vesicles | mito, whole volume |
+|---|---|---|---|
+| one example, p@10 | 0.48 | 0.81 | 0.44 |
+| mean of 2 | -0.03 +/- 0.03 | +0.04 +/- 0.04 | -0.02 +/- 0.04 |
+| mean of 3 | -0.01 +/- 0.04 | +0.04 +/- 0.04 | +0.06 +/- 0.04 |
+| mean of 5 | -0.04 +/- 0.03 | +0.09 +/- 0.04 | +0.05 +/- 0.04 |
+| mean of 8 | -0.03 +/- 0.04 | **+0.11 +/- 0.04** | +0.06 +/- 0.04 |
+| best match among 2 | **+0.04 +/- 0.03** | +0.04 +/- 0.03 | +0.02 +/- 0.03 |
+| best match among 3 | +0.03 +/- 0.04 | +0.03 +/- 0.04 | +0.04 +/- 0.03 |
+| best match among 8 | -0.02 +/- 0.04 | +0.05 +/- 0.04 | +0.04 +/- 0.04 |
+
+(p@25 moves the same way, the best match gaining more there: +0.07 on mito with 2 examples.)
+**More examples help where the class looks alike** (vesicles: +0.11 with 8 averaged, the
+largest gain of any option so far), and the whole-volume mito gains a little either way. On the
+mito subvolume averaging blurs instances that look different, and the best match does better.
+The page averages by default, as Earth Engine does, and offers "match any one of them".
+
+## Test 10: a drawing as the query (follow-up)
+
+Can you draw what you are looking for? The model has never seen drawings. Stand-in for a person
+drawing (`test10_sketch.py`): each query's own ground truth rendered as a sketch, the outline of
+the object clicked or of every labelled object in the box, filled or not, on the data's median
+grey in the data's own tones, plain or blurred with the data's grain added. p@10 over the 30
+queries:
+
+| query | mito | vesicles |
+|---|---|---|
+| the real patch (a click) | 0.48 | 0.81 |
+| best sketch: every object, filled, with grain | 0.13 | 0.00 |
+| the other 7 kinds of sketch | 0.00-0.10 | 0.00 |
+| blank grey with grain | 0.00 | 0.00 |
+| random order | 0.08 | 0.20 |
+
+**On EM a drawing finds nothing**: at best what a random order finds, usually less (the sketches
+land on blank, smooth areas). The page still has a drawing pad (bold shapes such as craters on
+the Moon do find crater-like boxes, by eye), labelled for that; on EM, adding real examples
+(test 9) is the way to say more about what you want.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
@@ -307,6 +379,18 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
   its requests: 855 requests and 120 MB in 35 s, 138 cancelled, still loading. Giving the viewer
   the place, zoom and coordinate space in its first state: 112 requests, 19 MB, done in 5 s,
   none cancelled. The model download now waits for that (8 s, or the first click).
+- **The rough pass on a big volume** (FlyEM hemibrain, precomputed JPEG, live site with a GPU):
+  the first rough round looked at 746 places and downloaded one whole level-2 chunk (64^3) for
+  each, about 75 MB before the first full-detail tile (96 MB and first hits after 41 s). A round
+  now takes the level-L chunks under the next tiles and scores every tile under each chunk from
+  it (64 places from one chunk): in headless Chromium the first round added nothing measurable
+  to the download.
+- **Mars tiles repeating** (a user's view link): Esri's OnMars CTX cache has blocks of cut-off
+  zoom-6 tiles that decode to the same picture (pixel for pixel; the files differ), and serves
+  some errors as status 200. A cut-off tile was rebuilt from its parent, but an error page passed
+  the check as an image, the rebuild failed, and the duplicate was drawn. Non-images now count
+  as broken, a failed decode tries the next level up, and a broken tile is rebuilt from its four
+  children first (sharp), then from an ancestor.
 
 ## Kill rule
 

@@ -37,13 +37,38 @@ where similar things might be; the full-resolution tiles under the best-ranked p
 read first, every patch in them is embedded, and hits are ranked by embedding similarity to
 your click (the number under each thumbnail). Nothing is precomputed or uploaded anywhere.
 
+**More examples.** Shift-click (or press **+ example**, then click) to add another example of the
+same thing: the query becomes the mean of the examples' embeddings (each part unit length
+again), as Earth Engine's similarity search and similar.earth combine several points, and the
+list re-ranks at once. The thumbnail in the status card shows every example; no hit sits on
+one, and distances count from the nearest. With a GPU the rough pass's query moves too; the
+cheap scan that ranked the tiles at the start stays the first example's. On labelled EM (test
+9) eight averaged examples raised top-10 precision on vesicles from 0.81 to 0.91; on mito,
+whose instances look more varied, averaging did not help and scoring each hit by its best match
+among the examples did a little better (+0.04 with two), so Options > examples offers both.
+
+**Drawing.** **draw** opens a pad: draw what to find as one box at the search level, in the
+data's own greys (dark, grey and light pens from the view; start blank or from the box at the
+view centre; "look like the data" softens it and adds the data's grain), then search for it.
+The model has never seen drawings: bold shapes such as craters find crater-like boxes, but on
+EM a drawing finds nothing (test 10: top-10 precision 0.00-0.13, about what a random order
+finds), so there, add real examples instead.
+
+**Heat.** The map of where it has looked also shows how well each place matched: every place
+compared, in one magenta ramp from faint (the lowest score shown) to solid (the best), for the
+best quarter of the scores by default (the slider sets the share). On 2-D maps the heat lies
+over the image too (a checkbox and an opacity slider). Each place keeps the score it had when
+it was compared, except the best 3,000, which are re-scored whenever feedback or a new example
+changes the query.
+
 With a GPU, the model also takes a rough look first: two levels coarser than the search level
 (the same physical box, a quarter of the pixels each way), a few hundred places at a time in
 the cheap scan's order, and the full-detail tiles are read best rough match first; a new round
 starts when only below-median tiles are left. It only reorders the reads, never skips any. On
 labelled EM (test 8, mito) it found the right tiles sooner than the cheap statistics at the
 same download: p@10 0.42 vs 0.33 after 1% of the tiles, 0.53 vs 0.41 after 5% (reading all of
-them gives 0.48). Marking a hit good or bad also moves this rough query, so the tiles read next
+them gives 0.48). Each round takes the coarse chunks under the next tiles and scores every
+tile under each chunk from it, since a chunk downloads whole anyway. Marking a hit good or bad also moves this rough query, so the tiles read next
 follow your marks, not only the list. Add `&rough=0` to the address to turn it off (`&rough=1`
 forces it on a CPU, where it is slow).
 
@@ -64,6 +89,7 @@ differences paired per query (`results/RESULTS.md` has the tables):
 | **adapt to data** | compare after removing what all candidates share | +0.00 +/- 0.01 |
 | **method: tiles + tokens** | the Mars CTX explorer's way: each tile through the model once (crops twice the box), every window of the box's size, at 1/8 of it, matched by the mean of its tokens | -0.01 / +0.06 / -0.02 per target (each +/- 0.04): as good |
 | good / bad | re-rank toward good hits, away from bad | +0.00 / +0.04 / +0.04 per target |
+| **examples** (shift-click adds one) | their mean, or each hit's best match among them | mean of 8: -0.03 / +0.11 / +0.06; best of 2: +0.04 / +0.04 / +0.02 (each +/- 0.04, test 9) |
 
 No option changes precision by more than a few hundredths, so the default stays and the rest
 are there for data where they make sense: rotation for things with no fixed orientation
@@ -89,7 +115,9 @@ Ways to load data:
 | a link to a place | `&v=x,y,z,scale` (full-resolution pixels and zoom): the address bar keeps the current view, so a copied link opens the same place |
 
 The page shows each dataset's size (pixels or voxels, and levels) when it opens. Volumes and
-OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes),
+OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes;
+its own controls, the layer bar, position box and layer panel, work as usual, and only clicks
+on the data search),
 tile pyramids in OpenLayers; the search runs behind the scenes in either. Neuroglancer opens
 at the right place from the start (its first state carries the place, zoom and coordinate
 space), and the model downloads only once the view has its first data, so the two do not

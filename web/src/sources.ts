@@ -284,13 +284,15 @@ export let decodeImage = async (blob: Blob): Promise<{ data: Uint8ClampedArray; 
 export function setDecoder(f: typeof decodeImage) { decodeImage = f; }
 
 /** Whether an image file arrived whole: a PNG ends with its IEND chunk, a JPEG with its
- * end-of-image marker; anything else is taken as whole. */
+ * end-of-image marker; WebP and GIF are taken as whole; anything else is not an image (an
+ * error page sent with status 200, as ArcGIS servers send their errors). */
 async function complete(b: Blob): Promise<boolean> {
   if (b.size < 16) return false;
-  const head = new Uint8Array(await b.slice(0, 4).arrayBuffer()), tail = new Uint8Array(await b.slice(b.size - 12).arrayBuffer());
+  const head = new Uint8Array(await b.slice(0, 12).arrayBuffer()), tail = new Uint8Array(await b.slice(b.size - 12).arrayBuffer());
   if (head[0] === 0x89 && head[1] === 0x50) return tail[4] === 0x49 && tail[5] === 0x45 && tail[6] === 0x4e && tail[7] === 0x44;  // ...IEND + CRC
   if (head[0] === 0xff && head[1] === 0xd8) { for (let i = 0; i < 11; i++) if (tail[i] === 0xff && tail[i + 1] === 0xd9) return true; return false; }
-  return true;
+  const ascii = String.fromCharCode(...head);
+  return (ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") || ascii.startsWith("GIF8");
 }
 
 export class TileSource implements Source {
@@ -331,38 +333,46 @@ export class TileSource implements Source {
 
   private blobs = new Lru<Promise<Blob | null>>(4000);
 
-  /** The tile's image file (cached), as the viewer draws it and the search decodes it. */
+  /** The tile's image file (cached), as the viewer draws it and the search decodes it. Some
+   * caches serve cut-off images (Esri's Mars CTX, at every zoom here and there; drawn, the
+   * missing rows are black bands, and in places a whole block of them repeats one picture) or
+   * error pages: such a tile is rebuilt from its four children (sharp), else from its parent's
+   * quarter (or grandparent's...), else the file is used as it came. */
   blob(zoom: number, x: number, y: number): Promise<Blob | null> {
     const key = `${zoom}/${x}/${y}`;
     let b = this.blobs.get(key);
     if (!b) {
       b = (async () => {
-        for (let attempt = 0; attempt < 5; attempt++) {
-          let wait = 300 * 2 ** attempt;
-          try {
-            const r = await this.slot(() => fetch(this.spec.url(zoom, x, y)));
-            if (r.status === 404 || r.status === 400) return null;  // no tile there
-            if (r.status >= 500 && r.status !== 503 && attempt >= 1) return null;  // a broken tile (some caches have gaps)
-            if (r.status === 429 || r.status === 503) wait = 1500 * 2 ** attempt;  // asked to slow down
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const blob = await r.blob();
-            this.bytesRead += blob.size;
-            // some caches serve cut-off images (Esri's Mars CTX at zooms 7 and 11): drawn, the
-            // missing rows are black bands. Such a tile is rebuilt from its parent's quarter.
-            if (!(await complete(blob))) return (await this.fromParent(zoom, x, y)) ?? blob;
-            return blob;
-          } catch (e) {
-            // a server error without CORS headers reaches the page as a failed fetch (TypeError):
-            // treat it like the 5xx it most likely is, and give up after two tries
-            if (e instanceof TypeError && attempt >= 1) return null;
-            await new Promise((res) => setTimeout(res, wait));
-          }
-        }
-        return null;
+        const raw = await this.fetchTile(zoom, x, y);
+        if (!raw || (await complete(raw))) return raw;
+        return (await this.fromChildren(zoom, x, y)) ?? (await this.fromParent(zoom, x, y)) ?? raw;
       })();
       this.blobs.set(key, b, 1);
     }
     return b;
+  }
+
+  /** The tile's file as the server sends it (retried; null when there is none). */
+  private async fetchTile(zoom: number, x: number, y: number): Promise<Blob | null> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let wait = 300 * 2 ** attempt;
+      try {
+        const r = await this.slot(() => fetch(this.spec.url(zoom, x, y)));
+        if (r.status === 404 || r.status === 400) return null;  // no tile there
+        if (r.status >= 500 && r.status !== 503 && attempt >= 1) return null;  // a broken tile (some caches have gaps)
+        if (r.status === 429 || r.status === 503) wait = 1500 * 2 ** attempt;  // asked to slow down
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        this.bytesRead += blob.size;
+        return blob;
+      } catch (e) {
+        // a server error without CORS headers reaches the page as a failed fetch (TypeError):
+        // treat it like the 5xx it most likely is, and give up after two tries
+        if (e instanceof TypeError && attempt >= 1) return null;
+        await new Promise((res) => setTimeout(res, wait));
+      }
+    }
+    return null;
   }
 
   /** Tile (zoom, x, y) cut from the matching quarter of its parent (or grandparent...),
@@ -377,6 +387,24 @@ export class TileSource implements Source {
       g.imageSmoothingEnabled = true;
       g.drawImage(img, (x % k) * part, (y % k) * part, part, part, 0, 0, ts, ts);
       img.close();
+      return await cv.convertToBlob({ type: "image/png" });
+    } catch { return this.fromParent(zoom, x, y, depth + 1); }  // not decodable after all: one more up
+  }
+
+  /** Tile (zoom, x, y) from its four children at the next zoom, each as the server sent it and
+   * whole, halved. Browser only (null elsewhere). */
+  private async fromChildren(zoom: number, x: number, y: number): Promise<Blob | null> {
+    if (typeof OffscreenCanvas === "undefined" || zoom >= this.spec.maxZoom) return null;
+    const kids = await Promise.all([0, 1, 2, 3].map((i) => this.fetchTile(zoom + 1, 2 * x + (i & 1), 2 * y + (i >> 1))));
+    for (const k of kids) if (!k || !(await complete(k))) return null;
+    try {
+      const ts = this.spec.tileSize, cv = new OffscreenCanvas(ts, ts), g = cv.getContext("2d")!;
+      g.imageSmoothingEnabled = true;
+      for (let i = 0; i < 4; i++) {
+        const img = await createImageBitmap(kids[i]!);
+        g.drawImage(img, ((i & 1) * ts) / 2, ((i >> 1) * ts) / 2, ts / 2, ts / 2);
+        img.close();
+      }
       return await cv.convertToBlob({ type: "image/png" });
     } catch { return null; }
   }

@@ -33,7 +33,7 @@ export class NgViewer {
   private off: Vec3;
   constructor(private container: HTMLElement, private src: NgSource, init: { cx: number; cy: number; z: number; scale: number },
               private hover: HTMLCanvasElement,
-              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void;
+              private on: { click: (fz: number, fy: number, fx: number, add: boolean) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void;
                             pointer?: (fx: number, fy: number, fz: number) => void },
               layers: Layer[] = []) {
     this.hoverCtx = hover.getContext("2d")!;
@@ -49,7 +49,7 @@ export class NgViewer {
                  : { type: "image", name: l.name, source: l.url, visible: !!l.visible })),
                { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
       // a volume: the slice and a 3-D view, where every hit box shows wherever it is in z
-      layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true, selectedLayer: { visible: false }, layerListPanel: { visible: false },
+      layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true,
       crossSectionScale: init.scale * dpr,
     };
     // the place, zoom and coordinate space in the first state when they can be known from the
@@ -78,7 +78,6 @@ export class NgViewer {
       await new Promise((r) => setTimeout(r, 200));
     }
     if (!this.viewer) throw new Error("Neuroglancer did not start");
-    try { this.viewer.uiConfiguration.showUIControls.value = false; } catch { /* older viewers */ }
     if (this.explicit) {
       // opened at the place already; should the viewer still fit the view to the data, go back
       setTimeout(() => {
@@ -107,7 +106,11 @@ export class NgViewer {
       setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
     }
     const doc = this.iframe.contentDocument!;
+    // only the data panels search and show the box: the viewer's own controls (layer bar,
+    // position, layer panel) work as usual
+    const onData = (e: MouseEvent) => !!(e.target as HTMLElement | null)?.closest?.(".neuroglancer-rendered-data-panel");
     doc.addEventListener("mousemove", (e) => {
+      if (!onData(e)) { if (this.mouse) { this.mouse = null; this.drawHover(); } return; }
       this.mouse = { x: e.clientX, y: e.clientY };
       this.drawHover();
       if (this.on.pointer) { const p = this.mousePosition(e.clientX, e.clientY); this.on.pointer(p[2], p[1], p[0]); }
@@ -115,14 +118,14 @@ export class NgViewer {
     try { this.viewer.position.changed.add(() => this.on.moved()); } catch { /* older viewers */ }  // panned or moved in z
     doc.addEventListener("mouseleave", () => { this.mouse = null; this.drawHover(); }, true);
     doc.addEventListener("wheel", () => setTimeout(() => { this.drawHover(); this.on.moved(); }, 0), true);
-    doc.addEventListener("mousedown", (e) => { if (e.button === 0) this.down = { x: e.clientX, y: e.clientY }; }, true);
+    doc.addEventListener("mousedown", (e) => { this.down = e.button === 0 && onData(e) ? { x: e.clientX, y: e.clientY } : null; }, true);
     doc.addEventListener("mouseup", (e) => {
       const d = this.down;
       this.down = null;
-      if (!d || e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (!d || e.button !== 0 || e.ctrlKey || e.altKey || e.metaKey) return;
       if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 4) return;  // a drag, not a click
       const p = this.mousePosition(e.clientX, e.clientY);
-      if (p) { this.mouse = null; this.drawHover(); this.on.click(p[0], p[1], p[2]); }
+      if (p) { this.mouse = null; this.drawHover(); this.on.click(p[0], p[1], p[2], e.shiftKey); }  // shift: another example
     }, true);
   }
 
@@ -195,8 +198,8 @@ export class NgViewer {
     }
   }
 
-  /** Query and hits as boxes of the annotation layer (the rest of the state untouched). */
-  setBoxes(query: NgBox | null, hits: NgBox[]) {
+  /** Query (its examples) and hits as boxes of the annotation layer (the rest of the state untouched). */
+  setBoxes(queries: NgBox[], hits: NgBox[]) {
     if (!this.viewer) return;
     const st = this.json();
     const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
@@ -208,7 +211,7 @@ export class NgViewer {
       put("z", this.src.dims === 3 ? b.fz - h : 0, this.src.dims === 3 ? b.fz + h : 1);
       return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "" };
     };
-    const list = [...hits.map((b, k) => box(b, `hit${k}`)), ...(query ? [box(query, "query")] : [])];
+    const list = [...hits.map((b, k) => box(b, `hit${k}`)), ...queries.map((b, k) => box(b, k ? `query${k}` : "query"))];
     // the annotation layer's own list, replaced in place: a whole-state restore resets the
     // camera and drops local annotations on this viewer
     const local = this.viewer.layerManager?.getLayerByName?.(LAYER)?.layer?.localAnnotations;
