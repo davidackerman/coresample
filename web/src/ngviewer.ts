@@ -18,6 +18,7 @@ export interface NgBox { fz: number; fy: number; fx: number; side: number; label
 type Json = Record<string, any>;
 
 const LAYER = "coresample";
+const HIT_COLOUR = "#ffd24a", QUERY_COLOUR = "#5ab0ff";  // the page's yellow (hits) and blue (what you clicked)
 
 export class NgViewer {
   iframe: HTMLIFrameElement;
@@ -47,7 +48,10 @@ export class NgViewer {
                ...layers.map((l) => (l.kind === "segmentation"
                  ? { type: "segmentation", name: l.name, source: l.url, visible: !!l.visible, segmentDefaultColor: l.color, selectedAlpha: 0.4, hoverHighlight: false }
                  : { type: "image", name: l.name, source: l.url, visible: !!l.visible })),
-               { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
+               // each box carries its colour: the query and its examples in the page's blue, hits in yellow
+               { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: HIT_COLOUR, annotations: [],
+                 annotationProperties: [{ id: "color", type: "rgb", default: HIT_COLOUR }],
+                 shader: "void main() { setColor(prop_color()); }" }],
       // a volume: the slice and a 3-D view, where every hit box shows wherever it is in z
       layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true,
       crossSectionScale: init.scale * dpr,
@@ -204,14 +208,14 @@ export class NgViewer {
     const st = this.json();
     const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
     if (!layer) return;
-    const box = (b: NgBox, id: string) => {
+    const box = (b: NgBox, id: string, color: string) => {
       const a = this.names.map(() => 0), c = this.names.map(() => 0);
       const h = b.side / 2, put = (n: string, lo: number, hi: number) => { const i = this.idx(n); if (i >= 0) { a[i] = lo + this.o(n); c[i] = hi + this.o(n); } };
       put("x", b.fx - h, b.fx + h); put("y", b.fy - h, b.fy + h);
       put("z", this.src.dims === 3 ? b.fz - h : 0, this.src.dims === 3 ? b.fz + h : 1);
-      return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "" };
+      return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "", props: [color] };
     };
-    const list = [...hits.map((b, k) => box(b, `hit${k}`)), ...queries.map((b, k) => box(b, k ? `query${k}` : "query"))];
+    const list = [...hits.map((b, k) => box(b, `hit${k}`, HIT_COLOUR)), ...queries.map((b, k) => box(b, k ? `query${k}` : "query", QUERY_COLOUR))];
     // the annotation layer's own list, replaced in place: a whole-state restore resets the
     // camera and drops local annotations on this viewer
     const local = this.viewer.layerManager?.getLayerByName?.(LAYER)?.layer?.localAnnotations;

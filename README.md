@@ -131,10 +131,15 @@ Ways to load data:
 | a link to a place | `&v=x,y,z,scale` (full-resolution pixels and zoom): the address bar keeps the current view, so a copied link opens the same place |
 
 The page shows each dataset's size (pixels or voxels, and levels) when it opens. Volumes and
-OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes;
-its own controls, the layer bar, position box and layer panel, work as usual, and only clicks
-on the data search),
-tile pyramids in OpenLayers; the search runs behind the scenes in either. Neuroglancer opens
+OME-Zarr open in Neuroglancer (the raw data streams natively; what you clicked appears as blue
+annotation boxes and the hits as yellow ones; its own controls, the layer bar, position box and
+layer panel, work as usual, and only clicks on the data search),
+tile pyramids in OpenLayers, and the planetary mosaics (Mars, Moon) on a CesiumJS globe (the
+**map** button switches to the flat map and writes `&globe=0` into the address); the search runs
+behind the scenes in each. The globe and the map load tiles the same way, so a tile a server
+sends broken (Esri's Mars cache has cut-off images and error pages at several zooms) is rebuilt
+from its children or its parent in both; the black strips that remain are gaps in the CTX
+mosaic itself. While a search reads, the boxes on the view update at most once a second. Neuroglancer opens
 at the right place from the start (its first state carries the place, zoom and coordinate
 space), and the model downloads only once the view has its first data, so the two do not
 compete for the network. A dataset can carry more layers over the same space: the HeLa volume

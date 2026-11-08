@@ -27,7 +27,23 @@ const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale
 let search: Search | null = null;
 let olv: OlViewer | null = null;  // OpenLayers for tile pyramids
 let ngv: NgViewer | null = null;
-let ngBoxesKey = "";
+let boxesKey = "", boxesAt = 0, boxesTimer = 0, boxesNow = false;
+/** Whether the viewer's boxes should be redrawn: when they changed; while the search reads, at
+ * most once a second (each new hit renumbers the ones below it, and redrawing on every one made
+ * the boxes flicker), at once for a new example, a mark, or when the search stops. */
+function boxesDue(key: string): boolean {
+  if (key === boxesKey) return false;
+  const ph = search?.state.phase, reading = ph === "read" || ph === "scan";
+  const wait = 1000 - (performance.now() - boxesAt), sameQuery = key.split("|")[0] === boxesKey.split("|")[0];
+  if (reading && sameQuery && !boxesNow && wait > 0) {
+    clearTimeout(boxesTimer);
+    boxesTimer = window.setTimeout(overlays, wait);
+    return false;
+  }
+  clearTimeout(boxesTimer);
+  boxesKey = key; boxesAt = performance.now(); boxesNow = false;
+  return true;
+}
 let gv: GlobeViewer | null = null;  // CesiumJS globe for planetary mosaics (toggled)
 const globeDiv = document.createElement("div");
 globeDiv.style.cssText = "position:absolute;inset:0;display:none;background:#000";  // Neuroglancer for OME-Zarr (2-D and 3-D); the canvas viewer only as a fallback
@@ -175,13 +191,15 @@ function toScreen(fx: number, fy: number) {
 }
 
 function overlays() {
+  if (ngv || gv || olv) {
+    // what the boxes show: the examples, then the 30 best hits (a viewer redraws only on change)
+    const key = search ? `${search.state.examples}|${search.state.hits.slice(0, 30).map((h) => h.index).join(",")}` : "none";
+    if (!boxesDue(key)) return;
+  }
   if (ngv) {  // the boxes as a Neuroglancer annotation layer
-    if (!search) { if (ngBoxesKey !== "none") { ngBoxesKey = "none"; ngv.setBoxes([], []); } return; }
+    if (!search) { ngv.setBoxes([], []); return; }
     const st = search.state, f = 2 ** st.working, side = st.patch * f, d3 = src?.dims === 3;
     const box = (c: Vec3, lab?: string) => ({ fz: d3 ? c[0] * f : 0, fy: c[1] * f, fx: c[2] * f, side, label: lab });
-    const key = `${st.examples}|${st.hits.length}|${st.hits[0]?.index}|${st.hits[st.hits.length - 1]?.index}`;
-    if (key === ngBoxesKey) return;  // a state restore per change, not per frame
-    ngBoxesKey = key;
     ngv.setBoxes(queryBoxes(box), st.hits.slice(0, 30).map((h, k) => box(h.center, `#${k + 1}`)));
     return;
   }
@@ -489,7 +507,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   olv = null;
   ngv?.destroy();
   ngv = null;
-  ngBoxesKey = "";
+  boxesKey = "";
   const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
   olDiv.style.display = tiled ? "block" : "none";
   canvas.style.display = tiled || volume ? "none" : "block";
@@ -529,6 +547,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   u.searchParams.delete("v");  // a view belongs to its dataset
   history.replaceState(null, "", u);
   resize();
+  if (tiled && p?.globe && wantGlobe()) void toggleGlobe();
 }
 
 /** A view from the address bar (?v=x,y,z,scale), once, for the first dataset opened. */
@@ -746,12 +765,33 @@ function drawPatch(cv: HTMLCanvasElement, pix: Uint8Array, P: number, C: number)
 }
 /** The query's examples side by side in a square (one: the patch itself). */
 let qDrawn = "";
+/** Cells that fill a square of side S with n pictures, row by row, the last row's cells
+ * widened so no part of the square is left empty (2: side by side, 3: two above one...). */
+function mosaic(n: number, S: number): { x: number; y: number; w: number; h: number }[] {
+  const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols), out: { x: number; y: number; w: number; h: number }[] = [];
+  for (let k = 0; k < n; k++) {
+    const r = Math.floor(k / cols), inRow = r < rows - 1 ? cols : n - (rows - 1) * cols, j = k - r * cols;
+    const x = Math.round((j * S) / inRow), y = Math.round((r * S) / rows);
+    out.push({ x, y, w: Math.round(((j + 1) * S) / inRow) - x, h: Math.round(((r + 1) * S) / rows) - y });
+  }
+  return out;
+}
+/** The middle of a square picture of side `size` with the cell's shape: [sx, sy, sw, sh]. */
+function cropTo(size: number, w: number, h: number): [number, number, number, number] {
+  const sw = w < h ? (size * w) / h : size, sh = h < w ? (size * h) / w : size;
+  return [(size - sw) / 2, (size - sh) / 2, sw, sh];
+}
 function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: number) {
-  const n = pixs.length, g = Math.ceil(Math.sqrt(n));
-  cv.width = g * P; cv.height = g * P;
-  const ctx2 = cv.getContext("2d")!;
-  ctx2.fillStyle = "#0b0e12"; ctx2.fillRect(0, 0, cv.width, cv.height);
-  pixs.forEach((pix, i) => ctx2.putImageData(patchImage(pix, P, C), (i % g) * P, Math.floor(i / g) * P));
+  const n = pixs.length, S = Math.ceil(Math.sqrt(n)) * P;
+  cv.width = S; cv.height = S;
+  const ctx2 = cv.getContext("2d")!, one = document.createElement("canvas");
+  one.width = P; one.height = P;
+  ctx2.fillStyle = "#0b0e12"; ctx2.fillRect(0, 0, S, S);
+  const gap = n > 1 ? Math.max(1, Math.round(S / 48)) : 0;  // a thin line between examples
+  mosaic(n, S).forEach((r, i) => {
+    one.getContext("2d")!.putImageData(patchImage(pixs[i], P, C), 0, 0);
+    ctx2.drawImage(one, ...cropTo(P, r.w, r.h), r.x, r.y, r.w - (r.x + r.w < S ? gap : 0), r.h - (r.y + r.h < S ? gap : 0));
+  });
   cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
 }
 
@@ -832,6 +872,7 @@ function panel(st: State) {
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
       el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
         const i = Number(el!.dataset.index), good = b.dataset.g === "1";
+        boxesNow = true;  // the boxes follow the re-ranked list at once
         search?.mark(i, good);
       }));
     }
@@ -969,15 +1010,15 @@ function pcaColours(tok: Float32Array, g: number, D: number): Float32Array {
   return soften(out, g, 3);
 }
 /** Draw a g x g colour map (RGBA from `px`) into `cv`, smoothly enlarged. */
-function paintMap(cv: HTMLCanvasElement, g: number, px: (t: number) => [number, number, number, number], cells = 1, at = 0) {
+function paintMap(cv: HTMLCanvasElement, g: number, px: (t: number) => [number, number, number, number], cell?: { x: number; y: number; w: number; h: number }) {
   const img = new ImageData(g, g);
   for (let t = 0; t < g * g; t++) img.data.set(px(t), 4 * t);
   const tmp = document.createElement("canvas");
   tmp.width = g; tmp.height = g;
   tmp.getContext("2d")!.putImageData(img, 0, 0);
-  const S = 128, c2 = cv.getContext("2d")!, side = S / cells;
+  const S = 128, c2 = cv.getContext("2d")!, r = cell ?? { x: 0, y: 0, w: S, h: S };
   c2.imageSmoothingEnabled = true; c2.imageSmoothingQuality = "high";
-  c2.drawImage(tmp, (at % cells) * side, Math.floor(at / cells) * side, side, side);
+  c2.drawImage(tmp, ...cropTo(g, r.w, r.h), r.x, r.y, r.w, r.h);
 }
 /** The query's tokens (each example's) from the 224 px model, and their average token. */
 async function queryTokens(s: Search) {
@@ -1046,10 +1087,10 @@ function drawQueryMap() {
   const cv = $<HTMLCanvasElement>("qmap");
   cv.width = 128; cv.height = 128;
   if (!whyOn || whyMode !== "parts" || !pca || !qgrids || mapFor !== search) return;
-  const cells = Math.ceil(Math.sqrt(qgrids.length));
+  const cells = mosaic(qgrids.length, 128);  // laid out as the examples are (drawExamples)
   qgrids.forEach((g, k) => {
     const col = pcaColours(g.tokens, g.g, g.D);
-    paintMap(cv, g.g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255], cells, k);
+    paintMap(cv, g.g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255], cells[k]);
   });
 }
 
@@ -1229,9 +1270,17 @@ $("detail").addEventListener("change", async () => {
   again();  // embeddings differ: search again
 });
 
-// the map / globe toggle (planetary mosaics)
+// the map / globe toggle (planetary mosaics): they open on the globe unless the address says
+// globe=0, which choosing the map writes there (so a shared link keeps the choice)
 const globeBtn = $<HTMLButtonElement>("globe");
-globeBtn.addEventListener("click", async () => {
+const wantGlobe = () => new URL(location.href).searchParams.get("globe") !== "0";
+globeBtn.addEventListener("click", () => {
+  const u = new URL(location.href);
+  if (gv) u.searchParams.set("globe", "0"); else u.searchParams.delete("globe");
+  history.replaceState(null, "", u);
+  toggleGlobe();
+});
+async function toggleGlobe() {
   if (!src || !preset?.globe || !(src instanceof TileSource)) return;
   if (gv) {  // back to the map, at the globe's place
     const e = gv.extentPx(), s = gv.scale();
@@ -1239,6 +1288,7 @@ globeBtn.addEventListener("click", async () => {
     globeDiv.style.display = "none"; olDiv.style.display = "block";
     olv?.goTo((e.x0 + e.x1) / 2, (e.y0 + e.y1) / 2, s);
     globeBtn.textContent = "globe";
+    boxesKey = ""; overlays();  // the map's boxes as they are now
   } else {
     const at = olv ? { ...olv.center(), scale: olv.scale() } : { cx: view.cx, cy: view.cy, scale: view.scale };
     globeBtn.textContent = "map";
@@ -1249,9 +1299,9 @@ globeBtn.addEventListener("click", async () => {
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy) => showCursor(fx, fy),
     });
-    try { await gv.ready; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
+    try { await gv.ready; boxesKey = ""; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
   }
-});
+}
 
 // ---------------------------------------------------------------------------------------
 // drawing what to find: a box at the search level, drawn in the view's own greys
