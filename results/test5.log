@@ -1,0 +1,199 @@
+[mito] 62 instances, 5115 candidate patches, 10 queries
+[mito] embedded 5115 patches (112) in 26s
+[mito q0] done
+[mito q1] done
+[mito q2] done
+[mito q3] done
+[mito q4] done
+[mito q5] done
+[mito q6] done
+[mito q7] done
+[mito q8] done
+[mito q9] done
+[mito] embedded 5115 patches (224) in 140s
+[mito] embedded 5115 patches (112tok) in 27s
+== mito: current (cls+mean, single, cosine, 112): p@10 0.47 p@25 0.44 r@100 0.571
+   center     single        cosine    224: p@10 0.62 p@25 0.53 r@100 0.682
+   cls+mean   single        cosine    224: p@10 0.60 p@25 0.52 r@100 0.690
+   cls+center single        cosine    224: p@10 0.60 p@25 0.52 r@100 0.695
+   cls+center rot-max       cosine    224: p@10 0.58 p@25 0.53 r@100 0.694
+   center     rot-max       cosine    224: p@10 0.57 p@25 0.51 r@100 0.681
+   cls+mean   rot-max       cosine    224: p@10 0.55 p@25 0.50 r@100 0.677
+   center     single        centered  112: p@10 0.51 p@25 0.48 r@100 0.639
+   cls+center rot+scale-max centered  112: p@10 0.52 p@25 0.46 r@100 0.605
+   feedback: none p@10 0.45 p@25 0.43 | rocchio p@10 0.48 p@25 0.43 | multi-max p@10 0.45 p@25 0.44
+[vesicle] 3440 instances, 46872 candidate patches, 10 queries
+[vesicle] embedded 46872 patches (112) in 260s
+[vesicle q0] done
+[vesicle q1] done
+[vesicle q2] done
+[vesicle q3] done
+[vesicle q4] done
+[vesicle q5] done
+[vesicle q6] done
+[vesicle q7] done
+[vesicle q8] done
+[vesicle q9] done
+== vesicle: current (cls+mean, single, cosine, 112): p@10 0.85 p@25 0.82 r@100 0.071
+   cls        single        qe        112: p@10 0.91 p@25 0.86 r@100 0.068
+   cls        single        cosine    112: p@10 0.89 p@25 0.85 r@100 0.068
+   cls+mean   rot-mean      cosine    112: p@10 0.89 p@25 0.84 r@100 0.071
+   cls+center rot-mean      qe        112: p@10 0.89 p@25 0.84 r@100 0.070
+   cls+mean   rot-mean      qe        112: p@10 0.86 p@25 0.87 r@100 0.069
+   cls+center single        qe        112: p@10 0.86 p@25 0.87 r@100 0.069
+   cls+mean   single        qe        112: p@10 0.86 p@25 0.86 r@100 0.071
+   cls        rot-mean      qe        112: p@10 0.87 p@25 0.84 r@100 0.071
+   feedback: none p@10 0.77 p@25 0.83 | rocchio p@10 0.81 p@25 0.84 | multi-max p@10 0.82 p@25 0.84
+[mito_full] 421 instances, 48576 candidate patches, 10 queries
+[mito_full] embedded 48576 patches (112) in 229s
+[mito_full q0] done
+[mito_full q1] done
+[mito_full q2] done
+[mito_full q3] done
+[mito_full q4] done
+[mito_full q5] done
+[mito_full q6] done
+[mito_full q7] done
+[mito_full q8] done
+[mito_full q9] done
+[mito_full] embedded 48576 patches (224) in 1276s
+== mito_full: current (cls+mean, single, cosine, 112): p@10 0.47 p@25 0.44 r@100 0.116
+   center     rot-max       centered  112: p@10 0.50 p@25 0.51 r@100 0.141
+   center     single        qe        112: p@10 0.50 p@25 0.51 r@100 0.126
+   center     rot-mean      centered  112: p@10 0.51 p@25 0.49 r@100 0.139
+   center     rot-max       cosine    112: p@10 0.51 p@25 0.49 r@100 0.132
+   center     single        cosine    112: p@10 0.50 p@25 0.48 r@100 0.128
+   center     rot-mean      cosine    112: p@10 0.51 p@25 0.47 r@100 0.133
+   mean       rot-max       whitened  112: p@10 0.55 p@25 0.42 r@100 0.107
+   mean       single        cosine    112: p@10 0.51 p@25 0.45 r@100 0.113
+   feedback: none p@10 0.39 p@25 0.41 | rocchio p@10 0.42 p@25 0.41 | multi-max p@10 0.46 p@25 0.40
+[mito] 62 instances, 5115 candidate patches, 30 queries
+[mito q0] done
+[mito q1] done
+[mito q2] done
+[mito q3] done
+[mito q4] done
+[mito q5] done
+[mito q6] done
+[mito q7] done
+[mito q8] done
+[mito q9] done
+[mito q10] done
+[mito q11] done
+[mito q12] done
+[mito q13] done
+[mito q14] done
+[mito q15] done
+[mito q16] done
+[mito q17] done
+[mito q18] done
+[mito q19] done
+[mito q20] done
+[mito q21] done
+[mito q22] done
+[mito q23] done
+[mito q24] done
+[mito q25] done
+[mito q26] done
+[mito q27] done
+[mito q28] done
+[mito q29] done
+== mito_n30: current (cls+mean, single, cosine, 112): p@10 0.48+/-0.03 p@25 0.46+/-0.03 r@100 0.589
+   center     single        cosine    224: p@10 0.52+/-0.04 p@25 0.48+/-0.02 r@100 0.657
+   cls+mean   single        cosine    224: p@10 0.52+/-0.04 p@25 0.47+/-0.02 r@100 0.656
+   cls+center rot-max       qe        112: p@10 0.52+/-0.03 p@25 0.47+/-0.03 r@100 0.600
+   cls+center single        cosine    224: p@10 0.51+/-0.04 p@25 0.47+/-0.02 r@100 0.661
+   center     rot-max       cosine    224: p@10 0.51+/-0.03 p@25 0.48+/-0.02 r@100 0.662
+   cls+center rot-max       cosine    224: p@10 0.50+/-0.03 p@25 0.48+/-0.02 r@100 0.673
+   center     rot-max       qe        112: p@10 0.47+/-0.02 p@25 0.49+/-0.02 r@100 0.623
+   center     single        centered  112: p@10 0.49+/-0.03 p@25 0.47+/-0.03 r@100 0.641
+   cls+center single        centered  112: p@10 0.49+/-0.04 p@25 0.47+/-0.03 r@100 0.606
+   center     single        qe        112: p@10 0.47+/-0.03 p@25 0.47+/-0.02 r@100 0.592
+   feedback: none p@10 0.50 p@25 0.46 | rocchio p@10 0.50 p@25 0.46 | multi-max p@10 0.50 p@25 0.45
+[vesicle] 3440 instances, 46872 candidate patches, 30 queries
+[vesicle q0] done
+[vesicle q1] done
+[vesicle q2] done
+[vesicle q3] done
+[vesicle q4] done
+[vesicle q5] done
+[vesicle q6] done
+[vesicle q7] done
+[vesicle q8] done
+[vesicle q9] done
+[vesicle q10] done
+[vesicle q11] done
+[vesicle q12] done
+[vesicle q13] done
+[vesicle q14] done
+[vesicle q15] done
+[vesicle q16] done
+[vesicle q17] done
+[vesicle q18] done
+[vesicle q19] done
+[vesicle q20] done
+[vesicle q21] done
+[vesicle q22] done
+[vesicle q23] done
+[vesicle q24] done
+[vesicle q25] done
+[vesicle q26] done
+[vesicle q27] done
+[vesicle q28] done
+[vesicle q29] done
+[vesicle] embedded 46872 patches (224) in 1146s
+== vesicle_n30: current (cls+mean, single, cosine, 112): p@10 0.81+/-0.04 p@25 0.80+/-0.03 r@100 0.064
+   center     rot-max       cosine    224: p@10 0.85+/-0.03 p@25 0.84+/-0.02 r@100 0.074
+   cls+mean   single        qe        112: p@10 0.85+/-0.03 p@25 0.84+/-0.02 r@100 0.065
+   cls+center rot-max       cosine    224: p@10 0.83+/-0.03 p@25 0.83+/-0.02 r@100 0.073
+   center     single        qe        112: p@10 0.83+/-0.03 p@25 0.82+/-0.02 r@100 0.065
+   cls+mean   rot-max       cosine    224: p@10 0.83+/-0.03 p@25 0.83+/-0.02 r@100 0.072
+   center     rot-max       qe        112: p@10 0.83+/-0.03 p@25 0.82+/-0.02 r@100 0.065
+   cls+center rot-max       qe        112: p@10 0.82+/-0.03 p@25 0.82+/-0.03 r@100 0.064
+   cls+center single        qe        112: p@10 0.81+/-0.03 p@25 0.83+/-0.02 r@100 0.065
+   cls+mean   rot-max       cosine    112: p@10 0.83+/-0.04 p@25 0.80+/-0.03 r@100 0.064
+   center     single        cosine    224: p@10 0.81+/-0.03 p@25 0.82+/-0.02 r@100 0.070
+   feedback: none p@10 0.79 p@25 0.79 | rocchio p@10 0.83 p@25 0.84 | multi-max p@10 0.84 p@25 0.83
+[mito_full] 421 instances, 48576 candidate patches, 30 queries
+[mito_full q0] done
+[mito_full q1] done
+[mito_full q2] done
+[mito_full q3] done
+[mito_full q4] done
+[mito_full q5] done
+[mito_full q6] done
+[mito_full q7] done
+[mito_full q8] done
+[mito_full q9] done
+[mito_full q10] done
+[mito_full q11] done
+[mito_full q12] done
+[mito_full q13] done
+[mito_full q14] done
+[mito_full q15] done
+[mito_full q16] done
+[mito_full q17] done
+[mito_full q18] done
+[mito_full q19] done
+[mito_full q20] done
+[mito_full q21] done
+[mito_full q22] done
+[mito_full q23] done
+[mito_full q24] done
+[mito_full q25] done
+[mito_full q26] done
+[mito_full q27] done
+[mito_full q28] done
+[mito_full q29] done
+== mito_full_n30: current (cls+mean, single, cosine, 112): p@10 0.44+/-0.04 p@25 0.43+/-0.03 r@100 0.107
+   center     rot-max       centered  112: p@10 0.49+/-0.03 p@25 0.48+/-0.03 r@100 0.137
+   center     single        centered  112: p@10 0.51+/-0.04 p@25 0.46+/-0.03 r@100 0.129
+   center     rot-max       cosine    112: p@10 0.49+/-0.04 p@25 0.47+/-0.03 r@100 0.128
+   center     rot-max       qe        112: p@10 0.49+/-0.04 p@25 0.46+/-0.03 r@100 0.128
+   cls+center rot-max       centered  112: p@10 0.48+/-0.03 p@25 0.47+/-0.03 r@100 0.130
+   center     rot-max       cosine    224: p@10 0.48+/-0.04 p@25 0.46+/-0.03 r@100 0.125
+   center     single        qe        112: p@10 0.48+/-0.04 p@25 0.47+/-0.03 r@100 0.122
+   cls+center rot-max       qe        112: p@10 0.48+/-0.04 p@25 0.46+/-0.03 r@100 0.122
+   center     single        cosine    112: p@10 0.49+/-0.04 p@25 0.45+/-0.03 r@100 0.123
+   center     single        cosine    224: p@10 0.48+/-0.04 p@25 0.45+/-0.04 r@100 0.124
+   feedback: none p@10 0.45 p@25 0.42 | rocchio p@10 0.49 p@25 0.44 | multi-max p@10 0.44 p@25 0.40

@@ -1,7 +1,9 @@
 // DINOv2-small patch embeddings in the page, through chunkmirage's ONNX Runtime Web wrapper
 // (WebGPU when the browser has it, else WebAssembly). The model files are the exports of
-// web/scripts/export_model.py at 112 and 224 px input: output (n, 1152) = [CLS | mean token |
-// centre-weighted mean token], each 384-d part L2-normalized; matching picks the parts.
+// web/scripts/export_model.py. At 112 px input the model outputs (n, 1152) = [CLS | mean token |
+// centre-weighted mean token], each 384-d part L2-normalized; matching picks the parts. At 224 px
+// it outputs its raw tokens (n, 257, 384): the same 1152-d embedding is pooled from them here
+// ("detailed" matching), and `tokens` hands out the 16 x 16 token grid for the tile-token mode.
 import { Onnx, type OnnxModel } from "../../../chunkmirage/web/src/onnx.ts";
 
 export const DIM = 1152;
@@ -25,6 +27,38 @@ export function prepare(p: Patch, out: Float32Array, offset: number, INPUT = 112
       }
     }
   }
+}
+
+/** The 112 model's [CLS | mean | centre-weighted] embedding, pooled from item `j` of a raw
+ * token output (T = 1 + g*g tokens of D): the same pooling as export_model.py's `Pooled`. */
+const weights = new Map<number, Float32Array>();
+export function poolTokens(data: Float32Array, j: number, T: number, D: number): Float32Array {
+  const g = Math.round(Math.sqrt(T - 1));
+  let w = weights.get(g);
+  if (!w) {
+    w = new Float32Array(g * g);
+    let sum = 0;
+    for (let y = 0; y < g; y++) for (let x = 0; x < g; x++) {
+      const yy = y - (g - 1) / 2, xx = x - (g - 1) / 2;
+      sum += w[y * g + x] = Math.exp(-(yy * yy + xx * xx) / (2 * (g / 4) ** 2));
+    }
+    for (let i = 0; i < w.length; i++) w[i] /= sum;
+    weights.set(g, w);
+  }
+  const out = new Float32Array(3 * D), base = j * T * D;
+  for (let d = 0; d < D; d++) out[d] = data[base + d];
+  for (let t = 1; t < T; t++) {
+    const o = base + t * D, wt = w[t - 1];
+    for (let d = 0; d < D; d++) { out[D + d] += data[o + d] / (T - 1); out[2 * D + d] += wt * data[o + d]; }
+  }
+  for (let p = 0; p < 3; p++) unitPart(out, p * D, D);
+  return out;
+}
+function unitPart(v: Float32Array, o: number, n: number) {
+  let s = 0;
+  for (let i = o; i < o + n; i++) s += v[i] * v[i];
+  s = Math.sqrt(s) || 1;
+  for (let i = o; i < o + n; i++) v[i] /= s;
 }
 
 export class Embedder {
@@ -67,9 +101,9 @@ export class Embedder {
       this.seconds += (performance.now() - t0) / 1000;
       this.count += idx.length;
       this.provider = this.onnx.provider;
-      const data = r.data as Float32Array;
+      const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens (the 224 model): pool them here
       idx.forEach((i, j) => {
-        const e = Float32Array.from(data.subarray(j * DIM, (j + 1) * DIM));
+        const e = raw ? poolTokens(data, j, r.dims[1], r.dims[2]) : Float32Array.from(data.subarray(j * DIM, (j + 1) * DIM));
         out[i] = e;
         if (keys) this.cache.set(keys[i], e);
       });
@@ -78,7 +112,35 @@ export class Embedder {
     }
     return out as Float32Array[];
   }
+  /** Each crop's 16 x 16 grid of unit-length patch tokens (the 224 model, whatever `input` is). */
+  async tokens(crops: Patch[]): Promise<TokenGrid[]> {
+    const size = TOKENS_INPUT, out: TokenGrid[] = [];
+    for (let s = 0; s < crops.length;) {
+      await new Promise((r) => setTimeout(r, 0));
+      const B = this.provider === "wasm" ? 2 : 16, part = crops.slice(s, s + B);
+      s += part.length;
+      const x = new Float32Array(part.length * 3 * size * size);
+      part.forEach((p, j) => prepare(p, x, j * 3 * size * size, size));
+      const t0 = performance.now();
+      const r = await this.onnx.run(this.models[size], x, [part.length, 3, size, size]);
+      this.seconds += (performance.now() - t0) / 1000;
+      this.count += part.length;
+      this.provider = this.onnx.provider;
+      const data = r.data as Float32Array, T = r.dims[1], D = r.dims[2], g = Math.round(Math.sqrt(T - 1));
+      part.forEach((_, j) => {
+        const tok = data.slice((j * T + 1) * D, (j + 1) * T * D);  // drop CLS
+        for (let t = 0; t < g * g; t++) unitPart(tok, t * D, D);
+        out.push({ tokens: tok, g, D });
+      });
+    }
+    return out;
+  }
 }
+
+export const TOKENS_INPUT = 224;  // the model whose output is its tokens
+export const GRID = TOKENS_INPUT / 14;  // 16 x 16 tokens per crop
+
+export interface TokenGrid { tokens: Float32Array; g: number; D: number }  // unit tokens, row-major g x g x D
 
 export function dot(a: Float32Array, b: Float32Array): number {
   let s = 0;
@@ -95,14 +157,15 @@ const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2] };
  * after subtracting `mu` (the candidates' mean embedding: "adapt to the data") when given. */
 export function similarity(a: Float32Array, q: Float32Array, focus: Focus, mu?: Float32Array): number {
   let total = 0;
-  for (const p of PARTS[focus]) {
+  const parts = a.length === PART ? [0] : PARTS[focus];  // a window of tokens is one 384-d part
+  for (const p of parts) {
     const o = p * PART;
     if (!mu) { let s = 0; for (let i = o; i < o + PART; i++) s += a[i] * q[i]; total += s; continue; }
     let s = 0, na = 0, nq = 0;
     for (let i = o; i < o + PART; i++) { const x = a[i] - mu[i], y = q[i] - mu[i]; s += x * y; na += x * x; nq += y * y; }
     total += s / (Math.sqrt(na * nq) + 1e-9);
   }
-  return total / PARTS[focus].length;
+  return total / parts.length;
 }
 
 /** Back-compat for the whole-patch match without adaptation. */

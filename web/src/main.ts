@@ -3,7 +3,7 @@
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
-import { Search, coarseLevelFor, type MatchOptions, type State } from "./search.ts";
+import { Search, coarseLevelFor, type MatchOptions, type Method, type State } from "./search.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
@@ -41,7 +41,7 @@ let hitEls: HTMLElement[] = [];
 /** A model file from Cache Storage when there, else downloaded once into it (88 MB each). */
 async function cachedBytes(url: string): Promise<ArrayBuffer> {
   try {
-    const cache = await caches.open("coresample-models-v2");  // v2: the [CLS | mean | centre] export
+    const cache = await caches.open("coresample-models-v3");  // v3: the 224 model outputs its tokens
     const hit = await cache.match(url);
     if (hit) return hit.arrayBuffer();
     const r = await fetch(url);
@@ -52,6 +52,7 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
     return (await fetch(url)).arrayBuffer();
   }
 }
+try { caches.delete("coresample-models-v2").catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
 const emb = new Embedder((size) => new URL(`models/dinov2-small-${size}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 const modelEl = $("model");
@@ -554,7 +555,7 @@ function queryAt(fx: number, fy: number, fz?: number) {
   $("hint").classList.add("gone");
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
-                                   match: matchOptions() });
+                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method });
   $<HTMLButtonElement>("clear").disabled = false;
   let queued = false;
   const me = search;
@@ -594,7 +595,7 @@ function panel(st: State) {
   $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of the region read`
                          : st.phase === "error" ? PHASE.error : PHASE[st.phase];
   const lines = st.phase === "error" ? [st.message] : [
-    st.tilesTotal ? `${num(st.patches)} patches compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
+    st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     st.coarse >= 0 ? `level ${st.working}, ranked by a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
   ];
@@ -654,6 +655,9 @@ function matchOptions(): MatchOptions {
            scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked };
 }
 for (const id of ["focus", "rot", "scl", "adapt"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
+$("method").addEventListener("change", () => {  // candidates are embedded differently: search again
+  if (search) { const q = search.query, f = 2 ** search.state.working; queryAt(q[2] * f, q[1] * f, q[0] * f); }
+});
 $("detail").addEventListener("change", async () => {
   const det = $<HTMLSelectElement>("detail");
   det.dataset.touched = "1";

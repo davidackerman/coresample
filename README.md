@@ -32,26 +32,29 @@ your click (the number under each thumbnail). Nothing is precomputed or uploaded
 ### How matching works
 
 The number under each hit is the similarity of its DINOv2 embedding to your click's (1 =
-identical). The controls under **Options** choose how that is computed. Test 5
-(`test5_matching.py`) measured each on labelled EM, 10 queries per run, the same candidates for
-every variant (top-10 precision; about +/-0.1 is noise at 10 queries):
+identical). The controls under **Options** choose how that is computed. Tests 5 and 7 measured
+each on labelled EM: 30 queries per target, the same candidates and queries for every option,
+differences paired per query (`results/RESULTS.md` has the tables):
 
-| control | what it does | mito, subvolume | mito, whole volume | vesicles |
-|---|---|---|---|---|
-| (default) fast, whole patch | 112 px input, CLS + mean of tokens | 0.47 | 0.47 | 0.85 |
-| **detailed** | 224 px input (4x the compute) | 0.60 | 0.37 | not run |
-| **center object** | the centre-weighted tokens (where you clicked) | 0.46 | 0.50 | 0.76 |
-| **any rotation** | also your patch rotated/mirrored 8 ways | 0.48 | 0.48 | 0.84 |
-| **any size** | also your patch at half and double the field | 0.44 | 0.44 | 0.80 |
-| **adapt** | compare after removing what all patches share (center object) | 0.51 | 0.47 | 0.80 |
-| good / bad | re-rank toward good hits, away from bad | +0.03 | +0.03 | +0.04 |
+| control | what it does | top-10 precision vs the default (90 queries) |
+|---|---|---|
+| (default) fast, whole patch | 112 px input, CLS + mean of tokens, one embedding per patch | 0.48 mito / 0.81 vesicles / 0.44 mito whole volume |
+| **detailed** | 224 px input | +0.01 +/- 0.02 |
+| **object at the centre** | CLS + centre-weighted tokens (where you clicked) | +0.00 +/- 0.01 |
+| **any rotation** | also your box rotated/mirrored 8 ways | +0.00 +/- 0.02 |
+| **any size** | also your box at half and double the field | not in the 30-query run |
+| **adapt to data** | compare after removing what all candidates share | +0.00 +/- 0.01 |
+| **method: tiles + tokens** | the Mars CTX explorer's way: each tile through the model once (crops twice the box), every window of the box's size, at 1/8 of it, matched by the mean of its tokens | -0.01 / +0.06 / -0.02 per target (each +/- 0.04): as good |
+| good / bad | re-rank toward good hits, away from bad | +0.00 / +0.04 / +0.04 per target |
 
-No option beat the default consistently on EM, so the default is the baseline and the rest are
-there to try: rotation for things with no fixed orientation (craters, galaxies), size for objects
-that come in many sizes, center when the surroundings vary. A larger run (30 queries) is in
-`results/RESULTS.md` when done. The cheap scan that decides which tiles to read never sees the
-model; these options only re-rank what has been read, instantly ("detailed" re-embeds, so it
-searches again).
+No option changes precision by more than a few hundredths, so the default stays and the rest
+are there for data where they make sense: rotation for things with no fixed orientation
+(craters, galaxies), size for objects that come in many sizes, the centre when surroundings
+vary, tiles + tokens to place hits more finely (it embeds fewer but larger, 224 px crops; on
+the CPU that was slower than patches here, on a GPU it is not measured yet). The model, not
+the comparison, is the lever. The cheap
+scan that decides which tiles to read never sees the model; the match options only re-rank what
+has been read, instantly ("detailed" and the method re-embed, so they search again).
 
 Ways to load data:
 

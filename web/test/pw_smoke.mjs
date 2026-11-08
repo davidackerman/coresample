@@ -23,6 +23,7 @@ await page.waitForTimeout(Number(process.env.PW_WAIT ?? 15000));
 await page.screenshot({ path: `${out}_view.png` });
 console.log(el(), "model:", await page.textContent("#model"));
 await page.evaluate((v) => { const r = document.querySelector("#region"); r.value = v; }, process.env.PW_REGION ?? "1");
+await page.evaluate((v) => { const r = document.querySelector("#method"); r.value = v; }, process.env.PW_METHOD ?? "patches");
 const box = await page.locator("#stage").boundingBox();
 await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 let last = "";

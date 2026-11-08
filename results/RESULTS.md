@@ -234,6 +234,60 @@ Distinct instances found in the 50 regions shown:
 boundary in DINOv2's space; the model, not the ranking, is the ceiling. Rocchio stays in the
 browser tool as a button (it rarely hurts); a better or domain model is the bigger lever.
 
+## Test 5: how to compare embeddings (follow-up)
+
+Which embedding and similarity find the most right regions, the candidates fixed (the
+brute-force patch grid of each run) so only the comparison varies (`test5_matching.py`). Pools:
+CLS token, mean of patch tokens, centre-weighted mean (the object at the click), and their
+pairs; query as is or the best of its 8 rotations/flips; similarity cosine, centred (minus the
+candidates' mean), or query expansion (qe, the query plus its top 5); input 112 or 224 px.
+A first run with 10 queries per target was too noisy to choose from (+/-0.1, and the one big
+gain, 224 px on the mito subvolume, reversed on the whole volume). This run: **30 queries per
+target, every variant on the same queries, differences paired per query** (90 queries pooled):
+
+| option in the page | p@10 vs default | p@25 vs default |
+|---|---|---|
+| default: fast (112 px), whole patch (CLS + mean of tokens), cosine | 0.48 / 0.81 / 0.44 | 0.46 / 0.80 / 0.43 |
+| detailed (224 px input) | +0.009 +/- 0.019 | -0.003 +/- 0.013 |
+| center object (CLS + centre-weighted tokens) | +0.004 +/- 0.010 | +0.004 +/- 0.006 |
+| any rotation (best of 8) | +0.004 +/- 0.015 | -0.013 +/- 0.010 |
+| adapt (centred cosine) | +0.001 +/- 0.009 | +0.002 +/- 0.006 |
+| best of all 24 variants: centre tokens + rotation + 224 px | +0.041 +/- 0.022 | +0.030 +/- 0.013 |
+| good/bad feedback (Rocchio, 1 page of marks) | +0.00 / +0.04 / +0.04 | +0.00 / +0.05 / +0.02 |
+
+(The default row is mito subvolume / vesicles / mito whole volume; the rest are paired
+differences +/- standard error over the 90 queries, except feedback, per target.)
+
+**No option changes precision by more than 0.02.** The best of the 24 variants gains 0.03-0.04,
+about 2 standard errors, which is what the best of 24 draws of noise looks like; it is not
+taken as a win. The page keeps the default and offers the options for data where they make
+sense (rotation for craters and galaxies, centre focus when surroundings vary); the model, not
+the comparison, is the lever (test 6 compares models).
+
+## Test 7: the Mars CTX explorer's matching (follow-up)
+
+mars_ctx_explorer (DINOv3 over Mars CTX tiles) embeds each tile once, keeps every patch token,
+and matches a box by its tokens: slid as a template over the candidates' token grids (mean
+cosine of aligned tokens), or as the mean of its tokens against the mean of each window's.
+`test7_template.py` does the same with DINOv2-small on the EM: each plane cut into 224 px crops
+(resampled so a 64 px patch spans 8 x 8 tokens, as the baseline's 112 px input does), each crop
+embedded once, the token grids stitched, every window at every token (8 px) scored. Same 30
+queries as test 5, differences paired against its default:
+
+| | mito, subvolume | vesicles | mito, whole volume |
+|---|---|---|---|
+| default (one embedding per patch), p@10 / p@25 | 0.48 / 0.46 | 0.81 / 0.80 | 0.44 / 0.43 |
+| template (aligned tokens), p@25 | -0.064 +/- 0.024 | +0.003 +/- 0.026 | -0.044 +/- 0.025 |
+| **pooled (mean of the window's tokens)**, p@10 | -0.007 +/- 0.032 | +0.057 +/- 0.035 | -0.023 +/- 0.043 |
+| **pooled**, p@25 | -0.001 +/- 0.023 | +0.037 +/- 0.028 | -0.000 +/- 0.021 |
+
+**Pooled tokens match the per-patch default** (equal on mito, slightly ahead on vesicles), and
+the aligned template is worse: a sliding template asks for the same layout, the mean asks for
+the same content. It costs one model pass per crop (twice the patch size) instead of one per
+patch, and places hits at 1/8 of a patch instead of half. The page has it as a method, "tiles +
+tokens (Mars CTX explorer)": the 224 px model now outputs its tokens (the page pools the
+"detailed" embedding from them; identical to the old export to 1.5e-7).
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +

@@ -173,6 +173,9 @@
           <span class="lbl">region</span>
           <select id="region" title="Where to search: auto = the largest area the quick first pass can cover (the whole dataset when it fits)">
             <option value="auto" selected>auto (largest that fits)</option><option value="whole">whole dataset</option><option value="8">8x the view</option><option value="1">the view</option></select>
+          <span class="lbl">method</span>
+          <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
+            <option value="patches" selected>patches</option><option value="tokens">tiles + tokens (Mars CTX explorer)</option></select>
           <span class="lbl">model</span>
           <select id="detail" title="Model input: detailed (224 px) sees finer texture at 4x the compute. On labelled EM neither won consistently">
             <option value="112" selected>fast (112 px)</option><option value="224">detailed (224 px)</option></select>
