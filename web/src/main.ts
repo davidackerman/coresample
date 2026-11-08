@@ -3,7 +3,7 @@
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
-import { Search, coarseLevelFor, type MatchOptions, type Method, type State } from "./search.ts";
+import { Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
@@ -239,23 +239,35 @@ function fillLevels(s: Source) {
   });
 }
 
+/** A length in the source's units (its voxel size's unit) as readable text; "" when unknown. */
+function fmtLen(v: number): string {
+  const u = (src?.unit || "").toLowerCase();
+  const nm = u.startsWith("nano") ? 1 : u.startsWith("micro") ? 1e3 : u === "m" || u.startsWith("meter") || u.startsWith("metre") ? 1e9 : NaN;
+  if (!Number.isNaN(nm)) {
+    const x = v * nm;
+    return x >= 1e12 ? `${(x / 1e12).toFixed(1)} km` : x >= 1e9 ? `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)} m` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} mm`
+         : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)} \u00b5m` : `${x.toFixed(0)} nm`;
+  }
+  return u.startsWith("arcsec") ? (v >= 60 ? `${(v / 60).toFixed(1)}\u2032` : `${v.toFixed(0)}\u2033`) : "";
+}
+/** How far a hit is from the query, physically (or in voxels of the search level). */
+function distance(c: Vec3, q: Vec3, W: number): { v: number; text: string } {
+  const sc = src!.levels[W].scale, d3 = src!.dims === 3;
+  const v = Math.hypot(d3 ? (c[0] - q[0]) * sc[0] : 0, (c[1] - q[1]) * sc[1], (c[2] - q[2]) * sc[2]);
+  const t = fmtLen(v);
+  return { v, text: t ? `${t} away` : `${Math.round(Math.hypot(d3 ? c[0] - q[0] : 0, c[1] - q[1], c[2] - q[2]))} px away` };
+}
+
 /** A patch's physical size at the search level, in readable units. */
 function patchSize(): string {
   if (!src) return "";
-  const P = Number($<HTMLSelectElement>("patch").value), W = searchLevel();
-  const v = P * src.levels[W].scale[2], u = (src.unit || "").toLowerCase();
-  const nm = u.startsWith("nano") ? 1 : u.startsWith("micro") ? 1e3 : u === "m" || u.startsWith("meter") || u.startsWith("metre") ? 1e9 : NaN;
-  let phys = "";
-  if (!Number.isNaN(nm)) {
-    const x = v * nm;  // nanometres
-    phys = x >= 1e12 ? `${(x / 1e12).toFixed(1)} km` : x >= 1e9 ? `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)} m` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} mm`
-         : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)} \u00b5m` : `${x.toFixed(0)} nm`;
-  } else if (u.startsWith("arcsec")) phys = v >= 60 ? `${(v / 60).toFixed(1)}\u2032` : `${v.toFixed(0)}\u2033`;
+  const P = Number($<HTMLSelectElement>("patch").value), W = searchLevel(), phys = fmtLen(P * src.levels[W].scale[2]);
   return `${P} px at level ${W}` + (phys ? ` = ${phys}` : "");
 }
 
 /** The dashed box under the cursor: exactly the region a click would search for. */
 function drawHover() {
+  scheduleWhere();
   $("psize").textContent = src ? `px at level ${searchLevel()}` + (patchSize().includes("= ") ? ` = ${patchSize().split("= ")[1]}` : "") : "";
   if (ngv) { ngv.drawHover(); return; }  // Neuroglancer's mouse is in its frame; it draws the box
   if (gv) return;  // the globe draws its own
@@ -508,6 +520,7 @@ function clearSearch() {
   $("qcanvas").classList.add("none");
   $<HTMLCanvasElement>("qcanvas").getContext("2d")?.clearRect(0, 0, 999, 999);
   $("link").style.display = "none";
+  $("wheresec").hidden = true;
   render();
 }
 $("clear").addEventListener("click", () => { clearSearch(); idle(); });
@@ -555,7 +568,7 @@ function queryAt(fx: number, fy: number, fz?: number) {
   $("hint").classList.add("gone");
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
-                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method });
+                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread() });
   $<HTMLButtonElement>("clear").disabled = false;
   let queued = false;
   const me = search;
@@ -592,8 +605,13 @@ function panel(st: State) {
   // tiles read, discounted by the patches still waiting to be compared
   const frac = st.tilesTotal ? (st.tilesRead / st.tilesTotal) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
   const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : (100 * frac).toFixed(2);
-  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of the region read`
+  const [rlo, rhi] = s.regionBox, Ls = src.levels[st.working].shape;
+  const whole = rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]);
+  const what = whole ? (src.dims === 3 ? "the volume" : "the image") : "the search area";
+  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} read`
                          : st.phase === "error" ? PHASE.error : PHASE[st.phase];
+  $("phase").title = `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `
+                   + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
     st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
@@ -604,11 +622,17 @@ function panel(st: State) {
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = !(st.phase === "read" || st.phase === "paused");
   stopBtn.textContent = st.phase === "paused" ? "Resume" : "Pause";
+  drawWhere(st);
   const box = $("hits");
-  $("hitcount").textContent = st.hits.length ? `${st.hits.length} best, no overlaps` : "";
+  const sp = spread();
+  $("hitcount").textContent = !st.hits.length ? "" : `${st.hits.length} best` + (sp.between > 1 ? `, ${sp.between} boxes apart` : ", no overlaps")
+    + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the query` : "");
   if (!st.hits.length) return;
   if (box.querySelector(".empty")) box.innerHTML = "";
-  st.hits.forEach((h, k) => {
+  const q = s.query;
+  const shown = st.hits.map((h, rank) => ({ h, rank, d: distance(h.center, q, st.working) }));
+  if (hitSort !== "best") shown.sort((a, b) => (hitSort === "near" ? a.d.v - b.d.v : b.d.v - a.d.v));
+  shown.forEach(({ h, rank, d }, k) => {
     let el = hitEls[k];
     if (!el) {
       el = document.createElement("div");
@@ -626,13 +650,99 @@ function panel(st: State) {
       el.dataset.index = String(h.index);
       drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
     }
-    el.querySelector(".cap b")!.textContent = `#${k + 1}`;
+    el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
-    el.querySelector(".z")!.textContent = src?.dims === 3 ? `z ${num(h.center[0] * 2 ** st.working)}` : "";
+    el.querySelector(".z")!.textContent = d.text + (src?.dims === 3 ? `, z ${num(h.center[0] * 2 ** st.working)}` : "");
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
   hitEls.length = st.hits.length;
 }
+
+// ---------------------------------------------------------------------------------------
+// where it has looked: the search region from above (x-y) and, for a volume, from the side
+// (x-z), with the tiles read, the hits, the query and the view
+// ---------------------------------------------------------------------------------------
+const whereCv = $<HTMLCanvasElement>("where");
+let wherePanels: { a: number; b: number; x0: number; y0: number; s: number; w: number; h: number }[] = [];
+function drawWhere(st: State) {
+  if (!search || !src || !st.tilesTotal) { $("wheresec").hidden = true; return; }
+  $("wheresec").hidden = false;
+  const dpr = window.devicePixelRatio || 1, W = st.working, f = 2 ** W, ch = src.levels[W].chunk, d3 = src.dims === 3;
+  const [rlo, rhi] = search.regionBox, ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
+  const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, gap = 16 * dpr;
+  const specs = d3 ? [{ a: 2, b: 1, name: "top (x-y)" }, { a: 2, b: 0, name: "side (x-z)" }] : [{ a: 2, b: 1, name: "" }];
+  wherePanels = [];
+  let y = 0;
+  for (const sp of specs) {
+    const sc = Math.min((cw - 2) / ext[sp.a], maxH / Math.max(1, ext[sp.b]));
+    const w = ext[sp.a] * sc, h = Math.max(6 * dpr, ext[sp.b] * sc);
+    wherePanels.push({ a: sp.a, b: sp.b, x0: (cw - w) / 2, y0: y + (sp.name ? 14 * dpr : 0), s: sc, w, h });
+    y += h + (sp.name ? 14 * dpr : 0) + gap;
+  }
+  whereCv.width = cw; whereCv.height = y - gap + 2;
+  whereCv.style.height = `${(y - gap + 2) / dpr}px`;
+  const g = whereCv.getContext("2d")!;
+  g.clearRect(0, 0, whereCv.width, whereCv.height);
+  const tiles = search.readTiles(), view = currentView();
+  wherePanels.forEach((p, k) => {
+    const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.s, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.s;
+    if (specs[k].name) { g.fillStyle = "#5f6977"; g.font = `${10.5 * dpr}px system-ui`; g.fillText(specs[k].name, p.x0, p.y0 - 4 * dpr); }
+    g.fillStyle = "#0b0e12"; g.fillRect(p.x0, p.y0, p.w, p.h);
+    g.strokeStyle = "#313946"; g.lineWidth = dpr; g.strokeRect(p.x0, p.y0, p.w, p.h);
+    g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();  // everything inside the region's outline
+    g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
+    for (const t of tiles) {
+      const x = X(t[p.a] * ch[p.a]), yy = Y(t[p.b] * ch[p.b]);
+      g.fillRect(x, yy, Math.max(1, ch[p.a] * p.s), Math.max(1, ch[p.b] * p.s));
+    }
+    g.globalAlpha = 1;
+    if (view) {  // what is on screen: a rectangle from above, the slice's span from the side
+      g.strokeStyle = "#ffffffcc"; g.lineWidth = dpr;
+      if (p.b === 0) { g.beginPath(); g.moveTo(X(view.x0 / f), Y(view.z / f)); g.lineTo(X(view.x1 / f), Y(view.z / f)); g.stroke(); }
+      else g.strokeRect(X(view.x0 / f), Y(view.y0 / f), (view.x1 - view.x0) / f * p.s, (view.y1 - view.y0) / f * p.s);
+    }
+    st.hits.slice(0, 30).forEach((hh, i) => {
+      g.fillStyle = "#ffd24a";
+      g.beginPath(); g.arc(X(hh.center[p.a]), Y(hh.center[p.b]), (i < 3 ? 3.2 : 2.2) * dpr, 0, 7); g.fill();
+    });
+    const q = search!.query;
+    g.strokeStyle = "#5ab0ff"; g.lineWidth = 2 * dpr;
+    g.beginPath(); g.arc(X(q[p.a]), Y(q[p.b]), 4.5 * dpr, 0, 7); g.stroke();
+    g.restore();
+  });
+}
+let whereQueued = false;
+/** Redraw the map at the next frame (the view moved). */
+function scheduleWhere() {
+  if (whereQueued || !search) return;
+  whereQueued = true;
+  requestAnimationFrame(() => { whereQueued = false; if (search) drawWhere(search.state); });
+}
+/** The view in full-resolution pixels (x and y extent, z slice), whichever viewer shows it. */
+function currentView(): { x0: number; x1: number; y0: number; y1: number; z: number } | null {
+  if (!src) return null;
+  const e = gv ? gv.extentPx() : olv ? olv.extentPx() : ngv ? ngv.extentPx()
+    : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
+        y0: view.cy - (canvas.height * view.scale) / 2, y1: view.cy + (canvas.height * view.scale) / 2 };
+  return { ...e, z: ngv ? ngv.center().z : view.z };
+}
+whereCv.addEventListener("click", (e) => {  // go to the place clicked, keeping the other coordinate
+  if (!search || !src) return;
+  const r = whereCv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const px = (e.clientX - r.left) * dpr, py = (e.clientY - r.top) * dpr, f = 2 ** search.state.working;
+  const p = wherePanels.find((q) => px >= q.x0 && px <= q.x0 + q.w && py >= q.y0 && py <= q.y0 + q.h);
+  if (!p) return;
+  const [rlo] = search.regionBox, va = rlo[p.a] + (px - p.x0) / p.s, vb = rlo[p.b] + (py - p.y0) / p.s;
+  const v = currentView()!, cur = { x: (v.x0 + v.x1) / 2, y: (v.y0 + v.y1) / 2, z: v.z };
+  const fx = va * f, fy = p.b === 1 ? vb * f : cur.y, fz = p.b === 0 ? vb * f : cur.z, scale = zoomScale();
+  if (gv) gv.goTo(fx, fy, scale);
+  if (olv) olv.goTo(fx, fy, scale);
+  if (ngv) ngv.goTo(fx, fy, fz, null);
+  view.cx = fx; view.cy = fy;
+  if (src.dims === 3) { view.z = Math.round(fz); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
+  render();
+  drawWhere(search.state);
+});
 
 function goTo(i: number) {
   if (!search || !src) return;
@@ -655,6 +765,16 @@ function matchOptions(): MatchOptions {
            scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked };
 }
 for (const id of ["focus", "rot", "scl", "adapt"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
+function spread(): Spread { return { fromQuery: Number($<HTMLSelectElement>("far").value), between: Number($<HTMLSelectElement>("between").value) }; }
+for (const id of ["far", "between"]) $(id).addEventListener("change", () => search?.setSpread(spread()));
+let hitSort = "best";
+$("hitsort").addEventListener("click", (e) => {
+  const k = (e.target as HTMLElement).closest("button")?.dataset.k;
+  if (!k) return;
+  hitSort = k;
+  for (const b of $("hitsort").querySelectorAll("button")) b.classList.toggle("on", b.dataset.k === k);
+  if (search) panel(search.state);
+});
 $("method").addEventListener("change", () => {  // candidates are embedded differently: search again
   if (search) { const q = search.query, f = 2 ** search.state.working; queryAt(q[2] * f, q[1] * f, q[0] * f); }
 });
