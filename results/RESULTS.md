@@ -262,7 +262,40 @@ differences +/- standard error over the 90 queries, except feedback, per target.
 about 2 standard errors, which is what the best of 24 draws of noise looks like; it is not
 taken as a win. The page keeps the default and offers the options for data where they make
 sense (rotation for craters and galaxies, centre focus when surroundings vary); the model, not
-the comparison, is the lever (test 6 compares models).
+the comparison, is the lever (test 6 compares models: none beats DINOv2-small on both targets).
+
+## Test 6: other models (follow-up)
+
+Does another model find more right regions? `test6_models.py` keeps the candidates (each
+run's brute-force patch grid) and test 5's 30 queries per target, and changes only the model;
+differences are paired per query against DINOv2-small, the page's model (+/- standard error):
+
+| model | input, embedding | vesicles p@10 / p@25 | mito, whole volume p@10 / p@25 | CPU time, one target |
+|---|---|---|---|---|
+| **DINOv2-small** (the page's) | 112 px, CLS + mean token | 0.81 / 0.80 | 0.44 / 0.43 | 3-5 min |
+| DINOv2-base (4x the parameters) | 112 px, CLS + mean token | -0.03 +/- 0.03 / -0.03 +/- 0.03 | -0.05 +/- 0.03 / -0.07 +/- 0.02 | 11-32 min |
+| DINOv3-small | 128 px (the same 8 x 8 tokens), CLS + mean token | +0.04 +/- 0.04 / +0.05 +/- 0.03 | +0.00 +/- 0.05 / -0.04 +/- 0.03 | 11-14 min |
+| SigLIP-base (image-text) | 224 px, pooled | +0.06 +/- 0.04 / +0.04 +/- 0.03 | -0.03 +/- 0.04 / -0.05 +/- 0.02 | 48-108 min |
+| CLIP ViT-B/16 (image-text) | 224 px, pooled | +0.00 +/- 0.04 / +0.02 +/- 0.03 | -0.02 +/- 0.04 / -0.05 +/- 0.03 | 52-73 min |
+| CEM500K (ResNet-50 trained on 500k EM images) | 224 px grey, average pool | +0.00 +/- 0.03 / +0.02 +/- 0.02 | +0.01 +/- 0.04 / -0.02 +/- 0.03 | 23-27 min |
+| texture (LBP + Gabor, no learning) | 64 px | -0.04 +/- 0.04 / -0.04 +/- 0.03 | -0.11 +/- 0.05 / -0.10 +/- 0.03 | (Python loop) |
+
+(DINOv3-small also ran on the mito subvolume: +0.03 +/- 0.03 / -0.01 +/- 0.02. Times are for
+embedding every candidate, about 47,000 patches, on 20 CPU cores.)
+
+**No model beats DINOv2-small on both targets.** The gains are on vesicles, a dense,
+texture-like target (DINOv3-small and SigLIP +0.04 to +0.06, under 2 standard errors); the
+losses are on mitochondria, a shape (up to -0.07 at p@25, 2-3 standard errors for DINOv2-base
+and SigLIP). Bigger is not better here: DINOv2-base is behind on both. DINOv3-small comes
+closest (ahead on vesicles, level at p@10 and behind at p@25 on mito), at 2-4x the time, and
+its weights are gated (a license accepted on Hugging Face), so the page cannot ship it without
+a decision. The image-text models cost 10-20x per patch and do worse on shape, and the
+hand-made texture descriptor falls furthest behind on it, so learned features earn their
+place. CEM500K, trained on EM alone, only draws level (and finds slightly more of the
+instances in its top 100: recall@100 +0.005 +/- 0.002 on vesicles, +0.011 +/- 0.006 on mito)
+at 5-8x the time, so the general model loses nothing on this EM. The page keeps DINOv2-small.
+One grey EM dataset: on colour data (Earth, Mars), where there are no labels here to grade
+with, the image-text models and DINOv3 may rank differently.
 
 ## Test 7: the Mars CTX explorer's matching (follow-up)
 

@@ -1,0 +1,4 @@
+[vesicle] 3440 instances, 46872 candidates, 30 queries
+[vesicle] cem500k       p@10 0.81+/-0.02  p@25 0.83+/-0.02  r@100 0.069  (1647s)
+[mito_full] 421 instances, 48576 candidates, 30 queries
+[mito_full] cem500k       p@10 0.45+/-0.04  p@25 0.41+/-0.04  r@100 0.119  (1380s)

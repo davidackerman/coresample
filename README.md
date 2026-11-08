@@ -89,7 +89,8 @@ three main directions of the 224 px model's 16 x 16 tokens over the query and th
 green and blue, so pieces it sees alike share a colour and a hit's colours show which of its
 parts match which parts of the query (coloured the same way). "where alike" instead shows, in
 magenta, the pieces most like the query's average piece. The header names the model; it is DINOv2-small in
-every mode for now (test 6 compares others). The cheap statistics and the rough pass only decide
+every mode: test 6 compared it on the EM with five other models (an EM-trained one among them) and a
+hand-made texture descriptor, and none did better on both targets. The cheap statistics and the rough pass only decide
 what is read first; this score alone ranks the hits. The controls under **Options** choose how that is computed. Tests 5 and 7 measured
 each on labelled EM: 30 queries per target, the same candidates and queries for every option,
 differences paired per query (`results/RESULTS.md` has the tables):

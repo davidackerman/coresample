@@ -12,7 +12,8 @@ Matchers:
                  register tokens left out)
   siglip-base    image-text model (224 px, pooled image embedding)
   clip-b16       image-text model (224 px, pooled image embedding)
-  cem500k        ResNet-50 pretrained (MoCo v2) on 500k EM images (224 px, global average pool);
+  cem500k        ResNet-50 pretrained (MoCo v2) on 500k EM images (224 px grey, one input channel,
+                 the checkpoint's own normalization, global average pool);
                  its checkpoint is loaded with torch's weights_only loader (tensors only, no
                  pickled code) and skipped if that loader refuses it
   texture        classical: rotation-invariant LBP histograms + Gabor energies (no learning)
@@ -58,7 +59,7 @@ def to_tensor(patches, size, mean, std, channels=3):
 class Matcher:
     def __init__(self, name):
         torch.set_num_threads(int(os.environ.get("TORCH_THREADS", os.cpu_count())))
-        self.name = name
+        self.name, self.channels = name, 3
         if name.startswith("dinov2"):
             from transformers import AutoModel
 
@@ -92,17 +93,25 @@ class Matcher:
             # tensors and plain containers only: a downloaded checkpoint must not run code
             ck = torch.load(f, map_location="cpu", weights_only=True)
             sd = ck.get("state_dict", ck)
-            sd = {k.replace("module.encoder_q.", ""): v for k, v in sd.items() if k.startswith("module.encoder_q.") and ".fc" not in k}
+            # the released checkpoint holds the query encoder's weights unprefixed; a raw MoCo
+            # training checkpoint would prefix them with module.encoder_q.
+            pre = "module.encoder_q."
+            if any(k.startswith(pre) for k in sd):
+                sd = {k[len(pre):]: v for k, v in sd.items() if k.startswith(pre)}
+            sd = {k: v for k, v in sd.items() if not k.startswith("fc.")}
             net = torchvision.models.resnet50()
+            # trained on grey images: its first layer takes one channel
+            net.conv1 = torch.nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             missing, _ = net.load_state_dict(sd, strict=False)
             if any(not k.startswith("fc.") for k in missing):
                 raise RuntimeError(f"cem500k: unexpected missing weights {missing[:5]}")
             net.fc = torch.nn.Identity()
             self.m = net.eval()
-            self.size = 224
-            # CEM500K's grayscale normalization (from its repository)
-            self.mean = np.array([0.57287007] * 3, np.float32)[:, None, None]
-            self.std = np.array([0.12740536] * 3, np.float32)[:, None, None]
+            self.size, self.channels = 224, 1
+            # the grey mean and standard deviation it was trained with (stored in the checkpoint)
+            mu, sigma = ck.get("norms", [0.57287007, 0.12740536])
+            self.mean = np.array([mu], np.float32)[:, None, None]
+            self.std = np.array([sigma], np.float32)[:, None, None]
         elif name == "texture":
             self.m = None
         else:
@@ -114,7 +123,7 @@ class Matcher:
         out = []
         with torch.inference_mode():
             for i in range(0, len(patches), batch):
-                x = to_tensor(patches[i:i + batch], self.size, self.mean, self.std)
+                x = to_tensor(patches[i:i + batch], self.size, self.mean, self.std, self.channels)
                 if self.name.startswith("dinov"):
                     h = self.m(pixel_values=x).last_hidden_state
                     skip = getattr(self, "skip", 1)
