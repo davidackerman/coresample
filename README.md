@@ -33,8 +33,9 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 
 1. **Quick pass:** brightness and texture statistics over a coarse level rank where similar
    things might be (no model; a few MB).
-2. **Rough pass** (GPU): the model looks two levels coarser and orders the full-detail reads.
-   It only orders them; nothing is skipped.
+2. **Rough pass** (GPU): the model looks two levels coarser (a sixteenth of the download) and
+   picks what to read in full detail: the most promising 10% of what it has looked over (on EM,
+   the top 5% already matched reading everything). **Read the rest** reads the others.
 3. **Score:** every patch in the tiles read goes through DINOv2-small (112 px); the score
    under each hit is the cosine of its embedding with your click's (the mean of **look**, the
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
