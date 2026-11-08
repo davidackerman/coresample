@@ -645,6 +645,7 @@ function clearSearch() {
   $("link").style.display = "none";
   $("wheresec").hidden = true;
   olv?.setHeat(null);
+  ngv?.setHeat(null);
   heatCache = null;
   qDrawn = "";
   maps.clear(); toks.clear(); mapFor = null; pca = null; qgrids = null;
@@ -1112,7 +1113,7 @@ let wherePanels: { a: number; b: number; x0: number; y0: number; sa: number; sb:
 function drawWhere(st: State) {
   if (!search || !src || !st.tilesTotal) { $("wheresec").hidden = true; return; }
   $("wheresec").hidden = false;
-  $("heatimg").hidden = !olv;  // the heat over the image: 2-D maps
+  $("heatimg").hidden = !olv && !ngv;  // the heat over the image: 2-D maps, and Neuroglancer's slice
   const dpr = window.devicePixelRatio || 1, W = st.working, f = 2 ** W, ch = src.levels[W].chunk, d3 = src.dims === 3;
   const [rlo, rhi] = search.regionBox, ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
   // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
@@ -1172,7 +1173,7 @@ let heatTimer = 0;
 function heatImages(st: State): HTMLCanvasElement[] | null {
   const s = search!, h = s.heat();
   if (!h.n) return null;
-  const top = Number(heatTop.value) / 100, onImg = !!olv && heatOn.checked;
+  const top = Number(heatTop.value) / 100, onImg = (!!olv || !!ngv) && heatOn.checked;
   const key = `${top}|${onImg}|${heatOp.value}|${wherePanels.map((p) => `${Math.round(p.w)}x${Math.round(p.h)}`).join()}`;
   const now = performance.now(), c = heatCache;
   if (c && c.key === key && ((c.ver === h.version && c.n === h.n) || now - c.at < 1000)) {
@@ -1195,6 +1196,8 @@ function heatImages(st: State): HTMLCanvasElement[] | null {
       olv.setHeat({ canvas: cv, x0: rlo[2] * f, y0: rlo[1] * f, x1: (rlo[2] + gw * cell) * f, y1: (rlo[1] + gh * cell) * f }, Number(heatOp.value) / 100);
     }
   }
+  // over Neuroglancer's slice: the places at the slice's depth (the viewer redraws it as the view moves)
+  ngv?.setHeat(onImg ? { h, lo, hi, f, foot, opacity: Number(heatOp.value) / 100 } : null);
   $("heatlo").textContent = lo.toFixed(2);
   $("heathi").textContent = hi.toFixed(2);
   $("heatval").textContent = `${heatTop.value}%`;

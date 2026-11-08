@@ -5,6 +5,12 @@
 // the hover box is drawn on a transparent canvas over the frame.
 import type { Layer } from "./datasets.ts";
 import type { Vec3 } from "./sources.ts";
+import type { Heat } from "./search.ts";
+import { heatCanvas, heatGrid } from "./heat.ts";
+
+/** The similarity heat over the slice: the places compared (working-level centres, `foot`
+ * working voxels apart), the scores shown (lo to hi), and how strongly. */
+export interface NgHeat { h: Heat; lo: number; hi: number; f: number; foot: number; opacity: number }
 
 /** What the viewer needs of a volume Neuroglancer can read itself (OME-Zarr, precomputed). */
 export interface NgSource {
@@ -82,6 +88,10 @@ export class NgViewer {
     }
     this.iframe.src = `ng/index.html#!${encodeURIComponent(JSON.stringify(state))}`;
     container.appendChild(this.iframe);
+    // the heat over the slice panel (under the hover box, which goes above everything)
+    this.heatCv.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
+    container.appendChild(this.heatCv);
+    window.addEventListener("resize", this.queueHeat);
     this.initScale = init.scale;
     this.ready = this.attach(init);
   }
@@ -134,6 +144,7 @@ export class NgViewer {
       if (this.on.pointer) { const p = this.mousePosition(e.clientX, e.clientY); this.on.pointer(p[2], p[1], p[0]); }
     }, true);
     try { this.viewer.position.changed.add(() => this.on.moved()); } catch { /* older viewers */ }  // panned or moved in z
+    try { this.viewer.navigationState.changed.add(this.queueHeat); } catch { /* older viewers */ }  // the heat follows the view
     doc.addEventListener("mouseleave", () => { this.mouse = null; this.drawHover(); }, true);
     doc.addEventListener("wheel", () => setTimeout(() => { this.drawHover(); this.on.moved(); }, 0), true);
     doc.addEventListener("mousedown", (e) => { this.down = e.button === 0 && onData(e) ? { x: e.clientX, y: e.clientY } : null; }, true);
@@ -268,5 +279,68 @@ export class NgViewer {
     g.fillStyle = "#cfe6ff"; g.fillText(hb.text, x - side / 2, y - side / 2 - 6 * dpr);
   }
 
-  destroy() { this.iframe.remove(); this.hoverCtx.clearRect(0, 0, this.hover.width, this.hover.height); }
+  // ---- the similarity heat over the slice ----------------------------------------------
+  private heatCv = document.createElement("canvas");
+  private heat: NgHeat | null = null;
+  private slab: { key: string; h: Heat } | null = null;
+  private heatQueued = false;
+
+  /** Show the heat over the slice panel (null hides it). */
+  setHeat(x: NgHeat | null) { this.heat = x; this.queueHeat(); }
+  private queueHeat = () => {
+    if (this.heatQueued) return;
+    this.heatQueued = true;
+    requestAnimationFrame(() => { this.heatQueued = false; this.drawHeat(); });
+  };
+
+  /** The places on the slice shown: in a volume, those whose centre is within half a place
+   * spacing of the slice's z (the plane of places through it), so the heat is what was found
+   * at this depth, not a projection; in an image, every place. */
+  private slabOf(x: NgHeat, zw: number): Heat {
+    if (this.src.dims !== 3) return x.h;
+    const key = `${x.h.version}|${x.h.n}|${Math.floor(zw)}`;
+    if (this.slab?.key === key) return this.slab.h;
+    const { c, s, n } = x.h, half = x.foot / 2, keep: number[] = [];
+    for (let i = 0; i < n; i++) if (Math.abs(c[3 * i] - zw) <= half && s[i] > -Infinity) keep.push(i);
+    const cc = new Int32Array(3 * keep.length), ss = new Float32Array(keep.length);
+    keep.forEach((i, k) => { cc.set(c.subarray(3 * i, 3 * i + 3), 3 * k); ss[k] = s[i]; });
+    this.slab = { key, h: { c: cc, s: ss, n: keep.length, version: x.h.version } };
+    return this.slab.h;
+  }
+
+  private drawHeat() {
+    const cv = this.heatCv, dpr = window.devicePixelRatio || 1;
+    const W = Math.round(this.container.clientWidth * dpr), H = Math.round(this.container.clientHeight * dpr);
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const g = cv.getContext("2d")!;
+    g.clearRect(0, 0, W, H);
+    const x = this.heat;
+    if (!x || !this.viewer || !x.h.n) return;
+    // the slice panel (the first; in the slice + 3-D layout the 3-D view is the second)
+    const panel = this.iframe.contentDocument?.querySelector(".neuroglancer-rendered-data-panel") as HTMLElement | null;
+    if (!panel) return;
+    const r = panel.getBoundingClientRect(), c = this.center(), k = this.scale() * dpr;  // finest voxels per CSS pixel
+    const f = x.f, x0 = (c.cx - (r.width / 2) * k) / f, x1 = (c.cx + (r.width / 2) * k) / f;
+    const y0 = (c.cy - (r.height / 2) * k) / f, y1 = (c.cy + (r.height / 2) * k) / f;
+    const sub = this.slabOf(x, c.z / f);
+    if (!sub.n) return;
+    // one cell per place, coarser when the view holds very many
+    const cell = x.foot * Math.max(1, Math.ceil(Math.sqrt(((x1 - x0) / x.foot) * ((y1 - y0) / x.foot) / 1e6)));
+    const gx0 = Math.floor(x0 / cell) * cell, gy0 = Math.floor(y0 / cell) * cell;
+    const gw = Math.max(1, Math.ceil((x1 - gx0) / cell)), gh = Math.max(1, Math.ceil((y1 - gy0) / cell));
+    const img = heatCanvas(heatGrid(sub, gw, gh, 2, 1, [0, gy0, gx0], 1 / cell, 1 / cell, x.foot), gw, gh, x.lo, x.hi);
+    const sx = r.left + r.width / 2 + (gx0 * f - c.cx) / k, sy = r.top + r.height / 2 + (gy0 * f - c.cy) / k;
+    g.save();
+    g.beginPath(); g.rect(r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr); g.clip();
+    g.globalAlpha = x.opacity;
+    g.imageSmoothingEnabled = false;
+    g.drawImage(img, sx * dpr, sy * dpr, ((gw * cell * f) / k) * dpr, ((gh * cell * f) / k) * dpr);
+    g.restore();
+  }
+
+  destroy() {
+    window.removeEventListener("resize", this.queueHeat);
+    this.iframe.remove(); this.heatCv.remove();
+    this.hoverCtx.clearRect(0, 0, this.hover.width, this.hover.height);
+  }
 }

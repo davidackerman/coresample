@@ -65,8 +65,10 @@ finds), so there, add real examples instead.
 
 **Heat.** The map of where it has looked also shows how well each place matched: every place
 compared, in one magenta ramp from faint (the lowest score shown) to solid (the best), for the
-best quarter of the scores by default (the slider sets the share). On 2-D maps the heat lies
-over the image too (a checkbox and an opacity slider). Each place keeps the score it had when
+best quarter of the scores by default (the slider sets the share). The heat lies over the
+image too (a checkbox and an opacity slider): on 2-D maps, and on Neuroglancer's slice, where a
+volume shows only the places compared at the slice's depth, so moving through z shows what
+matched there (the map of where it has looked shows the whole column). Each place keeps the score it had when
 it was compared, except the best 3,000, which are re-scored whenever feedback or a new example
 changes the query.
 
