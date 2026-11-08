@@ -5,7 +5,7 @@
 // hits good/bad (Rocchio feedback re-ranks everything embedded so far).
 import { cosine, type Embedder, type Patch } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
-import { luminance, type Region, type Source, type Vec3 } from "./sources.ts";
+import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
 export interface Hit { center: Vec3; score: number; index: number }
 export interface State {
@@ -57,6 +57,7 @@ export class Search {
   private pixels: Uint8Array[] = [];
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
   private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
+  skipped = 0;  // patches not embedded: no data or blank
   private scanInfo: { score: Float32Array; dims: Dims; clo: Vec3; f: number; w: Dims } | null = null;
   private next = 0;
   private stopFlag = false;
@@ -113,6 +114,8 @@ export class Search {
     try {
       const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3;
       const q = await this.readPatches([this.query]);
+      if (missingFraction(q.patches[0].data) > 0.05)
+        throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
       this.qpix = q.bytes[0];
       this.q0 = (await this.emb.embed(q.patches))[0];
       this.qvec = this.q0;
@@ -129,7 +132,7 @@ export class Search {
       const qc: Vec3 = [d3 ? Math.floor(this.query[0] / f) : 0, Math.floor(this.query[1] / f), Math.floor(this.query[2] / f)];
       const qlo: Vec3 = [qc[0] - Math.floor(w[0] / 2) - m[0], qc[1] - Math.floor(w[1] / 2) - m[1], qc[2] - Math.floor(w[2] / 2) - m[2]];
       const qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
-      const inp: ScanInput = { vol: luminance(vol), dims: vol.shape, query: luminance(qr), qdims: qr.shape, window: w, margin: m };
+      const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: fillMissing(luminance(qr)), qdims: qr.shape, window: w, margin: m };
       const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
       this.scanInfo = { score: res.score, dims: res.dims, clo, f, w };
       this.emit({ scanSeconds: (performance.now() - ts) / 1000 });
@@ -201,6 +204,7 @@ export class Search {
         const row = ((c[0] - z0) * by + (c[1] - h + y - blo[1])) * bx + (c[2] - h - blo[2]);
         d.set(r.data.subarray(row * C, (row + P) * C), y * P * C);
       }
+      if (!informative(d)) { this.skipped++; continue; }  // no data or blank: nothing to match
       this.queue.push({ c, pri: this.priorAt(c), patch: { data: d, size: P, channels: C } });
     }
   }

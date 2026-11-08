@@ -35,9 +35,23 @@ let hitEls: HTMLElement[] = [];
 // ---------------------------------------------------------------------------------------
 const emb = new Embedder(new URL("models/dinov2-small-112.onnx", document.baseURI).href, (l) => console.log("[onnx]", l));
 const modelEl = $("model");
-(async () => {
+emb.model.bytes = async () => {  // kept in Cache Storage: later visits do not download 88 MB again
+  const url = new URL("models/dinov2-small-112.onnx", document.baseURI).href;
   try {
-    modelEl.textContent = "model: downloading DINOv2-small (88 MB, once)";
+    const cache = await caches.open("coresample-models-v1");
+    const hit = await cache.match(url);
+    if (hit) return hit.arrayBuffer();
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`model: HTTP ${r.status}`);
+    await cache.put(url, r.clone());
+    return r.arrayBuffer();
+  } catch {
+    return (await fetch(url)).arrayBuffer();
+  }
+};
+setTimeout(async () => {  // after the viewer and first data have had the network
+  try {
+    modelEl.textContent = "model: loading DINOv2-small (88 MB the first time, then cached)";
     const t = performance.now();
     await emb.embed([{ data: new Float32Array(64 * 64), size: 64, channels: 1 }]);
     const n = 32, d = new Float32Array(64 * 64);
@@ -52,7 +66,7 @@ const modelEl = $("model");
   } catch (e) {
     modelEl.textContent = `model failed: ${(e as Error).message}`;
   }
-})();
+}, 2500);
 
 // ---------------------------------------------------------------------------------------
 // the cheap scan in a worker
@@ -168,7 +182,24 @@ function overlays() {
 }
 
 /** The level a click searches at (the one on screen, leaving room for coarser levels). */
-const searchLevel = () => (src ? Math.max(0, Math.min(src.levels.length - 2, displayLevel())) : 0);
+const levelSel = $<HTMLSelectElement>("level");
+const searchLevel = () => {
+  if (!src) return 0;
+  const chosen = levelSel.value === "auto" ? displayLevel() : Number(levelSel.value);
+  return Math.max(0, Math.min(src.levels.length - 2, chosen));
+};
+levelSel.addEventListener("change", () => drawHover());
+/** Level menu for this source: each level with its voxel (pixel) size. */
+function fillLevels(s: Source) {
+  levelSel.innerHTML = '<option value="auto" selected>auto (as viewed)</option>';
+  s.levels.slice(0, -1).forEach((L, i) => {
+    const v = L.scale[2], u = (s.unit || "").toLowerCase();
+    const nm = u.startsWith("nano") ? v : u.startsWith("micro") ? v * 1e3 : u === "m" ? v * 1e9 : NaN;
+    const txt = !Number.isNaN(nm) ? (nm >= 1e9 ? `${(nm / 1e9).toFixed(nm >= 1e10 ? 0 : 1)} m` : nm >= 1e3 ? `${(nm / 1e3).toFixed(1)} \u00b5m` : `${nm.toFixed(1)} nm`)
+              : u.startsWith("arcsec") ? `${v.toFixed(2)}\u2033` : `${2 ** i}x`;
+    levelSel.add(new Option(`${i}: ${txt}/px`, String(i)));
+  });
+}
 
 /** A patch's physical size at the search level, in readable units. */
 function patchSize(): string {
@@ -317,6 +348,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   zb.style.display = s.dims === 3 && !ngv ? "flex" : "none";
   if (s.dims === 3) { zIn.max = String(s.levels[0].shape[0] - 1); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
   if (p?.patch) $<HTMLSelectElement>("patch").value = String(p.patch);
+  fillLevels(s);
   const u = new URL(location.href);
   u.searchParams.set("d", p ? p.id : "custom");
   history.replaceState(null, "", u);
@@ -447,7 +479,7 @@ function panel(st: State) {
     `<b>${st.phase}</b>: ${st.message}`,
     st.coarse >= 0 ? `scanned level ${st.coarse} in ${st.scanSeconds.toFixed(1)} s; searching level ${st.working}` : "",
     st.tilesTotal ? `tiles read <b>${st.tilesRead}</b> of ${st.tilesTotal} (${pct.toFixed(2)}%), ${st.patches} patches embedded` +
-      (st.queued ? `, ${st.queued} queued` : "") : "",
+      (st.queued ? `, ${st.queued} queued` : "") + (search.skipped ? `, ${search.skipped} blank/no-data skipped` : "") : "",
     `${fmt(st.bytes)} downloaded, ${st.seconds.toFixed(1)} s` + (st.firstHitSeconds ? `, first hits at ${st.firstHitSeconds.toFixed(1)} s` : ""),
   ];
   $("status").innerHTML = lines.filter(Boolean).join("\n");
@@ -475,7 +507,7 @@ function panel(st: State) {
       el.dataset.index = String(h.index);
       drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
     }
-    el.querySelector(".cap span")!.textContent = `#${k + 1} ${h.score.toFixed(3)}`;
+    el.querySelector(".cap span")!.textContent = `#${k + 1} ${h.score.toFixed(3)}` + (src?.dims === 3 ? ` z${h.center[0] * 2 ** st.working}` : "");
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
   hitEls.length = st.hits.length;
