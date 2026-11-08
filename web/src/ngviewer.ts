@@ -1,0 +1,174 @@
+// Neuroglancer as the viewer for volumes (OME-Zarr): it streams the raw data natively, from the
+// data's own host, at every scale. It runs in a same-origin iframe (./ng/: the site's own build,
+// or appspot relayed in development) so the page can drive it as chunkmirage's pages do, through
+// the frame's `viewer`: clicks and zoom are read from it, hits are a local annotation layer, and
+// the hover box is drawn on a transparent canvas over the frame.
+import type { OmeZarrSource } from "./sources.ts";
+
+export interface NgBox { fz: number; fy: number; fx: number; side: number; label?: string }
+type Json = Record<string, any>;
+
+const LAYER = "coresample";
+
+export class NgViewer {
+  iframe: HTMLIFrameElement;
+  private viewer: any = null;
+  private names: string[] = [];  // the viewer's global dimension names, in order
+  ready: Promise<void>;
+  private hoverCtx: CanvasRenderingContext2D;
+  private mouse: { x: number; y: number } | null = null;
+  private down: { x: number; y: number } | null = null;
+  private initScale = 1;
+
+  constructor(private container: HTMLElement, private src: OmeZarrSource, init: { cx: number; cy: number; z: number; scale: number },
+              private hover: HTMLCanvasElement,
+              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void }) {
+    this.hoverCtx = hover.getContext("2d")!;
+    this.iframe = document.createElement("iframe");
+    this.iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000";
+    const dpr = window.devicePixelRatio || 1;
+    const state = {
+      layers: [{ type: "image", name: src.name, source: `zarr://${src.url}` },
+               { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
+      layout: "xy", showSlices: false, selectedLayer: { visible: false }, layerListPanel: { visible: false },
+      crossSectionScale: init.scale * dpr,
+    };
+    this.iframe.src = `ng/index.html#!${encodeURIComponent(JSON.stringify(state))}`;
+    container.appendChild(this.iframe);
+    this.initScale = init.scale;
+    this.ready = this.attach(init);
+  }
+
+  private async attach(init: { cx: number; cy: number; z: number }) {
+    const t0 = performance.now();
+    while (performance.now() - t0 < 60_000) {  // the viewer, once its page has made it and the data opened
+      const v = (this.iframe.contentWindow as any)?.viewer;
+      const names: string[] | undefined = v?.coordinateSpace?.value?.names;
+      if (v?.state && names?.length) { this.viewer = v; this.names = names; break; }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!this.viewer) throw new Error("Neuroglancer did not start");
+    try { this.viewer.uiConfiguration.showUIControls.value = false; } catch { /* older viewers */ }
+    // the viewer fits position and zoom to the data once it has opened, over whatever was set
+    // before: wait for that, then go to the preset's place
+    const t1 = performance.now();
+    while (performance.now() - t1 < 20_000) {
+      const z = this.viewer.navigationState?.zoomFactor?.value;
+      if (Number.isFinite(z) && z < 1e6) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    // the annotation layer in the viewer's own coordinate space (made before the data opened,
+    // its local source had none): one state restore, before the camera is set
+    try {
+      const cs = this.viewer.coordinateSpace.value, dims: Record<string, [number, string]> = {};
+      cs.names.forEach((n: string, i: number) => (dims[n] = [cs.scales[i], cs.units[i]]));
+      const st = this.json(), layer = (st.layers as Json[]).find((l) => l.name === LAYER);
+      if (layer) { layer.source = { url: "local://annotations", transform: { outputDimensions: dims } }; this.viewer.state.restoreState(st); }
+    } catch { /* keep the layer as it is */ }
+    await new Promise((r) => setTimeout(r, 300));
+    this.goTo(init.cx, init.cy, init.z, this.initScale);
+    setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
+    const doc = this.iframe.contentDocument!;
+    doc.addEventListener("mousemove", (e) => { this.mouse = { x: e.clientX, y: e.clientY }; this.drawHover(); }, true);
+    doc.addEventListener("mouseleave", () => { this.mouse = null; this.drawHover(); }, true);
+    doc.addEventListener("wheel", () => setTimeout(() => { this.drawHover(); this.on.moved(); }, 0), true);
+    doc.addEventListener("mousedown", (e) => { if (e.button === 0) this.down = { x: e.clientX, y: e.clientY }; }, true);
+    doc.addEventListener("mouseup", (e) => {
+      const d = this.down;
+      this.down = null;
+      if (!d || e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 4) return;  // a drag, not a click
+      const p = this.mousePosition(e.clientX, e.clientY);
+      if (p) { this.mouse = null; this.drawHover(); this.on.click(p[0], p[1], p[2]); }
+    }, true);
+  }
+
+  private idx(n: string) { return this.names.indexOf(n); }
+  /** The voxel under the mouse, (z, y, x) at the finest level: the viewer's own mouse position
+   * when it is current, else from the click's offset from the view centre at this zoom (the
+   * single xy panel fills the frame). */
+  private mousePosition(cx: number, cy: number): [number, number, number] {
+    const ms = this.viewer.mouseState;
+    if (ms?.active && ms.position?.length) {
+      const p = ms.position as Float32Array, at = (n: string) => (this.idx(n) >= 0 ? Math.floor(p[this.idx(n)]) : 0);
+      return [at("z"), at("y"), at("x")];
+    }
+    const c = this.center(), k = this.scale() * (window.devicePixelRatio || 1);
+    const dx = (cx - this.iframe.clientWidth / 2) * k, dy = (cy - this.iframe.clientHeight / 2) * k;
+    return [Math.floor(c.z), Math.floor(c.cy + dy), Math.floor(c.cx + dx)];
+  }
+  private json(): Json { return this.viewer.state.toJSON(); }
+
+  /** Finest-level voxels per device pixel (the canvas viewer's measure of zoom). */
+  scale() {
+    const z = this.viewer?.navigationState?.zoomFactor?.value ?? (this.viewer ? this.json().crossSectionScale : 1);
+    return z / (window.devicePixelRatio || 1);
+  }
+  center() {
+    const p = this.viewer?.position?.value as Float32Array | undefined;
+    if (!p) return { cx: 0, cy: 0, z: 0 };
+    const at = (n: string) => (this.idx(n) >= 0 ? p[this.idx(n)] : 0);
+    return { cx: at("x"), cy: at("y"), z: at("z") };
+  }
+  extentPx() {
+    const { cx, cy } = this.center(), s = this.scale() * (window.devicePixelRatio || 1);
+    const w = this.iframe.clientWidth * s, h = this.iframe.clientHeight * s;
+    return { x0: cx - w / 2, x1: cx + w / 2, y0: cy - h / 2, y1: cy + h / 2 };
+  }
+
+  goTo(fx: number, fy: number, fz: number, scale: number | null) {
+    if (!this.viewer) return;
+    const cur = this.viewer.position?.value as Float32Array | undefined;
+    const pos = cur?.length ? Float32Array.from(cur) : new Float32Array(this.names.length);
+    const set = (n: string, v: number) => { if (this.idx(n) >= 0) pos[this.idx(n)] = v + 0.5; };
+    set("x", fx); set("y", fy); if (this.src.dims === 3) set("z", fz);
+    try {  // the viewer's own controls; a state restore if they are not there
+      this.viewer.position.value = pos;
+      if (scale !== null) this.viewer.navigationState.zoomFactor.value = scale * (window.devicePixelRatio || 1);
+    } catch {
+      const st = this.json();
+      st.position = Array.from(pos);
+      if (scale !== null) st.crossSectionScale = scale * (window.devicePixelRatio || 1);
+      this.viewer.state.restoreState(st);
+    }
+  }
+
+  /** Query and hits as boxes of the annotation layer (the rest of the state untouched). */
+  setBoxes(query: NgBox | null, hits: NgBox[]) {
+    if (!this.viewer) return;
+    const st = this.json();
+    const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
+    if (!layer) return;
+    const box = (b: NgBox, id: string) => {
+      const a = this.names.map(() => 0), c = this.names.map(() => 0);
+      const h = b.side / 2, put = (n: string, lo: number, hi: number) => { const i = this.idx(n); if (i >= 0) { a[i] = lo; c[i] = hi; } };
+      put("x", b.fx - h, b.fx + h); put("y", b.fy - h, b.fy + h);
+      put("z", this.src.dims === 3 ? b.fz - h : 0, this.src.dims === 3 ? b.fz + h : 1);
+      return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "" };
+    };
+    const list = [...hits.map((b, k) => box(b, `hit${k}`)), ...(query ? [box(query, "query")] : [])];
+    // the annotation layer's own list, replaced in place: a whole-state restore resets the
+    // camera and drops local annotations on this viewer
+    const local = this.viewer.layerManager?.getLayerByName?.(LAYER)?.layer?.localAnnotations;
+    if (local?.restoreState) { local.restoreState(list); return; }
+    layer.annotations = list;
+    this.viewer.state.restoreState(st);
+  }
+
+  drawHover() {
+    const g = this.hoverCtx, dpr = window.devicePixelRatio || 1;
+    g.clearRect(0, 0, this.hover.width, this.hover.height);
+    const hb = this.on.hoverBox();
+    if (!hb || !this.mouse || !this.viewer) return;
+    const side = (hb.side / this.scale()) , x = this.mouse.x * dpr, y = this.mouse.y * dpr;
+    g.setLineDash([6 * dpr, 4 * dpr]); g.lineWidth = 2 * dpr; g.strokeStyle = "#5ab0ff";
+    g.strokeRect(x - side / 2, y - side / 2, side, side);
+    g.setLineDash([]);
+    g.font = `${12 * dpr}px system-ui`;
+    const tw = g.measureText(hb.text).width;
+    g.fillStyle = "#000a"; g.fillRect(x - side / 2 - 3 * dpr, y - side / 2 - 19 * dpr, tw + 6 * dpr, 17 * dpr);
+    g.fillStyle = "#cfe6ff"; g.fillText(hb.text, x - side / 2, y - side / 2 - 6 * dpr);
+  }
+
+  destroy() { this.iframe.remove(); this.hoverCtx.clearRect(0, 0, this.hover.width, this.hover.height); }
+}

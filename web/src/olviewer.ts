@@ -79,16 +79,29 @@ export class OlViewer {
     this.hoverF.set("kind", "hover");
     this.boxes.addFeature(this.hoverF);
     this.map = new Map({ target, layers: [tiles, overlay], view: this.view, controls: [] });
-    this.map.on("singleclick", (e) => { this.hoverF.setGeometry(undefined); on.click(e.coordinate[0], -e.coordinate[1]); });
+    this.map.on("singleclick", (e) => { this.lastPixel = null; this.refreshHover(); on.click(e.coordinate[0], -e.coordinate[1]); });
+    this.onHover = on.hover;
     this.map.on("pointermove", (e) => {
       if (e.dragging) return;
-      const h = on.hover();
-      if (!h) { this.hoverF.setGeometry(undefined); return; }
-      this.hoverF.setGeometry(square({ fx: e.coordinate[0], fy: -e.coordinate[1], side: h.side }));
-      this.hoverF.set("label", h.text);
+      this.lastPixel = e.pixel;
+      this.refreshHover();
     });
-    target.addEventListener("pointerleave", () => this.hoverF.setGeometry(undefined));
-    this.view.on("change:resolution", () => on.moved());
+    target.addEventListener("pointerleave", () => { this.lastPixel = null; this.refreshHover(); });
+    // zooming changes the search level (and so the box) without the pointer moving
+    this.view.on("change:resolution", () => { this.refreshHover(); on.moved(); });
+    this.view.on("change:center", () => this.refreshHover());
+  }
+
+  private lastPixel: number[] | null = null;
+  private onHover: () => { side: number; text: string } | null = () => null;
+  /** The dashed box under the last pointer position, at the current search level's size. */
+  refreshHover() {
+    const h = this.lastPixel ? this.onHover() : null;
+    if (!h || !this.lastPixel) { this.hoverF.setGeometry(undefined); return; }
+    const c = this.map.getCoordinateFromPixel(this.lastPixel);
+    if (!c) return;
+    this.hoverF.setGeometry(square({ fx: c[0], fy: -c[1], side: h.side }));
+    this.hoverF.set("label", h.text);
   }
 
   /** Full-resolution pixels per device pixel (the canvas viewer's measure of zoom). */
