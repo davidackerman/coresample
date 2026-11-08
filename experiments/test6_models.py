@@ -7,6 +7,7 @@ recall@100 with standard errors over queries.
 Matchers:
   dinov2-small   the current model (112 px, CLS + mean token)
   dinov2-base    4x the parameters (112 px, CLS + mean token)
+  dinov2-with-registers-small  DINOv2-small trained with 4 register tokens (fewer artifact tokens in the mean)
   dinov3-small   DINOv3 ViT-S/16 (gated on Hugging Face: needs an accepted license and a token);
                  128 px so it sees the same 8 x 8 token grid, CLS + mean of patch tokens (its 4
                  register tokens left out)
@@ -65,6 +66,7 @@ class Matcher:
 
             self.m = AutoModel.from_pretrained(f"facebook/{name}").eval()
             self.size, self.mean, self.std = 112, IMNET_MEAN, IMNET_STD
+            self.skip = 1 + int(getattr(self.m.config, "num_register_tokens", 0))  # CLS, then any register tokens
         elif name == "dinov3-small":
             from transformers import AutoModel
 
