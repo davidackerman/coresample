@@ -11,9 +11,11 @@ const chunkmirage = resolve(process.env.CHUNKMIRAGE_WEB ?? resolve(__dirname, ".
 // Neuroglancer at ./ng/ on the page's own site, so the page can drive it (same-origin iframe).
 // The deployed site carries its own build there (.github/workflows/pages.yml); `vite` and
 // `vite preview` relay appspot's client under /ng/ instead, as chunkmirage and cellmap-flow do.
+// NG_URL relays another build instead, e.g. the site's own (patched, web/scripts/patch_neuroglancer.sh):
+// NG_URL=https://davidackerman.github.io/coresample/ng npx vite
 // (behind an HTTPS proxy, as in a sandbox, the relay goes through it)
 const outbound = process.env.HTTPS_PROXY ? new HttpsProxyAgent(process.env.HTTPS_PROXY) : undefined;
-const ng = { "/ng": { target: "https://neuroglancer-demo.appspot.com", changeOrigin: true, agent: outbound, rewrite: (p: string) => p.replace(/^\/ng/, "") } };
+const ng = { "/ng": { target: process.env.NG_URL ?? "https://neuroglancer-demo.appspot.com", changeOrigin: true, agent: outbound, rewrite: (p: string) => p.replace(/^\/ng/, "") } };
 
 export default defineConfig({
   base: "./",

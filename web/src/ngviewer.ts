@@ -12,6 +12,19 @@ export interface NgSource {
   ngSource: string;
   ngDimensions(): Record<string, [number, string]> | null;
   ngOffset?: Vec3;  // z, y, x: where voxel 0 is in Neuroglancer's coordinates
+  ngDisplay?(): string[];  // the axes to show, when the viewer's default (its first three) would be wrong
+  channels?: 1 | 3;       // 3: a colour image, shown as red, green and blue layers added together
+}
+
+/** The data's image layer; a colour image as three (red, green, blue), one per position along
+ * its channel axis, added together: the viewer shows one channel of an image at a time, and an
+ * RGB shader over all three would need them in one chunk, which IDR's images do not have. */
+function imageLayers(src: NgSource): Json[] {
+  if (src.channels !== 3) return [{ type: "image", name: src.name, source: src.ngSource }];
+  return ["red", "green", "blue"].map((c, k) => ({
+    type: "image", name: k ? `${src.name} (${c})` : src.name, source: src.ngSource, localPosition: [k], blend: "additive", opacity: 1,
+    shader: `void main() { float v = toNormalized(getDataValue()); emitRGB(vec3(${k === 0 ? "v" : "0."}, ${k === 1 ? "v" : "0."}, ${k === 2 ? "v" : "0."})); }`,
+  }));
 }
 
 export interface NgBox { fz: number; fy: number; fx: number; side: number; label?: string }
@@ -43,7 +56,7 @@ export class NgViewer {
     this.iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000";
     const dpr = window.devicePixelRatio || 1;
     const state: Json = {
-      layers: [{ type: "image", name: src.name, source: src.ngSource },
+      layers: [...imageLayers(src),
                // segmentations: every object of a layer in its colour, hidden layers fetch nothing
                ...layers.map((l) => (l.kind === "segmentation"
                  ? { type: "segmentation", name: l.name, source: l.url, visible: !!l.visible, segmentDefaultColor: l.color, selectedAlpha: 0.4, hoverHighlight: false }
@@ -106,6 +119,7 @@ export class NgViewer {
         if (layer) { layer.source = { url: "local://annotations", transform: { outputDimensions: dims } }; this.viewer.state.restoreState(st); }
       } catch { /* keep the layer as it is */ }
       await new Promise((r) => setTimeout(r, 300));
+      await this.showAxes();
       this.goTo(init.cx, init.cy, init.z, this.initScale);
       setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
     }
@@ -161,6 +175,21 @@ export class NgViewer {
     return [Math.floor(c.z), Math.floor(c.cy + dy), Math.floor(c.cx + dx)];
   }
   private json(): Json { return this.viewer.state.toJSON(); }
+
+  /** The axes to show (x and y, and z for a volume): an image with no units in its metadata
+   * (IDR's) otherwise opens on its first three axes, t-z-y. Set once the coordinate space is
+   * back after the state restore above (set without one, the viewer drops it). */
+  private async showAxes() {
+    const show = this.src.ngDisplay?.();
+    if (!show?.length) return;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 10_000) {
+      const names: string[] = this.viewer.coordinateSpace?.value?.names ?? [];
+      if (show.every((n) => names.includes(n))) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    try { this.viewer.navigationState.pose.displayDimensions.restoreState(show); } catch { /* keep the viewer's */ }
+  }
 
   /** Finest-level voxels per device pixel (the canvas viewer's measure of zoom). */
   scale() {
