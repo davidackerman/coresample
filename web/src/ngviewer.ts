@@ -3,6 +3,7 @@
 // or appspot relayed in development) so the page can drive it as chunkmirage's pages do, through
 // the frame's `viewer`: clicks and zoom are read from it, hits are a local annotation layer, and
 // the hover box is drawn on a transparent canvas over the frame.
+import type { Layer } from "./datasets.ts";
 import type { OmeZarrSource } from "./sources.ts";
 
 export interface NgBox { fz: number; fy: number; fx: number; side: number; label?: string }
@@ -23,13 +24,18 @@ export class NgViewer {
 
   constructor(private container: HTMLElement, private src: OmeZarrSource, init: { cx: number; cy: number; z: number; scale: number },
               private hover: HTMLCanvasElement,
-              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void }) {
+              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void },
+              layers: Layer[] = []) {
     this.hoverCtx = hover.getContext("2d")!;
     this.iframe = document.createElement("iframe");
     this.iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000";
     const dpr = window.devicePixelRatio || 1;
     const state: Json = {
       layers: [{ type: "image", name: src.name, source: `zarr://${src.url}` },
+               // segmentations: every object of a layer in its colour, hidden layers fetch nothing
+               ...layers.map((l) => (l.kind === "segmentation"
+                 ? { type: "segmentation", name: l.name, source: l.url, visible: !!l.visible, segmentDefaultColor: l.color, selectedAlpha: 0.4, hoverHighlight: false }
+                 : { type: "image", name: l.name, source: l.url, visible: !!l.visible })),
                { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
       // a volume: the slice and a 3-D view, where every hit box shows wherever it is in z
       layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true, selectedLayer: { visible: false }, layerListPanel: { visible: false },
@@ -44,7 +50,7 @@ export class NgViewer {
       state.dimensions = dims;
       state.position = Object.keys(dims).map((n) => (n === "x" ? init.cx : n === "y" ? init.cy : init.z) + 0.5);
       state.projectionScale = init.scale * dpr * Math.max(300, container.clientHeight) * 3;
-      state.layers[1].source = { url: "local://annotations", transform: { outputDimensions: dims } };
+      state.layers[state.layers.length - 1].source = { url: "local://annotations", transform: { outputDimensions: dims } };
     }
     this.iframe.src = `ng/index.html#!${encodeURIComponent(JSON.stringify(state))}`;
     container.appendChild(this.iframe);
@@ -102,6 +108,14 @@ export class NgViewer {
       const p = this.mousePosition(e.clientX, e.clientY);
       if (p) { this.mouse = null; this.drawHover(); this.on.click(p[0], p[1], p[2]); }
     }, true);
+  }
+
+  /** Show or hide one of the extra layers. */
+  setLayerVisible(name: string, visible: boolean) {
+    const m = this.viewer?.layerManager?.getLayerByName?.(name);
+    if (!m) return;
+    if (typeof m.setVisible === "function") m.setVisible(visible);
+    else m.visible = visible;
   }
 
   private idx(n: string) { return this.names.indexOf(n); }

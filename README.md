@@ -70,7 +70,10 @@ OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as ann
 tile pyramids in OpenLayers; the search runs behind the scenes in either. Neuroglancer opens
 at the right place from the start (its first state carries the place, zoom and coordinate
 space), and the model downloads only once the view has its first data, so the two do not
-compete for the network.
+compete for the network. A dataset can carry more layers over the same space: the HeLa volume
+comes with OpenOrganelle's organelle segmentations (nucleus, mito, ER, Golgi, vesicles,
+endosomes, lysosomes, lipid droplets, microtubules, plasma membrane), toggled under **Layers**,
+each class in one colour. They are for looking only so far; the search uses the raw data.
 
 The data must be a multiscale pyramid (each level 2x coarser) on a host that allows
 cross-origin reads (CORS), as public buckets, NASA GIBS/Trek, ESA and IDR do. Sources without

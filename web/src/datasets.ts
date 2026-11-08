@@ -15,7 +15,18 @@ export interface Preset {
   patch?: number;
   note?: string;
   globe?: GlobeSpec;  // planetary mosaics: also viewable on a globe
+  layers?: Layer[];   // more layers over the same space (segmentations, other channels): shown in Neuroglancer
 }
+
+/** A layer shown with the data: a Neuroglancer source URL, its kind and a colour. */
+export interface Layer { name: string; url: string; kind: "segmentation" | "image"; color: string; visible?: boolean }
+
+// OpenOrganelle's whole-cell organelle segmentations of jrc_hela-2 (N5, same space as the EM)
+const HELA_SEG = "n5://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.n5/labels";
+const helaLayers: Layer[] = ([
+  ["nucleus", "#4b8bff"], ["mito", "#ff6b3d"], ["er", "#3ddc84"], ["golgi", "#ffd24a"], ["vesicle", "#ff5cc6"],
+  ["endo", "#b07cff"], ["lyso", "#ff9f1c"], ["ld", "#9cf"], ["mt-out", "#e5675e"], ["pm", "#cccccc"],
+] as const).map(([n, color]) => ({ name: n, url: `${HELA_SEG}/${n}_seg`, kind: "segmentation", color, visible: n === "mito" }));
 
 // equirectangular and web-mercator placement of a longitude/latitude, for the map-like sources
 const equirect = (W: number, H: number, lon: number, lat: number) => ({ cx: ((lon + 180) / 360) * W, cy: ((90 - lat) / 180) * H });
@@ -87,7 +98,8 @@ export const PRESETS: Preset[] = [
     id: "hela", label: "HeLa cell: FIB-SEM volume", detail: "4 nm voxels, OpenOrganelle", kind: "3-D EM", count: 122e9, volume: true,
     open: () => OmeZarrSource.open("s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8", "jrc_hela-2 EM"),
     view: { cx: 8978, cy: 558, z: 2666, scale: 4 },
-    note: "A 3-D volume: change the z slice with the slider or [ and ].",
+    note: "A 3-D volume: scroll through z with the mouse wheel in Neuroglancer. Organelle segmentations are under Layers.",
+    layers: helaLayers,
   },
   {
     id: "idr-organoid", label: "Intestinal organoid: EM", detail: "IDR idr0083", kind: "2-D EM", count: 13.5e9,
