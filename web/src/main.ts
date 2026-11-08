@@ -633,7 +633,8 @@ function clearSearch() {
   search?.stop();
   search = null;
   hitEls = [];
-  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one to mark it good or bad: the list re-ranks.</div>';
+  $("marks").hidden = true;
+  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this (hidden). The query moves, the list re-ranks and the reads follow.</div>';
   $("hitcount").textContent = "";
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = true; stopBtn.textContent = "Pause";
@@ -691,7 +692,7 @@ function toast(msg: string) {
   h.textContent = msg;
   h.classList.remove("gone");
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => h.classList.add("gone"), 3500);
+  toastTimer = window.setTimeout(() => h.classList.add("gone"), Math.max(3500, 45 * msg.length));  // long enough to read
 }
 
 // more examples of the same thing: shift-click, or "+ example" and then a click (one example)
@@ -866,14 +867,18 @@ function panel(st: State) {
     if (!el) {
       el = document.createElement("div");
       el.className = "hit";
-      el.innerHTML = `<canvas title="go there"></canvas><canvas class="map"></canvas><div class="fb"><button data-g="1" title="good: more like this">&#10003;</button><button data-g="0" title="bad: fewer like this">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div><div class="why"></div>`;
+      el.innerHTML = `<canvas title="go there"></canvas><canvas class="map"></canvas><div class="fb"><button data-g="1" title="More like this: the query moves toward this hit, every hit is scored again, and the tiles still to read favour places like it (click again to undo)">&#10003;</button><button data-g="0" title="Fewer like this: hidden, and the query moves away from it (undo under Hits)">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div><div class="why"></div>`;
       box.appendChild(el);
       hitEls[k] = el;
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
       el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
         const i = Number(el!.dataset.index), good = b.dataset.g === "1";
+        if (!search) return;
         boxesNow = true;  // the boxes follow the re-ranked list at once
-        search?.mark(i, good);
+        if (good && search.markOf(i) === "good") { search.unmark(i); toast("Mark undone."); return; }
+        search.mark(i, good);
+        toast(good ? "✓ More like this: the query moved toward it, so the hits are scored again and the tiles still to read favour places like it. Click ✓ again to undo."
+                   : "✗ Fewer like this: hidden, and the query moved away from it. Undo it under Hits.");
       }));
     }
     if (el.dataset.index !== String(h.index)) {
@@ -881,12 +886,16 @@ function panel(st: State) {
       drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
       drawMap(el, h.index);
     }
+    el.classList.toggle("good", s.markOf(h.index) === "good");
     el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
     el.querySelector(".z")!.textContent = d.text + (src?.dims === 3 ? `, z ${num(h.center[0] * 2 ** st.working)}` : "");
     if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
+  const mk = s.marks();
+  $("marks").hidden = !(mk.good + mk.bad);
+  $("markstext").textContent = [mk.good ? `${mk.good} ✓ more like this` : "", mk.bad ? `${mk.bad} ✗ fewer like this (hidden)` : ""].filter(Boolean).join(", ");
   hitEls.length = st.hits.length;
   if (whyOn) fillMaps();
 }
@@ -1269,6 +1278,10 @@ $("detail").addEventListener("change", async () => {
   await warmUp();
   again();  // embeddings differ: search again
 });
+
+// the marks' undo
+$("undomark").addEventListener("click", () => { boxesNow = true; search?.unmark(); });
+$("clearmarks").addEventListener("click", () => { boxesNow = true; search?.clearMarks(); });
 
 // the map / globe toggle (planetary mosaics): they open on the globe unless the address says
 // globe=0, which choosing the map writes there (so a shared link keeps the choice)

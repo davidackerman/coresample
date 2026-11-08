@@ -11,6 +11,8 @@ import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
 export interface Hit { center: Vec3; score: number; index: number }
+/** A marked hit's embedding at the rough level (by the hit's item id, so a mark can be undone). */
+interface Mark { id: number; e: Float32Array }
 /** How a candidate scored (Search.explain): the score is the mean of its parts' cosines with the
  * query variant that matched best. */
 export interface Explain {
@@ -67,7 +69,7 @@ const placed = (c: Vec3) => c.every(Number.isFinite);
 interface Rough {
   L: number; p: number; stride: number; k: number;
   q0: Float32Array; q: Float32Array;             // the query at level L (and after feedback)
-  goods: Float32Array[]; bads: Float32Array[];   // marked hits seen at level L
+  goods: Mark[]; bads: Mark[];                   // marked hits seen at level L
   pool: { t: Vec3; s: number; embs: Float32Array[] }[];  // scored tiles not read yet
   scores: number[];                              // every rough score so far (for the median)
   cursor: number;                                // next tile of the cheap order to look at
@@ -621,7 +623,9 @@ export class Search {
     const f = 2 ** r.k, c: Vec3 = [this.src.dims === 3 ? Math.floor(it.c[0] / f) : 0, Math.floor(it.c[1] / f), Math.floor(it.c[2] / f)];
     const p = (await this.readAt(r.L, [c], r.p))[0];
     if (!p || !informative(p.data)) return;
-    (good ? r.goods : r.bads).push((await this.emb.embed([p]))[0]);
+    const e = (await this.emb.embed([p]))[0];
+    if (!(good ? this.good : this.bad).includes(id)) return;  // undone meanwhile
+    (good ? r.goods : r.bads).push({ id, e });
     this.roughRequery();
   }
 
@@ -630,7 +634,7 @@ export class Search {
   private roughRequery() {
     const r = this.rough!;
     const q = Float32Array.from(r.q0);
-    const add = (vs: Float32Array[], w: number) => { for (const v of vs) for (let d = 0; d < q.length; d++) q[d] += (w / vs.length) * v[d]; };
+    const add = (vs: Mark[], w: number) => { for (const { e } of vs) for (let d = 0; d < q.length; d++) q[d] += (w / vs.length) * e[d]; };
     add(r.goods, 0.75);
     add(r.bads, -0.25);
     r.q = unitParts(q);
@@ -855,9 +859,40 @@ export class Search {
   }
 
   /** Mark hit (patch index) good or bad and re-rank everything embedded so far. */
+  /** Mark a hit good (the query moves toward it) or bad (hidden, the query moves away from it);
+   * everything kept is scored again, and the tiles not read yet too. A mark replaces any other
+   * on the same hit. */
   mark(index: number, good: boolean) {
+    this.dropMark(index);
     (good ? this.good : this.bad).push(index);
+    this.markOrder.push(index);
     this.roughFeedback(index, good);
+    this.afterMarks();
+  }
+  /** A hit's mark, if any. */
+  markOf(index: number): "good" | "bad" | null { return this.good.includes(index) ? "good" : this.bad.includes(index) ? "bad" : null; }
+  /** How many hits are marked good and bad. */
+  marks(): { good: number; bad: number } { return { good: this.good.length, bad: this.bad.length }; }
+  /** Undo a hit's mark (the last mark when no hit is given). */
+  unmark(index?: number) {
+    const i = index ?? this.markOrder[this.markOrder.length - 1];
+    if (i === undefined || !this.markOf(i)) return;
+    this.dropMark(i);
+    this.afterMarks();
+  }
+  private markOrder: number[] = [];
+  /** Undo every mark. */
+  clearMarks() { for (const i of [...this.markOrder]) this.dropMark(i); this.afterMarks(); }
+  private dropMark(i: number) {
+    const out = (a: number[]) => { const k = a.indexOf(i); if (k >= 0) a.splice(k, 1); };
+    out(this.good); out(this.bad); out(this.markOrder);
+    if (this.rough) {
+      this.rough.goods = this.rough.goods.filter((m) => m.id !== i);
+      this.rough.bads = this.rough.bads.filter((m) => m.id !== i);
+    }
+  }
+  private afterMarks() {
+    if (this.rough) this.roughRequery();
     this.applyFeedback();
     this.rank();
     this.emit({});
