@@ -30,6 +30,8 @@ export interface State {
   bytes: number; seconds: number; scanSeconds: number; firstHitSeconds: number | null;
   rough: { level: number; places: number } | null;  // the model's coarse pass that orders the reads
   examples: number;  // examples the query is made of (shift-click adds one)
+  areas: number;     // areas scanned so far (with `expand`, the first and those around it)
+  levelTiles: number;  // tiles in the whole working level
 }
 
 export interface Options {
@@ -45,6 +47,7 @@ export interface Options {
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   sketch?: Patch;             // a drawing (P x P at the working level) to search for instead of a place
+  expand?: boolean;           // once the region is read, go on to the areas around it, nearest first, until the whole level is read
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
 }
 
@@ -157,7 +160,13 @@ export class Search {
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
   private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
   skipped = 0;  // patches not embedded: no data or blank
-  private scanInfo: { score: Float32Array; dims: Dims; clo: Vec3; f: number; w: Dims } | null = null;
+  private scans: { score: Float32Array; dims: Dims; clo: Vec3; f: number; w: Dims; lo: Vec3; hi: Vec3 }[] = [];
+  private qscan: { C: number; f: number; w: Dims; m: Dims; query: Float32Array; qdims: Dims } | null = null;
+  private allTiles = new Set<number>();  // every tile ranked so far (tileKey)
+  private area: [Vec3, Vec3];            // the areas scanned so far (their bounding box)
+  private limits: [Vec3, Vec3];          // where patches may be: the region, or with `expand` the whole level
+  private ring = 0;
+  private ringQ: [Vec3, Vec3][] = [];
   private next = 0;
   private stopFlag = false;
   private t0 = performance.now();
@@ -175,10 +184,13 @@ export class Search {
     this.query = query;
     const L = src.levels[opt.working];
     this.region = opt.region ?? [[0, 0, 0], [...L.shape] as Vec3];
+    this.area = [[...this.region[0]] as Vec3, [...this.region[1]] as Vec3];
+    this.limits = opt.expand ? [[0, 0, 0], [...L.shape] as Vec3] : this.region;
     this.bytes0 = src.bytesRead;
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
                    tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
-                   scanSeconds: 0, firstHitSeconds: null, rough: null, examples: 1 };
+                   scanSeconds: 0, firstHitSeconds: null, rough: null, examples: 1, areas: 1,
+                   levelTiles: L.shape.reduce((n, v, a) => n * Math.ceil(v / L.chunk[a]), 1) };
     this.ready = new Promise((r) => (this.setReady = r));
   }
   private ready: Promise<void>;
@@ -186,7 +198,7 @@ export class Search {
 
   on(f: (s: State) => void) { this.listeners.push(f); }
   /** The searched region (working-level voxels) and the tiles read so far (tile indices). */
-  get regionBox(): [Vec3, Vec3] { return this.region; }
+  get regionBox(): [Vec3, Vec3] { return this.area; }
   readTiles(): Vec3[] { return this.readList; }
   /** The examples' places and pixels (the first is the query clicked). */
   exampleCenters(): Vec3[] { return this.examples.map((e) => e.c); }
@@ -282,16 +294,11 @@ export class Search {
       this.examples = [{ c: sk ? NOWHERE : this.query, vars: await this.queryVariants(await this.queryBase(sk ? NOWHERE : this.query), this.query), pix, rough: null }];
       this.combine();
       this.qvars = this.q0vars.map((v) => Float32Array.from(v));
-      // 1. cheap scan of the coarse level
+      // 1. the cheap scan's query: its window at the coarse level
       const C = this.chooseCoarse(), f = 2 ** (C - W);
-      const s = Math.max(2, Math.round(P / f));
-      const w: Dims = [d3 ? s : 1, s, s], m: Dims = [d3 ? MARGIN : 0, MARGIN, MARGIN];
+      const sw = Math.max(2, Math.round(P / f));
+      const w: Dims = [d3 ? sw : 1, sw, sw], m: Dims = [d3 ? MARGIN : 0, MARGIN, MARGIN];
       this.emit({ phase: "scan", coarse: C, message: `scanning level ${C} with cheap scores` });
-      const ts = performance.now();
-      const [rlo, rhi] = this.region;
-      const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
-      const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
-      const vol = await this.src.read(C, [clo[0] - m[0], clo[1] - m[1], clo[2] - m[2]], [chi[0] + m[0], chi[1] + m[1], chi[2] + m[2]]);
       let qr: Region;
       if (sk) qr = sketchWindow(sk, w, m);  // the drawing shrunk to the coarse level, its median around it
       else {
@@ -299,26 +306,11 @@ export class Search {
         const qlo: Vec3 = [qc[0] - Math.floor(w[0] / 2) - m[0], qc[1] - Math.floor(w[1] / 2) - m[1], qc[2] - Math.floor(w[2] / 2) - m[2]];
         qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
       }
-      const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: fillMissing(luminance(qr)), qdims: qr.shape, window: w, margin: m };
-      const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
-      this.scanInfo = { score: res.score, dims: res.dims, clo, f, w };
+      this.qscan = { C, f, w, m, query: fillMissing(luminance(qr)), qdims: qr.shape };
+      // 2. the region scanned, its tiles ranked
+      const ts = performance.now();
+      this.order = await this.scanRegion(this.region);
       this.emit({ scanSeconds: (performance.now() - ts) / 1000 });
-      // 2. rank the working level's tiles by their best window
-      const ch = this.src.levels[W].chunk;
-      const prior = new Map<string, number>();
-      const od = res.dims;
-      let i = 0;
-      for (let z = 0; z < od[0]; z++)
-        for (let y = 0; y < od[1]; y++)
-          for (let x = 0; x < od[2]; x++, i++) {
-            const c = [clo[0] + z + Math.floor(w[0] / 2), clo[1] + y + Math.floor(w[1] / 2), clo[2] + x + Math.floor(w[2] / 2)];
-            const wc = [d3 ? c[0] * f + (f >> 1) : 0, c[1] * f + (f >> 1), c[2] * f + (f >> 1)];
-            if (wc[1] < rlo[1] || wc[1] >= rhi[1] || wc[2] < rlo[2] || wc[2] >= rhi[2] || (d3 && (wc[0] < rlo[0] || wc[0] >= rhi[0]))) continue;
-            const key = `${Math.floor(wc[0] / ch[0])},${Math.floor(wc[1] / ch[1])},${Math.floor(wc[2] / ch[2])}`;
-            const v = res.score[i];
-            if (!(prior.get(key)! >= v)) prior.set(key, v);
-          }
-      this.order = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k.split(",").map(Number) as Vec3);
       await this.setupRough();
       this.setReady();
       this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
@@ -329,9 +321,83 @@ export class Search {
     }
   }
 
-  /** Cheap-scan score at a working-level position (the window centred nearest it). */
+  /** The cheap scan of one area (working-level voxels [lo, hi)) at the coarse level, and the
+   * working level's tiles in it not ranked before, ranked by their best window. */
+  private async scanRegion([rlo, rhi]: [Vec3, Vec3]): Promise<Vec3[]> {
+    const q = this.qscan!, { C, f, w, m } = q, d3 = this.src.dims === 3, W = this.opt.working;
+    const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
+    const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
+    const vol = await this.src.read(C, [clo[0] - m[0], clo[1] - m[1], clo[2] - m[2]], [chi[0] + m[0], chi[1] + m[1], chi[2] + m[2]]);
+    const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: Float32Array.from(q.query), qdims: q.qdims, window: w, margin: m };
+    const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
+    this.scans.push({ score: res.score, dims: res.dims, clo, f, w, lo: rlo, hi: rhi });
+    const ch = this.src.levels[W].chunk;
+    const prior = new Map<number, number>();
+    const od = res.dims;
+    let i = 0;
+    for (let z = 0; z < od[0]; z++)
+      for (let y = 0; y < od[1]; y++)
+        for (let x = 0; x < od[2]; x++, i++) {
+          const c = [clo[0] + z + Math.floor(w[0] / 2), clo[1] + y + Math.floor(w[1] / 2), clo[2] + x + Math.floor(w[2] / 2)];
+          const wc = [d3 ? c[0] * f + (f >> 1) : 0, c[1] * f + (f >> 1), c[2] * f + (f >> 1)];
+          if (wc[1] < rlo[1] || wc[1] >= rhi[1] || wc[2] < rlo[2] || wc[2] >= rhi[2] || (d3 && (wc[0] < rlo[0] || wc[0] >= rhi[0]))) continue;
+          const key = tileKey([Math.floor(wc[0] / ch[0]), Math.floor(wc[1] / ch[1]), Math.floor(wc[2] / ch[2])]);
+          if (this.allTiles.has(key)) continue;  // ranked with an earlier area
+          const v = res.score[i];
+          if (!(prior.get(key)! >= v)) prior.set(key, v);
+        }
+    const tiles = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => {
+      this.allTiles.add(k);
+      return [Math.floor(k / 2 ** 40), Math.floor(k / 2 ** 20) % 2 ** 20, k % 2 ** 20] as Vec3;
+    });
+    return tiles;
+  }
+
+  /** With `expand`: the next area around the ones read (rings of areas the size of the first,
+   * each ring nearest first), scanned and its tiles added to the reading order. False when the
+   * whole level has been covered. */
+  private async expandOnce(): Promise<boolean> {
+    if (!this.opt.expand || this.stopFlag) return false;
+    const shape = this.src.levels[this.opt.working].shape, [rlo, rhi] = this.region;
+    const B = [0, 1, 2].map((a) => rhi[a] - rlo[a]);
+    // rings far enough to cover the level along every axis the region does not span
+    const maxRing = Math.max(...[0, 1, 2].map((a) => Math.ceil(Math.max(rlo[a], shape[a] - rhi[a]) / Math.max(1, B[a]))));
+    for (;;) {
+      while (!this.ringQ.length) {
+        if (++this.ring > maxRing) return false;
+        const R = this.ring, span = [0, 1, 2].map((a) => (B[a] >= shape[a] ? 0 : R)), out: [Vec3, Vec3][] = [];
+        for (let dz = -span[0]; dz <= span[0]; dz++) for (let dy = -span[1]; dy <= span[1]; dy++) for (let dx = -span[2]; dx <= span[2]; dx++) {
+          if (Math.max(Math.abs(dz), Math.abs(dy), Math.abs(dx)) !== R) continue;
+          const d = [dz, dy, dx];
+          const lo = [0, 1, 2].map((a) => Math.max(0, rlo[a] + d[a] * B[a])) as Vec3;
+          const hi = [0, 1, 2].map((a) => Math.min(shape[a], rhi[a] + d[a] * B[a])) as Vec3;
+          if (lo.some((v, a) => hi[a] <= v)) continue;
+          out.push([lo, hi]);
+        }
+        const q = this.query.every(Number.isFinite) ? this.query : [(rlo[0] + rhi[0]) / 2, (rlo[1] + rhi[1]) / 2, (rlo[2] + rhi[2]) / 2];
+        const dist = ([lo, hi]: [Vec3, Vec3]) => Math.hypot(...[0, 1, 2].map((a) => (lo[a] + hi[a]) / 2 - q[a]));
+        this.ringQ = out.sort((a, b) => dist(a) - dist(b));
+      }
+      const b = this.ringQ.shift()!;
+      const tiles = await this.scanRegion(b);
+      this.area = [[0, 1, 2].map((a) => Math.min(this.area[0][a], b[0][a])) as Vec3, [0, 1, 2].map((a) => Math.max(this.area[1][a], b[1][a])) as Vec3];
+      this.emit({ areas: this.state.areas + 1 });
+      if (tiles.length) {
+        this.order.push(...tiles);
+        this.emit({ tilesTotal: this.order.length });
+        return true;
+      }
+    }
+  }
+
+  /** Cheap-scan score at a working-level position (the window centred nearest it, in the scan
+   * of the area it is in). */
   private priorAt(c: Vec3): number {
-    const sc = this.scanInfo;
+    let sc = this.scans[0];
+    for (let k = this.scans.length - 1; k >= 0; k--) {
+      const b = this.scans[k];
+      if ([0, 1, 2].every((a) => c[a] >= b.lo[a] && c[a] < b.hi[a])) { sc = b; break; }
+    }
     if (!sc) return 0;
     const idx = [0, 1, 2].map((a) => {
       const v = Math.floor(c[a] / sc.f) - sc.clo[a] - Math.floor(sc.w[a] / 2);
@@ -344,13 +410,13 @@ export class Search {
   private async readTile(t: Vec3) {
     const P = this.opt.patch, h = P / 2, W = this.opt.working, d3 = this.src.dims === 3;
     const step = this.opt.stride ?? (d3 ? P / 2 : P);
-    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.region;
+    const ch = this.src.levels[W].chunk, o = this.region[0], [llo, lhi] = this.limits;
     const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
-    const grid = (a: number) => {  // stride grid from the region corner, patch inside the region
+    const grid = (a: number) => {  // stride grid anchored at the region's corner, patch inside the limits
       const r: number[] = [];
-      const flat = a === 0 && !d3;
-      const first = rlo[a] + (flat ? 0 : h), lastOk = flat ? rhi[a] - 1 : rhi[a] - h, st = flat ? 1 : step;
-      for (let v = first + Math.max(0, Math.ceil((lo[a] - first) / st)) * st; v < hi[a] && v <= lastOk; v += st) r.push(v);
+      const flat = a === 0 && !d3, st = flat ? 1 : step;
+      const first = o[a] + (flat ? 0 : h), from = Math.max(lo[a], flat ? llo[a] : llo[a] + h), lastOk = flat ? lhi[a] - 1 : lhi[a] - h;
+      for (let v = first + Math.ceil((from - first) / st) * st; v < hi[a] && v <= lastOk; v += st) r.push(v);
       return r;
     };
     const cs: Vec3[] = [];
@@ -379,20 +445,20 @@ export class Search {
    * Tiles are read a few at a time in coarse-scan order; their patches join one queue ranked by
    * the cheap score at each patch; the best queued patches are embedded in small batches and the
    * hits update after every batch, so results stream and the likeliest come first. */
-  async resume() { await this.readUntil(this.order.length); }
+  async resume() { await this.readUntil(Infinity); }
 
   /** Read tiles up to `budget` in total (tests use it to read a fixed number). */
   async readUntil(budget: number) {
     if (this.reading) return;
     this.reading = true;
     this.stopFlag = false;
-    this.emit({ phase: "read", tilesBudget: budget, message: "reading tiles, best-ranked first" });
+    this.emit({ phase: "read", tilesBudget: Math.min(budget, this.order.length), message: "reading tiles, best-ranked first" });
     const W = this.opt.working, P = this.opt.patch, d3 = this.src.dims === 3;
     const ahead = d3 ? 6 : 3;
     while (!this.stopFlag) {
       if (this.tokenMode) {  // a few tiles at a time, every crop of them through the model in one go
         const limit = Math.min(budget, this.order.length);
-        if (this.next >= limit) break;
+        if (this.next >= limit) { if (this.next < budget && (await this.expandOnce())) continue; break; }
         const tiles = await this.takeTiles(this.emb.provider === "webgpu" ? 4 : 1, limit);
         if (!tiles.length) break;
         const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
@@ -415,7 +481,7 @@ export class Search {
         this.queue.sort((x, y) => y.pri - x.pri);
       }
       if (!this.queue.length) {
-        if (this.next >= limit) break;
+        if (this.next >= limit) { if (this.next < budget && (await this.expandOnce())) continue; break; }
         continue;
       }
       const batch = this.queue.splice(0, B);
@@ -436,9 +502,9 @@ export class Search {
                   firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
     }
     this.reading = false;
-    const all = this.next >= this.order.length && !this.queue.length;
+    const all = this.next >= this.order.length && !this.queue.length && !this.stopFlag;
     this.emit({ phase: all ? "done" : "paused", tilesRead: this.next, queued: this.queue.length,
-                message: all ? "read every tile of the region" : "stopped" });
+                message: all ? (this.opt.expand ? "read every tile of the level" : "read every tile of the region") : "stopped" });
   }
   private reading = false;
 
@@ -481,7 +547,7 @@ export class Search {
     this.examples[0].rough = q0;
     // 2-D grids are not overlapping (stride P at the working level): sample every other place
     this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], scores: [], cursor: 0, cells: 0,
-                   scored: new Set(), ranked: new Set(this.order.map(tileKey)) };
+                   scored: new Set(), ranked: this.allTiles };
   }
 
   /** p x p patches at level L around `centers` (z, y, x of that level). */
@@ -500,7 +566,7 @@ export class Search {
   private async roughRound() {
     const r = this.rough!, W = this.opt.working, d3 = this.src.dims === 3, ch = this.src.levels[W].chunk, f = 2 ** r.k;
     const chL = this.src.levels[r.L].chunk;
-    const [rlo, rhi] = this.region, h = r.p / 2;
+    const [rlo, rhi] = this.limits, h = r.p / 2;
     const perTile = (d3 ? Math.max(1, ch[0] / f / r.stride) : 1) * Math.max(1, ch[1] / f / r.stride) * Math.max(1, ch[2] / f / r.stride);
     const budget = this.emb.provider === "webgpu" ? 768 : 48;  // places per round
     const tiles: Vec3[] = [], seen = new Set<string>();
@@ -628,7 +694,7 @@ export class Search {
    * per plane of the stride grid in z. */
   private async prepTokens(t: Vec3): Promise<TokPlane[]> {
     const P = this.opt.patch, h = P / 2, S = 2 * P, W = this.opt.working, d3 = this.src.dims === 3;
-    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.region;
+    const ch = this.src.levels[W].chunk, [rlo, rhi] = this.limits;
     const lo = [t[0] * ch[0], t[1] * ch[1], t[2] * ch[2]], hi = [lo[0] + ch[0], lo[1] + ch[1], lo[2] + ch[2]];
     // window centres this tile owns: inside the tile, at least half a patch inside the region
     const ylo = Math.max(lo[1], rlo[1] + h), yhi = Math.min(hi[1], rhi[1] - h + 1);

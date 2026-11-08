@@ -16,10 +16,14 @@ your GPU through WebGPU; without WebGPU it falls back to the CPU, about 10x slow
 
 Pick a dataset (the menu lists them by size, type or name, and takes your own data), drag to
 pan, scroll to zoom, then click something: hits stream into the right panel, best first. The
-search keeps going, best-ranked tiles first, until it has read the whole region or you press
-**Pause** (**Resume** carries on); the first hits usually come within seconds and later reads
-only add to them. The progress line is the share of the searched area (Options > region;
-auto = the whole dataset whenever the quick first pass can cover it) read at full detail so far,
+search keeps going until it has read everything or you press **Pause** (**Resume** carries on);
+the first hits usually come within seconds and later reads only add to them. With Options >
+region on auto it searches everywhere: first the largest area around your click that the quick
+first pass can cover (the whole dataset when it fits), best-ranked tiles first, then the areas
+around it, ring by ring, nearest first (at full resolution on Earth or Mars one area is about
+100 km across, and the whole planet takes far longer than anyone will wait). The other region
+choices stop at their area. The progress line is the share of the dataset (or the chosen area)
+read at full detail so far,
 and the **Where it has looked** map shows it: the area from above and, for a volume, from the
 side, with the tiles read, the hits, the query and your view (click it to go there). Click a
 thumbnail to go there; hover one to mark it good or bad, which re-ranks the list. Each hit shows
@@ -31,8 +35,9 @@ physical position on volumes), and takes coordinates to go to (x, y[, z], or lat
 thing you care about is clear, then click. However long it reads, memory stays bounded: it
 keeps the best 3,000 candidates (and any you marked) for re-ranking.
 
-How it decides: your clicked patch is embedded by DINOv2-small (a general image model). A
-cheap scan of a coarse level (intensity histogram and texture statistics, no model) ranks
+How it decides: your clicked patch is embedded by DINOv2-small (a general image model; it
+sees colour on colour data). A cheap scan of a coarse level (brightness histogram and texture
+statistics, no model, no colour) ranks
 where similar things might be; the full-resolution tiles under the best-ranked places are
 read first, every patch in them is embedded, and hits are ranked by embedding similarity to
 your click (the number under each thumbnail). Nothing is precomputed or uploaded anywhere.
@@ -48,7 +53,7 @@ whose instances look more varied, averaging did not help and scoring each hit by
 among the examples did a little better (+0.04 with two), so Options > examples offers both.
 
 **Drawing.** **draw** opens a pad: draw what to find as one box at the search level, in the
-data's own greys (dark, grey and light pens from the view; start blank or from the box at the
+data's own greys or colours (dark, middle and light pens from the view; start blank or from the box at the
 view centre; "look like the data" softens it and adds the data's grain), then search for it.
 The model has never seen drawings: bold shapes such as craters find crater-like boxes, but on
 EM a drawing finds nothing (test 10: top-10 precision 0.00-0.13, about what a random order
@@ -79,9 +84,11 @@ identical): the box is resized to 112 px and DINOv2-small turns it into a summar
 and 8 x 8 tokens for its pieces; the score is the mean of two cosines, **look** (CLS: the box as
 a whole) and **parts** (the average of the piece tokens: what is in it). **why**, above the
 hits, shows this per hit (the two parts, the rotation, size or example that matched best, what
-your good/bad marks added) and lays a map over each thumbnail of which pieces look like the
-query (each of its 16 x 16 tokens from the 224 px model, by cosine with the query's average
-token, softened; the brightest 40% coloured). The header names the model; it is DINOv2-small in
+your good/bad marks added) and colours each thumbnail by how the model sees its pieces: the
+three main directions of the 224 px model's 16 x 16 tokens over the query and the hits, as red,
+green and blue, so pieces it sees alike share a colour and a hit's colours show which of its
+parts match which parts of the query (coloured the same way). "where alike" instead shows, in
+magenta, the pieces most like the query's average piece. The header names the model; it is DINOv2-small in
 every mode for now (test 6 compares others). The cheap statistics and the rough pass only decide
 what is read first; this score alone ranks the hits. The controls under **Options** choose how that is computed. Tests 5 and 7 measured
 each on labelled EM: 30 queries per target, the same candidates and queries for every option,

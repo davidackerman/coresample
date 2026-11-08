@@ -4,7 +4,7 @@ import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
 import { NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
-import type { Patch } from "./embedder.ts";
+import type { Patch, TokenGrid } from "./embedder.ts";
 import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
@@ -255,7 +255,7 @@ function fmtLen(v: number): string {
   const nm = u.startsWith("nano") ? 1 : u.startsWith("micro") ? 1e3 : u === "m" || u.startsWith("meter") || u.startsWith("metre") ? 1e9 : NaN;
   if (!Number.isNaN(nm)) {
     const x = v * nm;
-    return x >= 1e12 ? `${(x / 1e12).toFixed(1)} km` : x >= 1e9 ? `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)} m` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} mm`
+    return x >= 1e12 ? `${(x / 1e12).toFixed(x >= 1e14 ? 0 : 1)} km` : x >= 1e9 ? `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)} m` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} mm`
          : x >= 1e3 ? `${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)} \u00b5m` : `${x.toFixed(0)} nm`;
   }
   return u.startsWith("arcsec") ? (v >= 60 ? `${(v / 60).toFixed(1)}\u2032` : `${v.toFixed(0)}\u2033`) : "";
@@ -627,7 +627,8 @@ function clearSearch() {
   olv?.setHeat(null);
   heatCache = null;
   qDrawn = "";
-  maps.clear(); mapFor = null;
+  maps.clear(); toks.clear(); mapFor = null; pca = null; qgrids = null;
+  $<HTMLCanvasElement>("qmap").width = 128;
   setAdding(false);
   $<HTMLButtonElement>("addex").disabled = true;
   render();
@@ -714,6 +715,7 @@ function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
                                    match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
+                                   expand: $<HTMLSelectElement>("region").value === "auto",
                                    roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
   $<HTMLButtonElement>("clear").disabled = false;
   $<HTMLButtonElement>("addex").disabled = false;
@@ -753,6 +755,17 @@ function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: n
   cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
 }
 
+/** Whether the first search area is already the whole level (nothing to search outward). */
+function firstIsWhole(s: Search): boolean {
+  const [lo, hi] = s.opt.region!, L = src!.levels[s.state.working].shape;
+  return lo.every((v) => v === 0) && hi[1] >= L[1] && hi[2] >= L[2] && (src!.dims !== 3 || hi[0] >= L[0]);
+}
+/** The size of one search area (the first region), in physical units or pixels. */
+function fmtArea(s: Search): string {
+  const o = s.opt.region!, sc = src!.levels[s.state.working].scale, h = o[1][1] - o[0][1], w = o[1][2] - o[0][2];
+  const a = fmtLen(w * sc[2]), b = fmtLen(h * sc[1]);
+  return a && b ? `${a} x ${b}` : `${num(w)} x ${num(h)} px`;
+}
 const fmt = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} KB`);
 
 const PHASE: Record<State["phase"], string> = { query: "Reading the query", scan: "Quick pass over a coarse level", read: "Searching",
@@ -767,18 +780,22 @@ function panel(st: State) {
     $("qcanvas").classList.remove("none");
     qDrawn = `${st.examples}`;
   }
-  // tiles read, discounted by the patches still waiting to be compared
-  const frac = st.tilesTotal ? (st.tilesRead / st.tilesTotal) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
-  const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : (100 * frac).toFixed(2);
+  // tiles read, discounted by the patches still waiting to be compared; searching outward, of
+  // the whole level, else of the search area
+  const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal;
+  const frac = total ? (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
+  const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : frac >= 0.0001 || frac === 0 ? (100 * frac).toFixed(2) : "<0.01";
   const [rlo, rhi] = s.regionBox, Ls = src.levels[st.working].shape;
-  const whole = rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]);
+  const whole = expand || (rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]));
   const what = whole ? (src.dims === 3 ? "the volume" : "the image") : "the search area";
   $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} read`
+                         : st.phase === "done" ? `Done: every tile of ${what} read`
                          : st.phase === "error" ? PHASE.error : PHASE[st.phase];
   $("phase").title = `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `
                    + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
-    st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
+    st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles` : st.message,
+    expand && st.tilesTotal && !firstIsWhole(s) ? `outward from the query: ${num(st.areas)} area${st.areas > 1 ? "s" : ""} of ${fmtArea(s)} so far, nearest first` : "",
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
     st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `read in the order of the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
@@ -840,30 +857,42 @@ function panel(st: State) {
 // ---------------------------------------------------------------------------------------
 const modelName = () => `DINOv2-small (${emb.input === 224 ? "detailed, 224" : "fast, 112"} px)`;
 let whyOn = false;
-const maps = new Map<number, Float32Array>();  // hit index -> token cosines (g x g)
-let mapFor: Search | null = null, mapKey = "", qtok: Float32Array | null = null, mapRange: [number, number] = [0, 1], filling = false;
+/** How the hits are coloured: "parts", the model's view of each piece as a colour (the three
+ * main directions of the tokens of the query and the hits, as red, green and blue), so pieces
+ * it sees alike share a colour in the query and in every hit; "alike", magenta where a hit's
+ * pieces are like the query's average piece. */
+let whyMode: "parts" | "alike" = "parts";
+const maps = new Map<number, Float32Array>();  // hit index -> token cosines with the query's average token (g x g)
+const toks = new Map<number, Float32Array>();  // hit index -> its unit tokens (g x g x D)
+let mapFor: Search | null = null, mapKey = "", qgrids: TokenGrid[] | null = null, qtok: Float32Array | null = null;
+let mapRange: [number, number] = [0, 1], filling = false;
+let pca: { mean: Float32Array; comps: Float32Array[]; lo: number[]; hi: number[] } | null = null;
 const VARIANT: Record<string, string> = { "s-1": "at half size", "s+1": "at double size" };
 function whyText(s: Search, i: number): string {
   const e = s.explain(i);
   if (!e) return "";
   const name = { look: "look", parts: "parts", centre: "centre", tokens: "tokens" };
-  const bits = [e.parts.map((p) => `${name[p.name]} ${p.value.toFixed(2)}`).join(" \u00b7 ")];
+  const bits = [e.parts.map((p) => `${name[p.name]} ${p.value.toFixed(2)}`).join(" · ")];
   if (e.variant !== "id") bits.push(VARIANT[e.variant] ?? `turned (${e.variant.slice(1)})`);
   if (e.example >= 0) bits.push(`closest: example ${e.example + 1}`);
   if (Math.abs(e.feedback) >= 0.005) bits.push(`marks ${e.feedback > 0 ? "+" : ""}${e.feedback.toFixed(2)}`);
   return bits.join(", ");
 }
 function showWhyHelp() {
-  const h = $("whyhelp");
-  h.hidden = !whyOn;
+  $("whyhelp").hidden = !whyOn;
+  document.body.classList.toggle("parts", whyOn && whyMode === "parts");
+  for (const b of $("whymode").querySelectorAll("button")) b.classList.toggle("on", b.dataset.m === whyMode);
   if (!whyOn || !search) return;
   const m = search.opt.match, tok = search.opt.method === "tokens";
-  h.innerHTML = `Scored by <b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
+  $("whytext").innerHTML = `Scored by <b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (tok ? "of the window's average token. "
        : `the mean of <b>look</b> (the model's summary of the whole box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "the average of its 8 x 8 pieces"}). `)
-    + `Magenta: the pieces most like the query${emb.input === 224 ? "" : " (from the 224 px model, 88 MB the first time)"}. `
-    + `Cheap statistics only choose what is read first.`;
+    + (whyMode === "parts"
+      ? "Colours: how the model sees each piece; pieces it sees alike have the same colour, in the query and in every hit, so a hit's colours show which of its parts match which parts of the query. "
+      : "Magenta: the pieces most like the query's average piece. ")
+    + (emb.input === 224 ? "" : "(From the 224 px model: 88 MB the first time.) ")
+    + "Cheap statistics only choose what is read first.";
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
@@ -871,30 +900,109 @@ $("why").addEventListener("click", () => {
   document.body.classList.toggle("why", whyOn);
   showWhyHelp();
   if (search) panel(search.state);
+  drawQueryMap();
 });
-/** The query's average token (the examples' averaged), from the 224 px model. */
-async function queryToken(s: Search): Promise<Float32Array> {
+$("whymode").addEventListener("click", (e) => {
+  const m = (e.target as HTMLElement).closest("button")?.dataset.m as typeof whyMode | undefined;
+  if (!m) return;
+  whyMode = m;
+  showWhyHelp();
+  for (const el of hitEls) drawMap(el, Number(el.dataset.index));
+  drawQueryMap();
+});
+
+/** A g x g map (of `ch` channels) softened 3 x 3 (weights 1-2-1): single tokens are noisy. */
+function soften(v: Float32Array, n: number, ch = 1): Float32Array {
+  const b = new Float32Array(v.length);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) for (let c = 0; c < ch; c++) {
+    let sum = 0, w = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy < 0 || xx < 0 || yy >= n || xx >= n) continue;
+      const ww = (2 - Math.abs(dy)) * (2 - Math.abs(dx));
+      sum += ww * v[(yy * n + xx) * ch + c]; w += ww;
+    }
+    b[(y * n + x) * ch + c] = sum / w;
+  }
+  return b;
+}
+/** The three main directions of a set of tokens (D each): a sample of at most 3,000, centred,
+ * block power iteration; and each direction's 2nd-98th percentile, for the colour scale. */
+function fitPca(sets: Float32Array[], D: number) {
+  const all = sets.reduce((n, a) => n + a.length / D, 0), step = Math.max(1, Math.floor(all / 3000)), rows: Float32Array[] = [];
+  let k = 0;
+  for (const a of sets) for (let t = 0; t < a.length / D; t++, k++) if (k % step === 0) rows.push(a.subarray(t * D, (t + 1) * D));
+  const mean = new Float32Array(D);
+  for (const r of rows) for (let d = 0; d < D; d++) mean[d] += r[d] / rows.length;
+  const X = rows.map((r) => r.map((v, d) => v - mean[d]));
+  let rnd = 1;
+  const comps = [0, 1, 2].map(() => Float32Array.from({ length: D }, () => ((rnd = (rnd * 16807) % 2147483647) / 2147483647) - 0.5));
+  for (let it = 0; it < 30; it++) {
+    const next = comps.map(() => new Float32Array(D));
+    for (const x of X) for (let c = 0; c < 3; c++) {
+      let p = 0;
+      for (let d = 0; d < D; d++) p += x[d] * comps[c][d];
+      for (let d = 0; d < D; d++) next[c][d] += p * x[d];
+    }
+    for (let c = 0; c < 3; c++) {  // orthonormal again (Gram-Schmidt)
+      for (let j = 0; j < c; j++) { let p = 0; for (let d = 0; d < D; d++) p += next[c][d] * next[j][d]; for (let d = 0; d < D; d++) next[c][d] -= p * next[j][d]; }
+      const n = Math.hypot(...next[c]) || 1;
+      for (let d = 0; d < D; d++) next[c][d] /= n;
+      comps[c] = next[c];
+    }
+  }
+  const lo: number[] = [], hi: number[] = [];
+  for (let c = 0; c < 3; c++) {
+    const pr = X.map((x) => { let p = 0; for (let d = 0; d < D; d++) p += x[d] * comps[c][d]; return p; }).sort((a, b) => a - b);
+    lo.push(pr[Math.floor(pr.length * 0.02)]); hi.push(pr[Math.floor(pr.length * 0.98)]);
+  }
+  return { mean, comps, lo, hi };
+}
+/** Tokens (g x g x D) as colours: each projected on the three directions, scaled to 0-1. */
+function pcaColours(tok: Float32Array, g: number, D: number): Float32Array {
+  const p = pca!, out = new Float32Array(g * g * 3);
+  for (let t = 0; t < g * g; t++) for (let c = 0; c < 3; c++) {
+    let v = 0;
+    for (let d = 0; d < D; d++) v += (tok[t * D + d] - p.mean[d]) * p.comps[c][d];
+    out[t * 3 + c] = Math.max(0, Math.min(1, (v - p.lo[c]) / Math.max(1e-6, p.hi[c] - p.lo[c])));
+  }
+  return soften(out, g, 3);
+}
+/** Draw a g x g colour map (RGBA from `px`) into `cv`, smoothly enlarged. */
+function paintMap(cv: HTMLCanvasElement, g: number, px: (t: number) => [number, number, number, number], cells = 1, at = 0) {
+  const img = new ImageData(g, g);
+  for (let t = 0; t < g * g; t++) img.data.set(px(t), 4 * t);
+  const tmp = document.createElement("canvas");
+  tmp.width = g; tmp.height = g;
+  tmp.getContext("2d")!.putImageData(img, 0, 0);
+  const S = 128, c2 = cv.getContext("2d")!, side = S / cells;
+  c2.imageSmoothingEnabled = true; c2.imageSmoothingQuality = "high";
+  c2.drawImage(tmp, (at % cells) * side, Math.floor(at / cells) * side, side, side);
+}
+/** The query's tokens (each example's) from the 224 px model, and their average token. */
+async function queryTokens(s: Search) {
   const P = s.state.patch, C = src!.channels;
-  const grids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })));
-  const D = grids[0].D, q = new Float32Array(D);
-  for (const g of grids) {
+  qgrids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })));
+  const D = qgrids[0].D, q = new Float32Array(D);
+  for (const g of qgrids) {
     const m = new Float32Array(D);
     for (let t = 0; t < g.g * g.g; t++) for (let d = 0; d < D; d++) m[d] += g.tokens[t * D + d];
     const n = Math.hypot(...m) || 1;
     for (let d = 0; d < D; d++) q[d] += m[d] / n;
   }
   const n = Math.hypot(...q) || 1;
-  return q.map((v) => v / n);
+  qtok = q.map((v) => v / n);
 }
-/** Match maps for the hits shown that have none yet, a few at a time. */
+/** Maps for the hits shown that have none yet, a few at a time; the colours' directions are
+ * fitted once, on the query and the first hits, so colours stay put as more arrive. */
 async function fillMaps() {
   const s = search;
   if (!s || filling) return;
   const key = `${s.state.examples}|${s.state.patch}|${emb.input}`;
-  if (mapFor !== s || mapKey !== key) { maps.clear(); mapFor = s; mapKey = key; qtok = null; }
+  if (mapFor !== s || mapKey !== key) { maps.clear(); toks.clear(); mapFor = s; mapKey = key; qgrids = null; qtok = null; pca = null; }
   filling = true;
   try {
-    qtok ??= await queryToken(s);
+    if (!qgrids) { await queryTokens(s); drawQueryMap(); }
     for (;;) {
       if (search !== s || !whyOn) return;
       const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !maps.has(i)).slice(0, 8);
@@ -902,23 +1010,13 @@ async function fillMaps() {
       const P = s.state.patch, C = src!.channels;
       const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })));
       grids.forEach((g, k) => {
-        const v = new Float32Array(g.g * g.g), n = g.g;
+        const v = new Float32Array(g.g * g.g);
         for (let t = 0; t < v.length; t++) { let d = 0; for (let j = 0; j < g.D; j++) d += g.tokens[t * g.D + j] * qtok![j]; v[t] = d; }
-        // softened (3 x 3, weights 1-2-1): single tokens are noisy
-        const b = new Float32Array(v.length);
-        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-          let sum = 0, w = 0;
-          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-            const yy = y + dy, xx = x + dx;
-            if (yy < 0 || xx < 0 || yy >= n || xx >= n) continue;
-            const ww = (2 - Math.abs(dy)) * (2 - Math.abs(dx));
-            sum += ww * v[yy * n + xx]; w += ww;
-          }
-          b[y * n + x] = sum / w;
-        }
-        maps.set(todo[k], b);
+        maps.set(todo[k], soften(v, g.g));
+        toks.set(todo[k], g.tokens);
       });
-      // one colour scale for every hit: only the pieces above the 60th percentile of all so far
+      if (!pca) { pca = fitPca([...qgrids!.map((g) => g.tokens), ...toks.values()], grids[0].D); drawQueryMap(); }
+      // one scale for every hit's "alike" map: only the pieces above the 60th percentile of all so far
       const all = [...maps.values()].flatMap((m) => Array.from(m)).sort((a, b) => a - b);
       mapRange = [all[Math.floor(all.length * 0.6)], all[Math.floor(all.length * 0.995)]];
       for (const el of hitEls) drawMap(el, Number(el.dataset.index));
@@ -926,22 +1024,33 @@ async function fillMaps() {
   } catch (e) { console.warn("why maps:", e); } finally { filling = false; }
 }
 function drawMap(el: HTMLElement, i: number) {
-  const cv = el.querySelector<HTMLCanvasElement>(".map"), m = maps.get(i);
+  const cv = el.querySelector<HTMLCanvasElement>(".map"), m = maps.get(i), tk = toks.get(i);
   if (!cv) return;
-  if (!m || mapFor !== search) { cv.getContext("2d")?.clearRect(0, 0, cv.width, cv.height); return; }
-  const g = Math.round(Math.sqrt(m.length)), img = new ImageData(g, g), [lo, hi] = mapRange;
-  for (let t = 0; t < m.length; t++) {
-    const f = Math.max(0, Math.min(1, (m[t] - lo) / Math.max(1e-6, hi - lo))), [r, gg, b] = heatColor(f);
-    img.data.set([r, gg, b, f > 0 ? Math.round(60 + 170 * f) : 0], 4 * t);
+  cv.width = 128; cv.height = 128;  // (cleared)
+  if (!m || mapFor !== search) return;
+  const g = Math.round(Math.sqrt(m.length));
+  if (whyMode === "parts") {
+    if (!pca || !tk) return;
+    const col = pcaColours(tk, g, tk.length / (g * g));
+    paintMap(cv, g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255]);
+    return;
   }
-  const tmp = document.createElement("canvas");
-  tmp.width = g; tmp.height = g;
-  tmp.getContext("2d")!.putImageData(img, 0, 0);
+  const [lo, hi] = mapRange;
+  paintMap(cv, g, (t) => {
+    const f = Math.max(0, Math.min(1, (m[t] - lo) / Math.max(1e-6, hi - lo))), [r, gg, b] = heatColor(f);
+    return [r, gg, b, f > 0 ? Math.round(60 + 170 * f) : 0];
+  });
+}
+/** The query's pieces in the same colours, over its thumbnail (each example in its cell). */
+function drawQueryMap() {
+  const cv = $<HTMLCanvasElement>("qmap");
   cv.width = 128; cv.height = 128;
-  const c2 = cv.getContext("2d")!;
-  c2.imageSmoothingEnabled = true; c2.imageSmoothingQuality = "high";
-  c2.clearRect(0, 0, 128, 128);
-  c2.drawImage(tmp, 0, 0, 128, 128);
+  if (!whyOn || whyMode !== "parts" || !pca || !qgrids || mapFor !== search) return;
+  const cells = Math.ceil(Math.sqrt(qgrids.length));
+  qgrids.forEach((g, k) => {
+    const col = pcaColours(g.tokens, g.g, g.D);
+    paintMap(cv, g.g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255], cells, k);
+  });
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1154,25 +1263,31 @@ function viewCentre(W: number): Vec3 {
   const v = currentView()!, f = 2 ** W;
   return [src!.dims === 3 ? Math.floor(v.z / f) : 0, Math.floor((v.y0 + v.y1) / 2 / f), Math.floor((v.x0 + v.x1) / 2 / f)];
 }
-/** Luminance of the box of side `side` at the view's centre, level W. */
-async function viewLum(W: number, side: number): Promise<Float32Array> {
+/** The pixels (channels interleaved) of the box of side `side` at the view's centre, level W. */
+async function viewPixels(W: number, side: number): Promise<{ data: Float32Array; channels: number }> {
   const c = viewCentre(W), h = side / 2;
   const r = await src!.read(W, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
-  const n = side * side, out = new Float32Array(n);
-  for (let i = 0; i < n; i++) out[i] = r.channels === 3 ? 0.299 * r.data[3 * i] + 0.587 * r.data[3 * i + 1] + 0.114 * r.data[3 * i + 2] : r.data[i];
-  return out;
+  return { data: r.data, channels: r.channels };
+}
+/** The pen buttons in the pad's colours. */
+function showPens() {
+  for (const b of $("padtone").querySelectorAll<HTMLButtonElement>("button")) {
+    const t = b.dataset.t as Tone;
+    b.style.boxShadow = `inset 0 -3px 0 ${pad.colour(t)}`;
+  }
 }
 async function openPad() {
   if (!src) return;
   const W = searchLevel(), P = Number(patchSel.value);
   padAt = { W, P };
   $("pad").hidden = false;
-  $("padhelp").textContent = `One box of ${patchSize()}, in this data's own greys (from the view).`;
-  pad.reset(P, { dark: 40, mid: 128, light: 215, noise: 0 });
-  try {  // the greys and grain of what is on screen
-    const side = Math.min(4 * P, 512);
-    pad.reset(P, tonesOf(await viewLum(W, side), side, side));
+  $("padhelp").textContent = `One box of ${patchSize()}, in this data's own ${src.channels === 3 ? "colours" : "greys"} (from the view).`;
+  pad.reset(P, { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 });
+  try {  // the tones (greys or colours) and grain of what is on screen
+    const side = Math.min(4 * P, 512), v = await viewPixels(W, side);
+    pad.reset(P, tonesOf(v.data, v.channels, side, side));
   } catch { /* the defaults */ }
+  showPens();
 }
 $("drawbtn").addEventListener("click", () => ($("pad").hidden ? openPad() : ($("pad").hidden = true)));
 $("padx").addEventListener("click", () => { $("pad").hidden = true; });
@@ -1189,7 +1304,7 @@ $("padsize").addEventListener("click", (e) => {
   for (const b of $("padsize").querySelectorAll("button")) b.classList.toggle("on", b.dataset.r === r);
 });
 $("padblank").addEventListener("click", () => pad.reset(pad.P, pad.tones));
-$("padview").addEventListener("click", async () => { if (padAt) pad.load(await viewLum(padAt.W, padAt.P)); });
+$("padview").addEventListener("click", async () => { if (padAt) { const v = await viewPixels(padAt.W, padAt.P); pad.load(v.data, v.channels); } });
 $("padgo").addEventListener("click", () => {
   if (!src || !padAt) return;
   const sk = pad.patch(src.channels, $<HTMLInputElement>("padtex").checked);
