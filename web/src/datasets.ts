@@ -1,7 +1,7 @@
 // Preset datasets: public, read straight from their hosts (every one answers CORS), each a
 // pyramid already published by its owner. View centres are in full-resolution pixels.
 import type { GlobeSpec } from "./globeviewer.ts";
-import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source } from "./sources.ts";
+import { OmeZarrSource, TileSource, legacySky, legacySurvey, openZoomify, type Source } from "./sources.ts";
 
 export interface Preset {
   id: string;
@@ -15,7 +15,7 @@ export interface Preset {
   patch?: number;
   note?: string;
   globe?: GlobeSpec;  // planetary mosaics: also viewable on a globe
-  geo?: "equirect" | "mercator";  // how pixels map to longitude and latitude (maps of a body)
+  geo?: "equirect" | "mercator" | "sky";  // how pixels map to longitude and latitude (maps of a body); sky: right ascension (360 at the left) and declination, Mercator
   layers?: Layer[];   // more layers over the same space (segmentations, other channels): shown in Neuroglancer
 }
 
@@ -29,6 +29,11 @@ const helaLayers: Layer[] = ([
   ["endo", "#b07cff"], ["lyso", "#ff9f1c"], ["ld", "#9cf"], ["mt-out", "#e5675e"], ["pm", "#cccccc"],
 ] as const).map(([n, color]) => ({ name: n, url: `${HELA_SEG}/${n}_seg`, kind: "segmentation", color, visible: n === "mito" }));
 
+const SKY_W = 512 * 2 ** 13;  // the whole-sky Legacy Surveys map (Mercator): 360 degrees of right ascension
+const skyAt = (ra: number, dec: number) => {
+  const r = (dec * Math.PI) / 180;
+  return { cx: ((360 - ra) / 360) * SKY_W, cy: ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * SKY_W };
+};
 // equirectangular and web-mercator placement of a longitude/latitude, for the map-like sources
 const equirect = (W: number, H: number, lon: number, lat: number) => ({ cx: ((lon + 180) / 360) * W, cy: ((90 - lat) / 180) * H });
 const mercator = (W: number, lon: number, lat: number) => {
@@ -72,6 +77,13 @@ export const PRESETS: Preset[] = [
       "NASA, ESA, J. Dalcanton, B.F. Williams, L.C. Johnson (University of Washington), the PHAT team, R. Gendler (CC BY 4.0)"),
     view: { cx: 34768, cy: 11115, scale: 8 },
     note: "Click a star cluster, a dust lane or a background galaxy.",
+  },
+  {
+    id: "legacy-sky", geo: "sky", label: "Sky: DESI Legacy Surveys, the whole survey", detail: "0.31\u2033/px, cutouts as you browse", kind: "astronomy",
+    count: SKY_W * SKY_W,
+    open: async () => legacySky("ls-dr10"),
+    view: { ...skyAt(285.1504, 59.1669), scale: 2 },  // NGC 6750
+    note: "Start: NGC 6750. Each tile is drawn by the survey's server as you go (slower than map tiles); zoomed far out, tiles line up only roughly.",
   },
   {
     id: "legacy-ngc6129", label: "Sky: DESI Legacy Surveys near NGC 6129", detail: "0.26\u2033/px, 1.2\u00b0 field", kind: "astronomy", count: 16384 * 16384,

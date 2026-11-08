@@ -366,14 +366,14 @@ function lonLat(fx: number, fy: number): [number, number] | null {
   const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
   if (preset.geo === "equirect") return [(fx / W) * 360 - 180, 90 - (fy / H) * 180];
   const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * fy) / W))) * 180) / Math.PI;  // web mercator: a square world
-  return [(fx / W) * 360 - 180, lat];
+  return preset.geo === "sky" ? [360 - (fx / W) * 360, lat] : [(fx / W) * 360 - 180, lat];  // sky: right ascension, 360 at the left
 }
 function pixelOf(lon: number, lat: number): [number, number] | null {
   if (!src || !preset?.geo) return null;
   const W = src.levels[0].shape[2], H = src.levels[0].shape[1];
   if (preset.geo === "equirect") return [((lon + 180) / 360) * W, ((90 - lat) / 180) * H];
   const r = (lat * Math.PI) / 180;
-  return [((lon + 180) / 360) * W, ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * W];
+  return [((preset.geo === "sky" ? 360 - lon : lon + 180) / 360) * W, ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * W];
 }
 /** "x 2,999,500  y 833,700  z 2,666" plus degrees on a body or the physical position. */
 function coordText(fx: number, fy: number, fz?: number): string {
@@ -381,7 +381,8 @@ function coordText(fx: number, fy: number, fz?: number): string {
   const n = (v: number) => Math.round(v).toLocaleString("en-US");
   let t = `x ${n(fx)}  y ${n(fy)}` + (src.dims === 3 && fz !== undefined ? `  z ${n(fz)}` : "");
   const ll = lonLat(fx, fy);
-  if (ll) t += `  (${Math.abs(ll[1]).toFixed(3)}\u00b0 ${ll[1] >= 0 ? "N" : "S"}, ${Math.abs(ll[0]).toFixed(3)}\u00b0 ${ll[0] >= 0 ? "E" : "W"})`;
+  if (ll && preset?.geo === "sky") t += `  (RA ${ll[0].toFixed(4)}\u00b0, Dec ${ll[1] >= 0 ? "+" : "\u2212"}${Math.abs(ll[1]).toFixed(4)}\u00b0)`;
+  else if (ll) t += `  (${Math.abs(ll[1]).toFixed(3)}\u00b0 ${ll[1] >= 0 ? "N" : "S"}, ${Math.abs(ll[0]).toFixed(3)}\u00b0 ${ll[0] >= 0 ? "E" : "W"})`;
   else {
     const sc = src.levels[0].scale, parts = [fx * sc[2], fy * sc[1], ...(src.dims === 3 && fz !== undefined ? [fz * sc[0]] : [])].map(fmtLen);
     if (parts.every(Boolean)) t += `  (${parts.join(", ")})`;
@@ -394,8 +395,13 @@ $("goto").addEventListener("keydown", (e) => {
   const v = ($<HTMLInputElement>("goto").value.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
   if (v.length < 2) return;
   let fx = v[0], fy = v[1], fz = v[2];
+  // on the sky, two numbers that look like degrees are right ascension, declination
+  if (preset?.geo === "sky" && v.length === 2 && v[0] >= 0 && v[0] <= 360 && Math.abs(v[1]) <= 90) {
+    const p = pixelOf(v[0], v[1]);
+    if (p) [fx, fy] = p;
+  }
   // on a map of a body, two numbers that look like degrees are latitude, longitude
-  if (preset?.geo && v.length === 2 && Math.abs(v[0]) <= 90 && Math.abs(v[1]) <= 360) {
+  else if (preset?.geo && v.length === 2 && Math.abs(v[0]) <= 90 && Math.abs(v[1]) <= 360) {
     const p = pixelOf(v[1] > 180 ? v[1] - 360 : v[1], v[0]);
     if (p) [fx, fy] = p;
   }

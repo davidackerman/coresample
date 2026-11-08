@@ -546,6 +546,32 @@ export function legacySurvey(ra0: number, dec0: number, layer = "ls-dr9", size =
   });
 }
 
+/** The whole sky from the Legacy Surveys cutout service (its map tiles do not allow cross-origin
+ * reads; its cutouts do), as its own viewer lays it out: a Mercator map (shapes kept, so stars
+ * stay round; declination to +/-85 degrees), right ascension 360 at the left as on the sky,
+ * 0.31\u2033/px at the equator at the finest zoom. Each tile is a square cutout centred on the
+ * tile at the map's scale there. The cutouts are flat (tangent-plane) pictures, so tiles that
+ * span many degrees (zoomed far out) line up only roughly; past 22 degrees a tile the service
+ * gets slow. */
+export function legacySky(layer = "ls-dr10"): TileSource {
+  const ts = 512, maxZoom = 13, minZoom = 4, W = ts * 2 ** maxZoom, eq = 1296000 / W;  // arcsec per pixel at the equator
+  const dec = (fy: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * fy) / W))) * 180) / Math.PI;
+  return new TileSource({
+    name: `Legacy Surveys ${layer.replace("ls-", "").toUpperCase()}, the whole sky`, tileSize: ts, maxZoom, minZoom,
+    width: W, height: W, channels: 3, unit: "arcsec", pixelSize: eq,
+    attribution: "DESI Legacy Imaging Surveys (legacysurvey.org), cutout service", maxConcurrent: 3,
+    url: (z, x, y) => {
+      const f = 2 ** (maxZoom - z), ra = 360 - (((x + 0.5) * ts * f) / W) * 360, d = dec((y + 0.5) * ts * f);
+      const ps = eq * f * Math.cos((d * Math.PI) / 180);
+      return `https://www.legacysurvey.org/viewer/cutout.jpg?ra=${(((ra % 360) + 360) % 360).toFixed(6)}&dec=${d.toFixed(6)}&layer=${layer}&pixscale=${ps.toFixed(4)}&size=${ts}`;
+    },
+    link: (zoom, x, y) => {
+      const f = 2 ** (maxZoom - zoom);
+      return `https://www.legacysurvey.org/viewer?ra=${(360 - ((x * f) / W) * 360).toFixed(5)}&dec=${dec(y * f).toFixed(5)}&layer=${layer}&zoom=14`;
+    },
+  });
+}
+
 /** Fraction of a region's values that are no data (NaN). */
 export function missingFraction(a: Float32Array): number {
   let n = 0;
