@@ -26,7 +26,11 @@ choices stop at their area. The progress line is the share of the dataset (or th
 read at full detail so far,
 and the **Where it has looked** map shows it: the area from above and, for a volume, from the
 side, with the tiles read, the hits, the query and your view (click it to go there). Click a
-thumbnail to go there; hover one to mark it good or bad, which re-ranks the list. Each hit shows
+thumbnail to go there. Hover one to mark it: **✓ more like this** moves the query toward it (the
+hit turns green; click ✓ again to undo), **✗ fewer like this** hides it and moves the query a
+little away from it; either way every kept candidate is scored again and the tiles not read
+yet are re-ordered, so the reads follow your marks too. A line under **Hits** counts the marks,
+with **undo last** and **clear marks**. Each hit shows
 how far it is from the query; the list can be ordered best first, nearest or farthest, and
 Options > spacing leaves out hits within 2-25 boxes of the query (its own surroundings are the
 easy matches) or spreads hits 2-10 boxes apart. The bottom right shows the coordinates under
