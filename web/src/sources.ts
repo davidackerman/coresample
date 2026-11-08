@@ -311,7 +311,10 @@ export class TileSource implements Source {
             const blob = await r.blob();
             this.bytesRead += blob.size;
             return blob;
-          } catch {
+          } catch (e) {
+            // a server error without CORS headers reaches the page as a failed fetch (TypeError):
+            // treat it like the 5xx it most likely is, and give up after two tries
+            if (e instanceof TypeError && attempt >= 1) return null;
             await new Promise((res) => setTimeout(res, wait));
           }
         }
