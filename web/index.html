@@ -112,6 +112,12 @@
   .hit .z { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .hit .z:empty { display: none; }
   .empty { color: var(--faint); grid-column: 1 / -1; font-size: 12px; }
+  #layers { display: flex; flex-wrap: wrap; gap: 6px; }
+  #layers label { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border: 1px solid var(--line2); border-radius: 12px; cursor: pointer; font-size: 12px; color: var(--dim); user-select: none; }
+  #layers label i { width: 9px; height: 9px; border-radius: 50%; opacity: .35; }
+  #layers label:has(input:checked) { color: var(--text); border-color: var(--faint); }
+  #layers label:has(input:checked) i { opacity: 1; }
+  #layers input { display: none; }
   @media (max-width: 860px) {
     main { flex-direction: column; } aside { width: auto; height: 46%; border-left: 0; border-top: 1px solid var(--line); }
     .brand span, .model span { display: none; }
@@ -181,6 +187,10 @@
           </div>
         </div>
       </details>
+    </div>
+    <div class="sec" id="layersec" hidden>
+      <div class="title">Layers</div>
+      <div id="layers"></div>
     </div>
     <div class="sec">
       <div id="qwrap">

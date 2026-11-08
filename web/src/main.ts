@@ -1,6 +1,6 @@
 // coresample's page: a pan/zoom viewer over any multiscale source, click to search, hits stream
 // into the side panel. Raw data only; nothing is precomputed.
-import { PRESETS, type Preset } from "./datasets.ts";
+import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
 import { Search, coarseLevelFor, type MatchOptions, type State } from "./search.ts";
@@ -406,7 +406,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
       click: (fz, fy, fx) => queryAt(fx, fy, fz),
       hoverBox: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => drawHover(),
-    });
+    }, p?.layers ?? []);
     hover.parentElement!.appendChild(hover);  // the hover canvas above the viewer's frame
     $("zbar").style.display = "none";  // Neuroglancer moves through z itself
   }
@@ -427,6 +427,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   zb.style.display = s.dims === 3 && !ngv ? "flex" : "none";
   if (s.dims === 3) { zIn.max = String(s.levels[0].shape[0] - 1); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
   if (p?.patch) { patchSel.value = String(p.patch); showPatch(); }
+  fillLayers(ngv ? p?.layers ?? [] : []);
   fillLevels(s);
   const u = new URL(location.href);
   u.searchParams.set("d", p ? p.id : "custom");
@@ -469,6 +470,24 @@ async function openCustom(text: string) {
   } catch (e) {
     $("phase").textContent = "Could not open the data";
     $("status").textContent = (e as Error).message;
+  }
+}
+
+/** The extra layers (segmentations...) as toggles; they show in Neuroglancer. */
+function fillLayers(layers: Layer[]) {
+  const box = $("layers");
+  box.innerHTML = "";
+  $("layersec").hidden = !layers.length;
+  for (const l of layers) {
+    const lab = document.createElement("label");
+    lab.title = `${l.kind}: ${l.url}`;
+    lab.innerHTML = `<input type="checkbox"><i></i><span></span>`;
+    const cb = lab.querySelector("input")!;
+    cb.checked = !!l.visible;
+    (lab.querySelector("i") as HTMLElement).style.background = l.color;
+    lab.querySelector("span")!.textContent = l.name;
+    cb.addEventListener("change", () => ngv?.setLayerVisible(l.name, cb.checked));
+    box.appendChild(lab);
   }
 }
 
