@@ -115,6 +115,7 @@ export class OmeZarrSource implements Source {
   private axes: { z: number; y: number; x: number; c: number; t: number; n: number } = { z: -1, y: -1, x: -1, c: -1, t: -1, n: 0 };
   private window: [number, number] | null = null;  // intensity window for non-uint8 data
   private ngUrl: string;
+  private axisInfo: OmeAxis[] = [];
 
   url: string;
   private constructor(url: string, name?: string) {
@@ -140,8 +141,11 @@ export class OmeZarrSource implements Source {
     if (s.axes.y < 0 || s.axes.x < 0) throw new Error("need y and x axes");
     s.dims = 2;  // a z axis of extent 1 (as IDR's 2-D images carry) is still an image
     s.unit = (axes[s.axes.x] as any).unit ?? "";
-    for (const d of ms.datasets) {
-      const arr = await zarr.open(root.resolve(d.path), { kind: "array" });
+    s.axisInfo = axes;
+    // every level's metadata at once (one round trip, not one per level)
+    const arrs = await Promise.all(ms.datasets.map((d: any) => zarr.open(root.resolve(d.path), { kind: "array" })));
+    for (const [k, d] of (ms.datasets as any[]).entries()) {
+      const arr = arrs[k];
       s.arrays.push(arr as any);
       const sc = (d.coordinateTransformations ?? []).find((t: any) => t.type === "scale")?.scale ?? names.map(() => 1);
       const pick = (v: number[], i: number, dflt: number) => (i >= 0 ? v[i] : dflt);
@@ -162,6 +166,23 @@ export class OmeZarrSource implements Source {
       s.window = v.length ? [v[Math.floor(v.length * 0.005)], v[Math.floor(v.length * 0.995)]] : [0, 1];
     }
     return s;
+  }
+
+  /** Neuroglancer's global dimensions for this image (x, y and z in metres, at the finest
+   * level), so a viewer can open at a place without first fitting the view to the data; null
+   * when there are axes besides z, y, x and channel, or the unit is not a length. */
+  ngDimensions(): Record<string, [number, string]> | null {
+    const metres: Record<string, number> = { angstrom: 1e-10, nanometer: 1e-9, micrometer: 1e-6, millimeter: 1e-3, centimeter: 1e-2, meter: 1 };
+    const names = this.axisInfo.map((a) => a.name.toLowerCase());
+    if (names.some((n, i) => !["z", "y", "x"].includes(n) && i !== this.axes.c)) return null;
+    const out: Record<string, [number, string]> = {};
+    for (const [n, k] of [["x", 2], ["y", 1], ["z", 0]] as const) {
+      if (n === "z" && this.axes.z < 0) continue;
+      const u = metres[String((this.axisInfo[this.axes[n]] as any).unit ?? "").toLowerCase()];
+      if (!u) return null;
+      out[n] = [this.levels[0].scale[k] * u, "m"];
+    }
+    return out;
   }
 
   private async readRaw(level: number, lo: Vec3, hi: Vec3): Promise<Region> {

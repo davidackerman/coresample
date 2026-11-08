@@ -19,6 +19,7 @@ export class NgViewer {
   private mouse: { x: number; y: number } | null = null;
   private down: { x: number; y: number } | null = null;
   private initScale = 1;
+  private explicit = false;  // the first state already had the place and coordinate space
 
   constructor(private container: HTMLElement, private src: OmeZarrSource, init: { cx: number; cy: number; z: number; scale: number },
               private hover: HTMLCanvasElement,
@@ -27,13 +28,24 @@ export class NgViewer {
     this.iframe = document.createElement("iframe");
     this.iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000";
     const dpr = window.devicePixelRatio || 1;
-    const state = {
+    const state: Json = {
       layers: [{ type: "image", name: src.name, source: `zarr://${src.url}` },
                { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
       // a volume: the slice and a 3-D view, where every hit box shows wherever it is in z
       layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true, selectedLayer: { visible: false }, layerListPanel: { visible: false },
       crossSectionScale: init.scale * dpr,
     };
+    // the place, zoom and coordinate space in the first state when they can be known from the
+    // metadata: the viewer then loads the data there once, instead of first loading a fit of
+    // the whole volume and having those requests cancelled when the view moves
+    const dims = src.ngDimensions();
+    if (dims) {
+      this.explicit = true;
+      state.dimensions = dims;
+      state.position = Object.keys(dims).map((n) => (n === "x" ? init.cx : n === "y" ? init.cy : init.z) + 0.5);
+      state.projectionScale = init.scale * dpr * Math.max(300, container.clientHeight) * 3;
+      state.layers[1].source = { url: "local://annotations", transform: { outputDimensions: dims } };
+    }
     this.iframe.src = `ng/index.html#!${encodeURIComponent(JSON.stringify(state))}`;
     container.appendChild(this.iframe);
     this.initScale = init.scale;
@@ -50,25 +62,33 @@ export class NgViewer {
     }
     if (!this.viewer) throw new Error("Neuroglancer did not start");
     try { this.viewer.uiConfiguration.showUIControls.value = false; } catch { /* older viewers */ }
-    // the viewer fits position and zoom to the data once it has opened, over whatever was set
-    // before: wait for that, then go to the preset's place
-    const t1 = performance.now();
-    while (performance.now() - t1 < 20_000) {
-      const z = this.viewer.navigationState?.zoomFactor?.value;
-      if (Number.isFinite(z) && z < 1e6) break;
-      await new Promise((r) => setTimeout(r, 200));
+    if (this.explicit) {
+      // opened at the place already; should the viewer still fit the view to the data, go back
+      setTimeout(() => {
+        const c = this.center();
+        if (Math.abs(c.cx - init.cx) > 2 || Math.abs(c.cy - init.cy) > 2) this.goTo(init.cx, init.cy, init.z, this.initScale);
+      }, 1500);
+    } else {
+      // the viewer fits position and zoom to the data once it has opened, over whatever was set
+      // before: wait for that, then go to the preset's place
+      const t1 = performance.now();
+      while (performance.now() - t1 < 20_000) {
+        const z = this.viewer.navigationState?.zoomFactor?.value;
+        if (Number.isFinite(z) && z < 1e6) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      // the annotation layer in the viewer's own coordinate space (made before the data opened,
+      // its local source had none): one state restore, before the camera is set
+      try {
+        const cs = this.viewer.coordinateSpace.value, dims: Record<string, [number, string]> = {};
+        cs.names.forEach((n: string, i: number) => (dims[n] = [cs.scales[i], cs.units[i]]));
+        const st = this.json(), layer = (st.layers as Json[]).find((l) => l.name === LAYER);
+        if (layer) { layer.source = { url: "local://annotations", transform: { outputDimensions: dims } }; this.viewer.state.restoreState(st); }
+      } catch { /* keep the layer as it is */ }
+      await new Promise((r) => setTimeout(r, 300));
+      this.goTo(init.cx, init.cy, init.z, this.initScale);
+      setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
     }
-    // the annotation layer in the viewer's own coordinate space (made before the data opened,
-    // its local source had none): one state restore, before the camera is set
-    try {
-      const cs = this.viewer.coordinateSpace.value, dims: Record<string, [number, string]> = {};
-      cs.names.forEach((n: string, i: number) => (dims[n] = [cs.scales[i], cs.units[i]]));
-      const st = this.json(), layer = (st.layers as Json[]).find((l) => l.name === LAYER);
-      if (layer) { layer.source = { url: "local://annotations", transform: { outputDimensions: dims } }; this.viewer.state.restoreState(st); }
-    } catch { /* keep the layer as it is */ }
-    await new Promise((r) => setTimeout(r, 300));
-    this.goTo(init.cx, init.cy, init.z, this.initScale);
-    setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
     const doc = this.iframe.contentDocument!;
     doc.addEventListener("mousemove", (e) => { this.mouse = { x: e.clientX, y: e.clientY }; this.drawHover(); }, true);
     doc.addEventListener("mouseleave", () => { this.mouse = null; this.drawHover(); }, true);

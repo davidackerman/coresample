@@ -73,6 +73,8 @@ export class Embedder {
         out[i] = e;
         if (keys) this.cache.set(keys[i], e);
       });
+      // a bounded cache (oldest out first): a search can read without end
+      for (const k of this.cache.keys()) { if (this.cache.size <= 20000) break; this.cache.delete(k); }
     }
     return out as Float32Array[];
   }

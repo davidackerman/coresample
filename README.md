@@ -14,10 +14,14 @@ your GPU through WebGPU; without WebGPU it falls back to the CPU, about 10x slow
 
 ### Using the page
 
-Pick a dataset, drag to pan, scroll to zoom, then click something: hits stream into the right
-panel, best first. Click a thumbnail to go there, mark hits good or bad to re-rank, and use
-**Read 2x more** to keep searching. The search runs at the zoom level you are looking at, so
-zoom until the thing you care about is clear, then click.
+Pick a dataset (the menu lists them by size, type or name, and takes your own data), drag to
+pan, scroll to zoom, then click something: hits stream into the right panel, best first. The
+search keeps going, best-ranked tiles first, until it has read the whole region or you press
+**Pause** (**Resume** carries on); the first hits usually come within seconds and later reads
+only add to them. Click a thumbnail to go there; hover one to mark it good or bad, which
+re-ranks the list. The search runs at the zoom level you are looking at, so zoom until the
+thing you care about is clear, then click. However long it reads, memory stays bounded: it
+keeps the best 3,000 candidates (and any you marked) for re-ranking.
 
 How it decides: your clicked patch is embedded by DINOv2-small (a general image model). A
 cheap scan of a coarse level (intensity histogram and texture statistics, no model) ranks
@@ -28,7 +32,7 @@ your click (the number under each thumbnail). Nothing is precomputed or uploaded
 ### How matching works
 
 The number under each hit is the similarity of its DINOv2 embedding to your click's (1 =
-identical). The controls on the **match** row choose how that is computed. Test 5
+identical). The controls under **Options** choose how that is computed. Test 5
 (`test5_matching.py`) measured each on labelled EM, 10 queries per run, the same candidates for
 every variant (top-10 precision; about +/-0.1 is noise at 10 queries):
 
@@ -55,7 +59,7 @@ Ways to load data:
 |---|---|
 | a preset from the menu | Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy Surveys around NGC 6129, Sentinel-2 cloudless, IDR organoid EM and lung histology, OpenOrganelle jrc_hela-2 in 3-D |
 | a link to a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
-| your own OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` in the box at the top |
+| your own OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` under **Your own data** in the dataset menu |
 | your own web-map tiles | `https://host/.../{z}/{x}/{y}.png` (add `#maxZoom=12` to set the finest zoom) |
 | your own Zoomify image | `https://host/.../ImageProperties.xml` |
 | a DESI Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec in degrees) |
@@ -63,7 +67,10 @@ Ways to load data:
 
 The page shows each dataset's size (pixels or voxels, and levels) when it opens. Volumes and
 OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes),
-tile pyramids in OpenLayers; the search runs behind the scenes in either.
+tile pyramids in OpenLayers; the search runs behind the scenes in either. Neuroglancer opens
+at the right place from the start (its first state carries the place, zoom and coordinate
+space), and the model downloads only once the view has its first data, so the two do not
+compete for the network.
 
 The data must be a multiscale pyramid (each level 2x coarser) on a host that allows
 cross-origin reads (CORS), as public buckets, NASA GIBS/Trek, ESA and IDR do. Sources without

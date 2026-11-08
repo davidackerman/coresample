@@ -55,27 +55,37 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
 const emb = new Embedder((size) => new URL(`models/dinov2-small-${size}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 const modelEl = $("model");
+function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title = "") {
+  modelEl.className = `model ${kind}`;
+  modelEl.querySelector("span")!.textContent = text;
+  modelEl.title = title || text;
+}
 
 /** Load the model at the chosen input size and measure it. */
+let warmed: Promise<void> | null = null;
 async function warmUp() {
   try {
-    modelEl.textContent = `model: loading DINOv2-small at ${emb.input} px (88 MB the first time, then cached)`;
+    setModel("loading", `loading the model (${emb.input} px)`, `DINOv2-small at ${emb.input} px input: 88 MB the first time, then cached by the browser`);
     const t = performance.now();
     await emb.embed([{ data: new Float32Array(64 * 64), size: 64, channels: 1 }]);
     const n = 32, d = new Float32Array(64 * 64);
     const t2 = performance.now();
     await emb.embed(Array.from({ length: n }, () => ({ data: d, size: 64, channels: 1 })));
     const rate = n / ((performance.now() - t2) / 1000);
-    modelEl.textContent = `model: ${emb.provider === "webgpu" ? "GPU (WebGPU)" : "CPU (WebAssembly, slow)"}, ${emb.input} px input, ${rate.toFixed(0)} patches/s (${((t2 - t) / 1000).toFixed(0)} s to load)`;
-    if (emb.provider !== "webgpu")
-      modelEl.title = window.isSecureContext
-        ? "No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
-        : "WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead.";
+    const gpu = emb.provider === "webgpu";
+    const detail = `DINOv2-small, ${emb.input} px input, ${rate.toFixed(0)} patches/s, ${((t2 - t) / 1000).toFixed(0)} s to load.`;
+    setModel(gpu ? "gpu" : "cpu", `${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
+      gpu ? detail : detail + (window.isSecureContext
+        ? " No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
+        : " WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead."));
   } catch (e) {
-    modelEl.textContent = `model failed: ${(e as Error).message}`;
+    setModel("err", "model failed", (e as Error).message);
   }
 }
-setTimeout(warmUp, 2500);  // after the viewer and first data have had the network
+/** The model loads once the viewer has had the network to itself for a while (its first data
+ * comes first), or at the first click, whichever is sooner. */
+const warm = () => (warmed ??= warmUp());
+setTimeout(warm, 8000);
 
 // ---------------------------------------------------------------------------------------
 // the cheap scan in a worker
@@ -205,6 +215,17 @@ const searchLevel = () => {
   return Math.max(0, Math.min(src.levels.length - 2, chosen));
 };
 levelSel.addEventListener("change", () => drawHover());
+const patchSel = $<HTMLSelectElement>("patch");
+const patchSeg = $("patchseg");
+function showPatch() { for (const b of patchSeg.querySelectorAll("button")) b.classList.toggle("on", b.textContent === patchSel.value); }
+patchSeg.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("button");
+  if (!b) return;
+  patchSel.value = b.textContent!;
+  showPatch();
+  patchSel.dispatchEvent(new Event("change"));
+});
+showPatch();
 /** Level menu for this source: each level with its voxel (pixel) size. */
 function fillLevels(s: Source) {
   levelSel.innerHTML = '<option value="auto" selected>auto (as viewed)</option>';
@@ -234,7 +255,7 @@ function patchSize(): string {
 
 /** The dashed box under the cursor: exactly the region a click would search for. */
 function drawHover() {
-  $("psize").textContent = src ? `= ${patchSize().split("= ")[1] ?? patchSize()}` : "";
+  $("psize").textContent = src ? `px at level ${searchLevel()}` + (patchSize().includes("= ") ? ` = ${patchSize().split("= ")[1]}` : "") : "";
   if (ngv) { ngv.drawHover(); return; }  // Neuroglancer's mouse is in its frame; it draws the box
   if (gv) return;  // the globe draws its own
   hctx.clearRect(0, 0, hover.width, hover.height);
@@ -309,10 +330,42 @@ window.addEventListener("keydown", (e) => {
 // ---------------------------------------------------------------------------------------
 // datasets
 // ---------------------------------------------------------------------------------------
-const sel = $<HTMLSelectElement>("dataset");
-for (const p of PRESETS) sel.add(new Option(p.label, p.id));
-sel.addEventListener("change", () => openPreset(PRESETS.find((p) => p.id === sel.value)!));
-$("open").addEventListener("click", () => openCustom($<HTMLInputElement>("custom").value));
+/** 8.8 T, 122 G, 268 M: a pixel or voxel count, short. */
+const short = (v: number) => (v >= 1e12 ? `${(v / 1e12).toFixed(1)} T` : v >= 1e9 ? `${(v / 1e9).toFixed(v >= 1e11 ? 0 : 1)} G` : v >= 1e6 ? `${(v / 1e6).toFixed(0)} M` : `${(v / 1e3).toFixed(0)} k`);
+const dsBtn = $<HTMLButtonElement>("dsbtn"), dsMenu = $("dsmenu"), dsList = $("dslist"), sortSeg = $("sort");
+let sortKey = "size";
+try { sortKey = localStorage.getItem("coresample-sort") ?? "size"; } catch { /* no storage here */ }
+function fillDatasets() {
+  for (const b of sortSeg.querySelectorAll("button")) b.classList.toggle("on", b.dataset.k === sortKey);
+  const list = [...PRESETS].sort(sortKey === "name" ? (a, b) => a.label.localeCompare(b.label)
+    : sortKey === "kind" ? (a, b) => a.kind.localeCompare(b.kind) || b.count - a.count : (a, b) => b.count - a.count);
+  const lmax = Math.log10(Math.max(...PRESETS.map((p) => p.count))), lmin = Math.log10(Math.min(...PRESETS.map((p) => p.count))) - 0.5;
+  dsList.innerHTML = "";
+  for (const p of list) {
+    const b = document.createElement("button");
+    b.className = "dsrow" + (preset?.id === p.id ? " on" : "");
+    b.setAttribute("role", "option");
+    const w = (100 * (Math.log10(p.count) - lmin)) / (lmax - lmin);
+    b.innerHTML = `<span class="nm"></span><span class="sz">${short(p.count)}<small>${p.volume ? "vox" : "px"}</small></span>`
+                + `<span class="meta"></span><span class="bar-size"><i style="width:${w.toFixed(0)}%"></i></span>`;
+    b.querySelector(".nm")!.textContent = p.label;
+    b.querySelector(".meta")!.textContent = `${p.kind}, ${p.detail}`;
+    b.addEventListener("click", () => { dsMenu.hidden = true; openPreset(p); });
+    dsList.appendChild(b);
+  }
+}
+sortSeg.addEventListener("click", (e) => {
+  const k = (e.target as HTMLElement).closest("button")?.dataset.k;
+  if (!k) return;
+  sortKey = k;
+  try { localStorage.setItem("coresample-sort", k); } catch { /* no storage here */ }
+  fillDatasets();
+});
+dsBtn.addEventListener("click", () => { dsMenu.hidden = !dsMenu.hidden; if (!dsMenu.hidden) fillDatasets(); });
+document.addEventListener("pointerdown", (e) => { if (!dsMenu.hidden && !(e.target as HTMLElement).closest(".dpick")) dsMenu.hidden = true; });
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") dsMenu.hidden = true; });
+$("open").addEventListener("click", () => { dsMenu.hidden = true; openCustom($<HTMLInputElement>("custom").value); });
+$("custom").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") $("open").click(); });
 
 let ngAvailable: Promise<boolean> | null = null;
 /** Whether this site serves Neuroglancer at ./ng/ (the deployed build, or the dev relay). */
@@ -366,10 +419,14 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   }
   $("attrib").textContent = `${s.name}: ${sizeText(s)}` + (s.attribution ? `. Data: ${s.attribution}` : "");
   $("hint").textContent = (p?.note ? p.note + " " : "") + "Drag to pan, scroll to zoom, click to search.";
+  $("hint").classList.remove("gone");
+  $("dsname").textContent = p ? p.label : s.name;
+  const [z0, y0, x0] = s.levels[0].shape;
+  $("dssize").textContent = `${short(s.dims === 3 ? x0 * y0 * z0 : x0 * y0)}${s.dims === 3 ? "vox" : "px"}`;
   const zb = $("zbar");
   zb.style.display = s.dims === 3 && !ngv ? "flex" : "none";
   if (s.dims === 3) { zIn.max = String(s.levels[0].shape[0] - 1); zIn.value = String(view.z); $("zval").textContent = zIn.value; }
-  if (p?.patch) $<HTMLSelectElement>("patch").value = String(p.patch);
+  if (p?.patch) { patchSel.value = String(p.patch); showPatch(); }
   fillLevels(s);
   const u = new URL(location.href);
   u.searchParams.set("d", p ? p.id : "custom");
@@ -378,9 +435,13 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
 }
 
 async function openPreset(p: Preset) {
-  $("status").textContent = `opening ${p.label}...`;
-  try { await setSource(await p.open(), p.view, p); $("status").textContent = "Click on the image to search."; }
-  catch (e) { $("status").textContent = `could not open: ${(e as Error).message}`; }
+  $("phase").textContent = `Opening ${p.label}`;
+  try { await setSource(await p.open(), p.view, p); idle(); }
+  catch (e) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; }
+}
+function idle() {
+  $("phase").textContent = "Click on the image to search";
+  $("status").textContent = "It reads the best-ranked tiles first and keeps going until it has read the whole region or you pause it.";
 }
 
 async function openCustom(text: string) {
@@ -404,8 +465,10 @@ async function openCustom(text: string) {
     const u = new URL(location.href);  // a link that opens this data again
     u.searchParams.delete("d"); u.searchParams.set("url", text);
     history.replaceState(null, "", u);
+    idle();
   } catch (e) {
-    $("status").textContent = `could not open: ${(e as Error).message}`;
+    $("phase").textContent = "Could not open the data";
+    $("status").textContent = (e as Error).message;
   }
 }
 
@@ -416,18 +479,22 @@ function clearSearch() {
   search?.stop();
   search = null;
   hitEls = [];
-  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read. Mark them good or bad to re-rank.</div>';
-  for (const b of ["stop", "more", "clear"]) $<HTMLButtonElement>(b).disabled = true;
+  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one to mark it good or bad: the list re-ranks.</div>';
+  $("hitcount").textContent = "";
+  const stopBtn = $<HTMLButtonElement>("stop");
+  stopBtn.disabled = true; stopBtn.textContent = "Pause";
+  $<HTMLButtonElement>("clear").disabled = true;
   ($("bar").firstElementChild as HTMLElement).style.width = "0";
+  $("qcanvas").classList.add("none");
+  $<HTMLCanvasElement>("qcanvas").getContext("2d")?.clearRect(0, 0, 999, 999);
   $("link").style.display = "none";
   render();
 }
-$("clear").addEventListener("click", () => { clearSearch(); $("status").textContent = "Click on the image to search."; });
-$("stop").addEventListener("click", () => search?.stop());
-$("more").addEventListener("click", () => {
+$("clear").addEventListener("click", () => { clearSearch(); idle(); });
+$("stop").addEventListener("click", () => {  // pause, or carry on from where it paused
   if (!search) return;
-  const st = search.state;
-  search.readUntil(Math.min(st.tilesTotal, Math.max(st.tilesBudget * 2, st.tilesBudget + 8)));
+  if (search.state.phase === "read") search.stop();
+  else if (search.state.phase === "paused") search.resume();
 });
 
 function regionFor(W: number, P: number): [Vec3, Vec3] {
@@ -464,11 +531,12 @@ function queryAt(fx: number, fy: number, fz?: number) {
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
   clearSearch();
+  warm();
+  $("hint").classList.add("gone");
   const region = regionFor(W, P);
-  search = new Search(s, emb, c, { working: W, patch: P, region, budgetFrac: Number($<HTMLSelectElement>("budget").value),
-                                   maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60, maxTiles: 48,
+  search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
                                    match: matchOptions() });
-  for (const b of ["stop", "clear"]) $<HTMLButtonElement>(b).disabled = false;
+  $<HTMLButtonElement>("clear").disabled = false;
   let queued = false;
   const me = search;
   search.on(() => {  // at most one panel update per frame, always with the latest state
@@ -493,23 +561,31 @@ function drawPatch(cv: HTMLCanvasElement, pix: Uint8Array, P: number, C: number)
 
 const fmt = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} KB`);
 
+const PHASE: Record<State["phase"], string> = { query: "Reading the query", scan: "Quick pass over a coarse level", read: "Searching",
+                                                paused: "Paused", done: "Done", error: "Something went wrong" };
+const num = (v: number) => v.toLocaleString("en-US");
+
 function panel(st: State) {
   if (!search || !src) return;
   const s = search, C = src.channels, P = st.patch;
-  if (st.phase !== "query") drawPatch($<HTMLCanvasElement>("qcanvas"), s.patchPixels(-1), P, C);
-  const pct = st.tilesTotal ? (100 * st.tilesRead) / st.tilesTotal : 0;
-  const lines = [
-    `<b>${st.phase}</b>: ${st.message}`,
-    st.coarse >= 0 ? `scanned level ${st.coarse} in ${st.scanSeconds.toFixed(1)} s; searching level ${st.working}` : "",
-    st.tilesTotal ? `tiles read <b>${st.tilesRead}</b> of ${st.tilesTotal} (${pct.toFixed(2)}%), ${st.patches} patches embedded` +
-      (st.queued ? `, ${st.queued} queued` : "") + (search.skipped ? `, ${search.skipped} blank/no-data skipped` : "") : "",
-    `${fmt(st.bytes)} downloaded, ${st.seconds.toFixed(1)} s` + (st.firstHitSeconds ? `, first hits at ${st.firstHitSeconds.toFixed(1)} s` : ""),
+  if (st.phase !== "query") { drawPatch($<HTMLCanvasElement>("qcanvas"), s.patchPixels(-1), P, C); $("qcanvas").classList.remove("none"); }
+  // tiles read, discounted by the patches still waiting to be compared
+  const frac = st.tilesTotal ? (st.tilesRead / st.tilesTotal) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
+  const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : (100 * frac).toFixed(2);
+  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of the region read`
+                         : st.phase === "error" ? PHASE.error : PHASE[st.phase];
+  const lines = st.phase === "error" ? [st.message] : [
+    st.tilesTotal ? `${num(st.patches)} patches compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
+    `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
+    st.coarse >= 0 ? `level ${st.working}, ranked by a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
   ];
-  $("status").innerHTML = lines.filter(Boolean).join("\n");
-  ($("bar").firstElementChild as HTMLElement).style.width = `${st.tilesBudget ? (100 * st.tilesRead) / st.tilesBudget : 0}%`;
-  $<HTMLButtonElement>("stop").disabled = st.phase !== "read";
-  $<HTMLButtonElement>("more").disabled = !(st.phase === "paused");
+  $("status").textContent = lines.filter(Boolean).join("\n");
+  ($("bar").firstElementChild as HTMLElement).style.width = `${(100 * frac).toFixed(2)}%`;
+  const stopBtn = $<HTMLButtonElement>("stop");
+  stopBtn.disabled = !(st.phase === "read" || st.phase === "paused");
+  stopBtn.textContent = st.phase === "paused" ? "Resume" : "Pause";
   const box = $("hits");
+  $("hitcount").textContent = st.hits.length ? `${st.hits.length} best, no overlaps` : "";
   if (!st.hits.length) return;
   if (box.querySelector(".empty")) box.innerHTML = "";
   st.hits.forEach((h, k) => {
@@ -517,7 +593,7 @@ function panel(st: State) {
     if (!el) {
       el = document.createElement("div");
       el.className = "hit";
-      el.innerHTML = `<canvas></canvas><div class="cap"><span></span><span><button data-g="1">good</button> <button data-g="0">bad</button></span></div>`;
+      el.innerHTML = `<canvas title="go there"></canvas><div class="fb"><button data-g="1" title="good: more like this">&#10003;</button><button data-g="0" title="bad: fewer like this">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div>`;
       box.appendChild(el);
       hitEls[k] = el;
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
@@ -530,7 +606,9 @@ function panel(st: State) {
       el.dataset.index = String(h.index);
       drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
     }
-    el.querySelector(".cap span")!.textContent = `#${k + 1} ${h.score.toFixed(3)}` + (src?.dims === 3 ? ` z${h.center[0] * 2 ** st.working}` : "");
+    el.querySelector(".cap b")!.textContent = `#${k + 1}`;
+    el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
+    el.querySelector(".z")!.textContent = src?.dims === 3 ? `z ${num(h.center[0] * 2 ** st.working)}` : "";
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
   hitEls.length = st.hits.length;
@@ -596,6 +674,5 @@ const params = new URL(location.href).searchParams, want = params.get("d"), own 
 if (own) { $<HTMLInputElement>("custom").value = own; openCustom(own); }
 else {
   const first = PRESETS.find((p) => p.id === want) ?? PRESETS[0];
-  sel.value = first.id;
   openPreset(first);
 }
