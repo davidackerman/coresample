@@ -67,13 +67,21 @@ export class GlobeViewer {
     });
     this.viewer.scene.globe.baseColor = C.Color.BLACK;
     this.viewer.scene.globe.showGroundAtmosphere = false;
-    this.viewer.imageryLayers.addImageryProvider(new C.UrlTemplateImageryProvider({
-      // stop below the server's first broken zoom (Cesium needs every level up to its maximum)
-      url: this.spec.template, tileWidth: s.tileSize, tileHeight: s.tileSize,
-      maximumLevel: Math.min(s.maxZoom, ...(s.skipZooms ?? []).filter((z) => z > 6).map((z) => z - 1)),
+    const tiles = new C.UrlTemplateImageryProvider({
+      url: this.spec.template, tileWidth: s.tileSize, tileHeight: s.tileSize, maximumLevel: s.maxZoom,
       tilingScheme: new C.GeographicTilingScheme({ ellipsoid: this.ellipsoid, numberOfLevelZeroTilesX: 2, numberOfLevelZeroTilesY: 1 }),
       credit: this.spec.credit ?? this.src.attribution,
-    }));
+    });
+    // every tile through the map's own loader (Cesium's level is the tile zoom): the cache the map
+    // and the search share, and tiles a server sends broken (cut off, or an error page, as Esri's
+    // Mars cache does at several zooms: black streaks and holes on the globe) rebuilt as the map
+    // rebuilds them, from their children or their parent
+    tiles.requestImage = async (x: number, y: number, level: number) => {
+      const b = await this.src.blob(level, x, y);
+      if (!b) throw new Error(`no tile ${level}/${y}/${x}`);
+      return createImageBitmap(b);
+    };
+    this.viewer.imageryLayers.addImageryProvider(tiles);
     this.goTo(init.cx, init.cy, init.scale, false);
     const h = new C.ScreenSpaceEventHandler(this.viewer.scene.canvas);
     const click = (add: boolean) => (e: any) => {
