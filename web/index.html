@@ -144,8 +144,9 @@
       <div id="dslist" role="listbox"></div>
       <div class="own">
         <div class="lbl">Your own data</div>
-        <div class="row"><input id="custom" placeholder="OME-Zarr URL, tile template, Zoomify or legacy:RA,Dec"><button id="open">Open</button></div>
+        <div class="row"><input id="custom" placeholder="OME-Zarr or precomputed:// URL, tile template, Zoomify, legacy:RA,Dec"><button id="open">Open</button></div>
         <div class="help">Any public host that allows cross-origin reads (CORS). OME-Zarr v2/v3, 2-D or 3-D (https://, s3://, gs://);
+          Neuroglancer precomputed <code>precomputed://gs://...</code> (sharded or not; raw, JPEG or segmentation);
           web-map tiles <code>.../{z}/{x}/{y}.png</code> (add <code>#maxZoom=12</code>); Zoomify <code>.../ImageProperties.xml</code>;
           a DESI Legacy Surveys field <code>legacy:245.43,37.996</code>. The address bar then holds a link to it.</div>
       </div>
