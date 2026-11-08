@@ -285,6 +285,7 @@ differences are paired per query against DINOv2-small, the page's model (+/- sta
 |---|---|---|---|---|
 | **DINOv2-small** (the page's) | 112 px, CLS + mean token | 0.81 / 0.80 | 0.44 / 0.43 | 3-5 min |
 | DINOv2-base (4x the parameters) | 112 px, CLS + mean token | -0.03 +/- 0.03 / -0.03 +/- 0.03 | -0.05 +/- 0.03 / -0.07 +/- 0.02 | 11-32 min |
+| DINOv2-small with registers | 112 px, CLS + mean token (registers left out) | -0.02 +/- 0.04 / -0.02 +/- 0.03 | -0.09 +/- 0.04 / -0.10 +/- 0.03 | 4-10 min |
 | DINOv3-small | 128 px (the same 8 x 8 tokens), CLS + mean token | +0.04 +/- 0.04 / +0.05 +/- 0.03 | +0.00 +/- 0.05 / -0.04 +/- 0.03 | 11-14 min |
 | SigLIP-base (image-text) | 224 px, pooled | +0.06 +/- 0.04 / +0.04 +/- 0.03 | -0.03 +/- 0.04 / -0.05 +/- 0.02 | 48-108 min |
 | CLIP ViT-B/16 (image-text) | 224 px, pooled | +0.00 +/- 0.04 / +0.02 +/- 0.03 | -0.02 +/- 0.04 / -0.05 +/- 0.03 | 52-73 min |
@@ -304,7 +305,11 @@ a decision. The image-text models cost 10-20x per patch and do worse on shape, a
 hand-made texture descriptor falls furthest behind on it, so learned features earn their
 place. CEM500K, trained on EM alone, only draws level (and finds slightly more of the
 instances in its top 100: recall@100 +0.005 +/- 0.002 on vesicles, +0.011 +/- 0.006 on mito)
-at 5-8x the time, so the general model loses nothing on this EM. The page keeps DINOv2-small.
+at 5-8x the time, so the general model loses nothing on this EM. DINOv2-small trained with
+register tokens (meant to remove the artifact tokens that can skew a mean of tokens, the
+"parts" score) is the same size and cost but clearly worse on mito (-0.10 at p@25, 23 of 30
+queries worse): at 112 px the plain model's mean token is not hurt by artifacts here. The page
+keeps DINOv2-small.
 One grey EM dataset: on colour data (Earth, Mars), where there are no labels here to grade
 with, the image-text models and DINOv3 may rank differently.
 
