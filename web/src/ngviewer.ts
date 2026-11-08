@@ -20,13 +20,17 @@ export interface NgSource {
   ngOffset?: Vec3;  // z, y, x: where voxel 0 is in Neuroglancer's coordinates
   ngDisplay?(): string[];  // the axes to show, when the viewer's default (its first three) would be wrong
   channels?: 1 | 3;       // 3: a colour image, shown as red, green and blue layers added together
+  ngRange?: [number, number] | null;  // the values shown black to white (data that is not 8-bit), as the search sees them
 }
 
 /** The data's image layer; a colour image as three (red, green, blue), one per position along
  * its channel axis, added together: the viewer shows one channel of an image at a time, and an
  * RGB shader over all three would need them in one chunk, which IDR's images do not have. */
 function imageLayers(src: NgSource): Json[] {
-  if (src.channels !== 3) return [{ type: "image", name: src.name, source: src.ngSource }];
+  // the viewer's default stretch is the data type's whole range: 16-bit EM with values in a
+  // narrow band (IDR's organoid: 1,500-6,000 of 65,535) would look black
+  const range = src.ngRange ? { shaderControls: { normalized: { range: src.ngRange } } } : {};
+  if (src.channels !== 3) return [{ type: "image", name: src.name, source: src.ngSource, ...range }];
   return ["red", "green", "blue"].map((c, k) => ({
     type: "image", name: k ? `${src.name} (${c})` : src.name, source: src.ngSource, localPosition: [k], blend: "additive", opacity: 1,
     shader: `void main() { float v = toNormalized(getDataValue()); emitRGB(vec3(${k === 0 ? "v" : "0."}, ${k === 1 ? "v" : "0."}, ${k === 2 ? "v" : "0."})); }`,

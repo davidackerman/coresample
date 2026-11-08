@@ -59,18 +59,39 @@ let hitEls: HTMLElement[] = [];
 // model (warmed up on load, so the first click does not wait for 88 MB)
 // ---------------------------------------------------------------------------------------
 /** A model file from Cache Storage when there, else downloaded once into it (88 MB each). */
+/** What the model is doing while it is not ready yet (shown by the model chip and the panel). */
+let modelNote: string | null = null;
+function noteModel(text: string | null) {
+  modelNote = text;
+  if (text) setModel("loading", text, "DINOv2-small: 88 MB the first time, then cached by the browser");
+  if (search?.state.phase === "query") panel(search.state);
+}
+/** The model file, from the browser's cache or downloaded (with progress) and cached. */
 async function cachedBytes(url: string): Promise<ArrayBuffer> {
+  let cache: Cache | null = null;
   try {
-    const cache = await caches.open("coresample-models-v3");  // v3: the 224 model outputs its tokens
+    cache = await caches.open("coresample-models-v3");  // v3: the 224 model outputs its tokens
     const hit = await cache.match(url);
-    if (hit) return hit.arrayBuffer();
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`model: HTTP ${r.status}`);
-    await cache.put(url, r.clone());
-    return r.arrayBuffer();
-  } catch {
-    return (await fetch(url)).arrayBuffer();
+    if (hit) { noteModel("starting the model"); return hit.arrayBuffer(); }
+  } catch { cache = null; /* no Cache Storage here */ }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`model: HTTP ${r.status}`);
+  const total = Number(r.headers.get("content-length")) || 0, parts: Uint8Array[] = [];
+  let got = 0, shown = 0;
+  const reader = r.body!.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    got += value.length;
+    if (got - shown > 2e6) { shown = got; noteModel(`downloading the model: ${(got / 1e6).toFixed(0)}${total ? ` of ${(total / 1e6).toFixed(0)}` : ""} MB`); }
   }
+  const bytes = new Uint8Array(got);
+  let o = 0;
+  for (const p of parts) { bytes.set(p, o); o += p.length; }
+  noteModel("starting the model");
+  try { await cache?.put(url, new Response(bytes, { headers: { "content-type": "application/octet-stream" } })); } catch { /* not cached: downloaded again next time */ }
+  return bytes.buffer;
 }
 try { caches.delete("coresample-models-v2").catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
 const emb = new Embedder((size) => new URL(`models/dinov2-small-${size}.onnx`, document.baseURI).href,
@@ -86,22 +107,40 @@ function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title =
 let warmed: Promise<void> | null = null;
 async function warmUp() {
   try {
-    setModel("loading", `loading the model (${emb.input} px)`, `DINOv2-small at ${emb.input} px input: 88 MB the first time, then cached by the browser`);
+    noteModel(`loading the model (${emb.input} px)`);
     const t = performance.now();
     await emb.embed([{ data: new Float32Array(64 * 64), size: 64, channels: 1 }]);
     const n = 32, d = new Float32Array(64 * 64);
     const t2 = performance.now();
     await emb.embed(Array.from({ length: n }, () => ({ data: d, size: 64, channels: 1 })));
     const rate = n / ((performance.now() - t2) / 1000);
-    const gpu = emb.provider === "webgpu";
-    const detail = `DINOv2-small, ${emb.input} px input, ${rate.toFixed(0)} patches/s, ${((t2 - t) / 1000).toFixed(0)} s to load.`;
-    setModel(gpu ? "gpu" : "cpu", `DINOv2-small \u00b7 ${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
-      gpu ? detail : detail + (window.isSecureContext
-        ? " No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
-        : " WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead."));
+    modelNote = null;
+    loadNote = `${((t2 - t) / 1000).toFixed(0)} s to load`;
+    showRate(rate, "measured on loading");
+    rateAt = { n: emb.count, s: emb.seconds, t: performance.now() };
   } catch (e) {
+    modelNote = null;
     setModel("err", "model failed", (e as Error).message);
   }
+}
+let loadNote = "";
+/** The model chip: its speed (patches through the model per second of its own time). */
+function showRate(rate: number, how: string) {
+  const gpu = emb.provider === "webgpu";
+  const detail = `DINOv2-small, ${emb.input} px input, ${rate.toFixed(0)} patches/s (${how}), ${loadNote}.`;
+  setModel(gpu ? "gpu" : "cpu", `DINOv2-small \u00b7 ${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
+    gpu ? detail : detail + (window.isSecureContext
+      ? " No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
+      : " WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead."));
+}
+/** While searching, the speed over the last few seconds of model work. */
+let rateAt = { n: 0, s: 0, t: 0 };
+function liveRate() {
+  if (modelNote || !emb.provider) return;
+  const now = performance.now(), dn = emb.count - rateAt.n, ds = emb.seconds - rateAt.s;
+  if (now - rateAt.t < 2000 || dn < 64 || ds <= 0) return;
+  showRate(dn / ds, "while searching");
+  rateAt = { n: emb.count, s: emb.seconds, t: now };
 }
 /** The model loads once the viewer has had the network to itself for a while (its first data
  * comes first), or at the first click, whichever is sooner. */
@@ -822,6 +861,7 @@ const num = (v: number) => v.toLocaleString("en-US");
 function panel(st: State) {
   if (!search || !src) return;
   const s = search, C = src.channels, P = st.patch;
+  liveRate();
   if (st.phase !== "query" && qDrawn !== `${st.examples}`) {
     drawExamples($<HTMLCanvasElement>("qcanvas"), s.examplePixels(), P, C);
     $("qcanvas").classList.remove("none");
@@ -843,7 +883,8 @@ function panel(st: State) {
                             : `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `)
                    + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
-    !st.tilesTotal ? st.message
+    st.phase === "query" && modelNote ? `waiting for the model (${modelNote.replace(/ the model:?/, "")})` + (modelNote.startsWith("downloading") ? ": only the first time, then the browser keeps it" : "")
+      : !st.tilesTotal ? st.message
       : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
                 + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
       : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,
