@@ -118,6 +118,11 @@
   .hit .z:empty { display: none; }
   .hit canvas.map { position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 1; border-radius: 6px; pointer-events: none; display: none; image-rendering: auto; border: 2px solid transparent; background: transparent; }
   body.why .hit canvas.map { display: block; }
+  body.why.parts .hit canvas.map, #qmap { opacity: .7; }
+  #qbox { position: relative; flex: none; width: 64px; height: 64px; }
+  #qmap { position: absolute; left: 0; top: 0; width: 64px; height: 64px; border: 2px solid transparent; border-radius: 6px; pointer-events: none; display: none; }
+  body.why.parts #qmap { display: block; }
+  #whymode { margin-bottom: 6px; }
   .hit .why { display: none; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.35; }
   body.why .hit .why { display: block; }
   button.tog { padding: 1px 8px; font-size: 11px; color: var(--dim); }
@@ -221,8 +226,8 @@
           <span class="lbl">level</span>
           <select id="level" title="The resolution level the search runs at: auto = the level on screen"><option value="auto" selected>auto (as viewed)</option></select>
           <span class="lbl">region</span>
-          <select id="region" title="Where to search: auto = the largest area the quick first pass can cover (the whole dataset when it fits)">
-            <option value="auto" selected>auto (largest that fits)</option><option value="whole">whole dataset</option><option value="8">8x the view</option><option value="1">the view</option></select>
+          <select id="region" title="Where to search: auto = the largest area the quick first pass can cover around the click (the whole dataset when it fits), then the areas around it, nearest first, until the whole dataset is read or you pause">
+            <option value="auto" selected>auto (everywhere, nearest first)</option><option value="whole">whole dataset</option><option value="8">8x the view</option><option value="1">the view</option></select>
           <span class="lbl">method</span>
           <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
             <option value="patches" selected>patches</option><option value="tokens">tiles + tokens (Mars CTX explorer)</option></select>
@@ -258,7 +263,7 @@
     </div>
     <div class="sec">
       <div id="qwrap">
-        <canvas id="qcanvas" class="none" width="64" height="64"></canvas>
+        <div id="qbox"><canvas id="qcanvas" class="none" width="64" height="64"></canvas><canvas id="qmap" width="128" height="128"></canvas></div>
         <div style="min-width:0"><div id="phase">Click on the image to search</div><div id="status">It reads the best-ranked tiles first and keeps going until it has read the whole region or you pause it.</div></div>
       </div>
       <div id="bar"><div></div></div>
@@ -284,7 +289,9 @@
     <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
       <div class="row" style="gap:6px"><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
       <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
-    <div id="whyhelp" hidden></div>
+    <div id="whyhelp" hidden>
+      <div class="seg small" id="whymode" title="How to colour the hits"><button data-m="parts" class="on">matching parts</button><button data-m="alike">where alike</button></div>
+      <div id="whytext"></div></div>
     <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one to mark it good or bad: the list re-ranks.</div></div>
   </aside>
 </main>
