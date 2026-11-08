@@ -15,7 +15,7 @@ tokens). Here the same scheme on the labelled EM, so it can be compared with tes
     pooled: cosine of the window's mean token with the template's mean token;
   * candidates every token (8 working px), ranked with the same NMS and graded as tests 5/6.
 
-    uv run python test7_template.py [--targets mito vesicle mito_full]
+    uv run python experiments/test7_template.py [--targets mito vesicle mito_full]
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import numpy as np
 import test2_coarse2fine as t2
 from common import RESULTS, Mirror
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
 os.environ.setdefault("HF_HOME", str(ROOT / ".hf"))
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402

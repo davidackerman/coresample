@@ -13,7 +13,7 @@ Patches and embeddings are the brute-force set (cache). Two pools: all patches (
 on its own), and only the patches inside the coarse scan's top 2% of chunks (feedback on top
 of the test 3 search, a few percent of the data read).
 
-    uv run python test4_feedback.py [--targets mito vesicle] [--region full --suffix _full]
+    uv run python experiments/test4_feedback.py [--targets mito vesicle] [--region full --suffix _full]
 """
 
 from __future__ import annotations

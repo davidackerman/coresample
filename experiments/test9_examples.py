@@ -8,7 +8,7 @@ queries of the list (instances elsewhere in the region, drawn at random, nested:
 the 2). Hits exclude every example's own patch. Reported: p@10 / p@25, and the paired
 difference from one example (mean +/- standard error over the 30 queries).
 
-    uv run python test9_examples.py [--targets mito vesicle mito_full]
+    uv run python experiments/test9_examples.py [--targets mito vesicle mito_full]
 """
 
 from __future__ import annotations

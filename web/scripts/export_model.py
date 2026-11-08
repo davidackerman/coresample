@@ -4,10 +4,10 @@ Input (batch, 3, S, S) ImageNet-normalized.
 
   112 px: output (batch, 1152) = [CLS | mean of patch tokens | centre-weighted mean of patch
           tokens (Gaussian, sigma = a quarter of the token grid)], each 384-d part L2-normalized,
-          so the page can match on any combination (test5_matching.py compares them).
+          so the page can match on any combination (experiments/test5_matching.py compares them).
   224 px: output (batch, 257, 384) = the last hidden state (CLS, then the 16 x 16 patch tokens),
           raw. The page pools the same 1152-d embedding from it for "detailed" matching, and
-          matches windows of tokens for the tile-token (Mars CTX explorer) mode (test7_template.py).
+          matches windows of tokens for the tile-token (Mars CTX explorer) mode (experiments/test7_template.py).
 
 Writes web/public/models/dinov2-small-{S}.onnx and checks each against PyTorch."""
 

@@ -11,8 +11,8 @@ For zarr v3 sharded arrays, --inner reads each shard's index to get the size
 of every inner chunk.
 
 Usage (uv installs the dependencies on first run, nothing else needed):
-  uv run chunkmap.py URL [--level PATH] [--max-chunks N] [--inner] [--out map.png]
-  uv run chunkmap.py URL --ng [--ng-bind 0.0.0.0 --ng-port 8080]
+  uv run experiments/chunkmap.py URL [--level PATH] [--max-chunks N] [--inner] [--out map.png]
+  uv run experiments/chunkmap.py URL --ng [--ng-bind 0.0.0.0 --ng-port 8080]
 
 URL may be https://, s3://, gs://, or Neuroglancer-style (zarr://s3://..., precomputed://gs://...).
 

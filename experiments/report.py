@@ -1,6 +1,6 @@
 """Plots and tables for RESULTS.md from results/test1.json and results/test2_*.json.
 
-    uv run python report.py     # writes results/test2_*.png and results/summary.json
+    uv run python experiments/report.py     # writes results/test2_*.png and results/summary.json
 """
 
 from __future__ import annotations

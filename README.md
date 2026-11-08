@@ -93,7 +93,7 @@ every mode: test 6 compared it on the EM with five other models (an EM-trained o
 hand-made texture descriptor, and none did better on both targets. The cheap statistics and the rough pass only decide
 what is read first; this score alone ranks the hits. The controls under **Options** choose how that is computed. Tests 5 and 7 measured
 each on labelled EM: 30 queries per target, the same candidates and queries for every option,
-differences paired per query (`results/RESULTS.md` has the tables):
+differences paired per query ([experiments/results/RESULTS.md](experiments/results/RESULTS.md) has the tables):
 
 | control | what it does | top-10 precision vs the default (90 queries) |
 |---|---|---|
@@ -148,22 +148,11 @@ CORS (the Legacy Surveys' own map tiles, for one) cannot be read by a web page; 
 their cutout service instead. More formats (TIFF/SVS slides, HDF5, FITS, Sentinel-2 SAFE...)
 are planned through refkv.
 
-This repository currently holds the **feasibility tests** (Python, workstation scale)
-and the `chunkmap.py` prototype. Results and the go/no-go verdict are in
-[results/RESULTS.md](results/RESULTS.md).
+The browser tool is in `web/`. The ten feasibility tests behind its design (Python, workstation
+scale, graded on labelled EM) are in [experiments/](experiments/), with their results in
+[experiments/results/RESULTS.md](experiments/results/RESULTS.md).
 
 ## Run
-
-```bash
-uv sync                                        # numpy, scipy, tensorstore, torch (CPU), transformers
-export CORESAMPLE_MIRROR=/local/disk/mirror    # chunk mirror: many small files, keep off NFS
-
-uv run python explore_layout.py                # arrays, levels, chunking, compressors of jrc_hela-2
-uv run python test1_chunksize.py               # chunk size vs label occupancy
-uv run python test2_coarse2fine.py             # coarse-to-fine vs brute force vs sampling
-uv run python test3_combined.py                # chunk-wise strategies: coarse prior, size map, feedback
-uv run python report.py                        # plots + summary for RESULTS.md
-```
 
 In the browser (raw data only, DINOv2 on your GPU through WebGPU; Chrome recommended):
 
@@ -178,10 +167,11 @@ URL works too, or `legacy:RA,Dec` for a Legacy Surveys field. `web/scripts/deplo
 publishes the build by hand; the site itself is built by `.github/workflows/pages.yml`
 (Neuroglancer from source, the ONNX model, chunkmirage at the commit in `web/chunkmirage.lock`).
 
-Search with raw data only (no labels anywhere), on any OME-Zarr or N5 pyramid:
+The same search from the command line (Python, raw data only, any OME-Zarr or N5 pyramid):
 
 ```bash
-uv run python query.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 \
+uv sync                                        # numpy, scipy, tensorstore, torch (CPU), transformers
+uv run python experiments/query.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 \
     --point 1700,400,2600 --working 2 --coarsest 4 --patch 64 --k 100 --top 20
 ```
 
@@ -190,21 +180,16 @@ It prints the ranked hits and writes a Neuroglancer link with them as annotation
 Chunk-size maps (no pixel reads; zarr v2/v3, sharded zarr, N5, Neuroglancer precomputed):
 
 ```bash
-uv run chunkmap.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 --max-chunks 5000000
-uv run chunkmap.py precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg --max-chunks 5000000
+uv run experiments/chunkmap.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 --max-chunks 5000000
+uv run experiments/chunkmap.py precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg --max-chunks 5000000
 ```
+
+The tests themselves: [experiments/README.md](experiments/README.md).
 
 ## Layout
 
-| file | what |
+| path | what |
 |---|---|
-| `search.py` | portable search logic: box sums, FFT NCC, histogram EMD, texture stats, peaks, coarse-to-fine descent, coarse scan, best-first chunk search, size-based empty mask. numpy/scipy only, no I/O, no labels |
-| `embed.py` | DINOv2-small patch embeddings with the sqlite cache (`cache/embeddings.sqlite`) |
-| `common.py` | S3 listing, local chunk mirror, chunk-touch accounting |
-| `chunkmap.py` | chunk-size maps from listings, shard indexes, or HEAD requests |
-| `query.py` | raw-data-only search CLI |
-| `web/` | the browser tool: TypeScript scan (worker), chunk-wise search, readers for OME-Zarr, tile pyramids, Zoomify and the Legacy Surveys cutout service; reuses chunkmirage's ONNX Runtime Web wrapper |
-| `explore_layout.py`, `test1_chunksize.py`, `test2_coarse2fine.py`, `test3_combined.py`, `report.py` | the feasibility tests |
-
-Data: [OpenOrganelle](https://openorganelle.janelia.org) `jrc_hela-2` from the public
-bucket `s3://janelia-cosem-datasets`, read lazily with range requests.
+| `web/` | the browser tool: TypeScript scan (worker), chunk-wise search, readers for OME-Zarr, tile pyramids, Zoomify and the Legacy Surveys cutout service; DINOv2-small through ONNX Runtime Web (chunkmirage's wrapper); OpenLayers, Neuroglancer and Cesium viewers |
+| `experiments/` | the Python side: the search logic and CLI (`search.py`, `query.py`), embeddings with a cache (`embed.py`), data access (`common.py`), chunk-size maps (`chunkmap.py`), and tests 1-10 |
+| `experiments/results/` | the tests' numbers, plots and write-up (`RESULTS.md`) |

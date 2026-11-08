@@ -5,7 +5,7 @@ recognises zarr v2 (.zarray), zarr v3 (zarr.json), N5 (attributes.json with
 "dimensions") and Neuroglancer precomputed (info), and writes
 results/layout.json + results/layout.md.
 
-    uv run python explore_layout.py [--prefix jrc_hela-2/] [--skip groundtruth]
+    uv run python experiments/explore_layout.py [--prefix jrc_hela-2/] [--skip groundtruth]
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ http(s)/s3/gs/file). Cheap scores rank the coarsest level; the working-level chu
 the best windows are read whole (1% of them by default) and DINOv2-small ranks every patch
 in them. `--mode points` instead refines K candidates level by level (test 2).
 
-    uv run python query.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 \\
+    uv run python experiments/query.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8 \\
         --point 2500,800,4000 --working 2 --coarsest 4 --patch 64 --k 100 --top 20
 
 --point is a voxel of the finest level (s0), in the array's stored axis order.
@@ -27,7 +27,7 @@ import tensorstore as ts
 
 import search
 
-ROOT = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent
 
 
 def normalize(url: str) -> str:
@@ -240,7 +240,7 @@ def main():
     for i, (h, s) in enumerate(zip(hits_s0, hs)):
         print(f"  #{i + 1:<3} s0 voxel {tuple(int(v) for v in h)}  score {s:.3f}")
     name = re.sub(r"[^A-Za-z0-9]+", "_", url.split("//")[-1])[-60:]
-    out = ROOT / "results" / f"query_{name}.json"
+    out = HERE / "results" / f"query_{name}.json"
     out.parent.mkdir(exist_ok=True)
     link = neuroglancer_link(url, rd.levels, q0, hits_s0, hs)
     out.write_text(json.dumps({"url": url, "point_s0": q0.tolist(), "working": W, "coarsest": coarsest, "patch": P,

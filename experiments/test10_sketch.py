@@ -10,7 +10,7 @@ plain or with the data's blur and noise ("tex"). Controls: the real patch (the c
 blank sketch (grey and noise only: what the tones alone find), and a random order.
 Brute-force embeddings as tests 5-9 (CLS + mean, 112 px). Reported: p@10 / p@25.
 
-    uv run python test10_sketch.py [--targets mito vesicle]
+    uv run python experiments/test10_sketch.py [--targets mito vesicle]
 """
 
 from __future__ import annotations
