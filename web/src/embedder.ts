@@ -98,7 +98,7 @@ export class Embedder {
       idx.forEach((i, j) => prepare(patches[i], x, j * 3 * size * size, size));
       const t0 = performance.now();
       const r = await this.onnx.run(this.models[size], x, [idx.length, 3, size, size]);
-      this.seconds += (performance.now() - t0) / 1000;
+      this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
       this.count += idx.length;
       this.provider = this.onnx.provider;
       const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens (the 224 model): pool them here
@@ -123,7 +123,7 @@ export class Embedder {
       part.forEach((p, j) => prepare(p, x, j * 3 * size * size, size));
       const t0 = performance.now();
       const r = await this.onnx.run(this.models[size], x, [part.length, 3, size, size]);
-      this.seconds += (performance.now() - t0) / 1000;
+      this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
       this.count += part.length;
       this.provider = this.onnx.provider;
       const data = r.data as Float32Array, T = r.dims[1], D = r.dims[2], g = Math.round(Math.sqrt(T - 1));

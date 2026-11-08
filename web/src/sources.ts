@@ -170,6 +170,8 @@ export class OmeZarrSource implements Source {
 
   /** Neuroglancer's source string for this image. */
   get ngSource() { return `zarr://${this.url}`; }
+  /** The intensity window the search maps to 0-255 (data that is not 8-bit), for the viewer too. */
+  get ngRange(): [number, number] | null { return this.window; }
 
   /** Neuroglancer's global dimensions for this image (x, y and z in metres, at the finest
    * level), so a viewer can open at a place without first fitting the view to the data; null
