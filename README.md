@@ -17,8 +17,8 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
   (Options > examples: or each hit's best match).
 - **✓ / ✗ on a hit:** more / fewer like this. The query moves, the list re-ranks, and the tiles
   still to read are re-ordered. ✓ turns the hit green; undo under **Hits**.
-- **match:** lights the parts of each hit most like what you clicked and dims the rest (on the
-  query, the part being matched). **why:** each hit's score broken down, and its pieces
+- **match:** brightens the parts of each hit that look most like the middle of your box and
+  dims the rest; what every box has (plain background) does not count. **why:** each hit's score broken down, and its pieces
   coloured the way the model sees them.
 - **Heat:** how well every place compared matched, on the **Where it has looked** map and over
   the image (in a volume, at the slice's depth).
@@ -50,7 +50,7 @@ beat DINOv2-small on both targets (tests 5-9, [RESULTS.md](experiments/results/R
 
 | how | example |
 |---|---|
-| a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
+| a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-sky`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
 | OME-Zarr (v0.4/0.5, 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` |
 | Neuroglancer precomputed | `precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg` |
 | web-map tiles | `https://host/.../{z}/{x}/{y}.png` (`#maxZoom=12` sets the finest zoom) |

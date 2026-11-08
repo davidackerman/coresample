@@ -50,7 +50,7 @@ export class OlViewer {
     const extent = [0, -H, W, 0];
     const projection = new Projection({ code: `coresample:${src.name}`, units: "pixels", extent });
     // the server's broken zooms left out: OpenLayers draws the neighbouring zooms there
-    const zooms = Array.from({ length: s.maxZoom + 1 }, (_, z) => z).filter((z) => !s.skipZooms?.includes(z));
+    const zooms = Array.from({ length: s.maxZoom + 1 }, (_, z) => z).filter((z) => z >= (s.minZoom ?? 0) && !s.skipZooms?.includes(z));
     const resolutions = zooms.map((z) => 2 ** (s.maxZoom - z));
     const tileGrid = new TileGrid({ extent, origin: [0, 0], resolutions, tileSize: ts });
     const tiles = new TileLayer({
@@ -77,7 +77,7 @@ export class OlViewer {
     });
     this.view = new View({
       projection, center: [init.cx, -init.cy], resolution: init.scale * this.dpr,
-      maxResolution: 2 ** s.maxZoom * 2, minResolution: 0.25, extent, constrainOnlyCenter: true,
+      maxResolution: 2 ** (s.maxZoom - (s.minZoom ?? 0)) * 2, minResolution: 0.25, extent, constrainOnlyCenter: true,
     });
     const boxStyle = (f: Feature) => {
       const kind = f.get("kind"), color = kind === "query" ? "#5ab0ff" : kind === "hover" ? "#5ab0ff" : "#ffd24a";

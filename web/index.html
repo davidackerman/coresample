@@ -215,7 +215,7 @@
     <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
     <div id="attrib"></div>
     <div id="coords"><span id="cursor" title="Under the cursor: full-resolution pixels (and longitude/latitude or physical position)"></span>
-      <input id="goto" placeholder="go to: x, y[, z] or lat, lon" title="Pixels of the full-resolution image (x, y, and z for a volume); on Mars, the Moon and Earth also latitude, longitude in degrees"></div>
+      <input id="goto" placeholder="go to: x, y[, z] or lat, lon" title="Pixels of the full-resolution image (x, y, and z for a volume); on Mars, the Moon and Earth also latitude, longitude in degrees; on the sky, RA, Dec in degrees"></div>
   </div>
   <aside>
     <div class="sec">
@@ -293,10 +293,10 @@
       </div>
     </div>
     <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
-      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where each hit matches what you clicked: the matching parts lit, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
+      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where in each hit the thing you clicked is: the parts that look like the middle of your box bright, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
       <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
     <div id="marks" hidden><span id="markstext"></span> · <button id="undomark" class="link" title="Undo the last mark">undo last</button> · <button id="clearmarks" class="link" title="Undo every mark: the query goes back to the examples alone">clear marks</button></div>
-    <div id="matchhelp" hidden>Lit: the parts of each hit most like what you clicked (the centre of the query, minus what everything shares); dimmed: the rest. On the query: the part being matched.</div>
+    <div id="matchhelp" hidden>Bright: the parts of each hit that look most like the middle of your box; the dimmer, the less alike. What every box has (plain background, the usual texture) does not count. On your box: the middle part it looks for.</div>
     <div id="whyhelp" hidden>
       <div id="whytext"></div></div>
     <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div></div>
