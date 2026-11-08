@@ -5,6 +5,7 @@
 //
 // OME-Zarr (zarr v2 and v3, any host with CORS) is read with zarrita; tile pyramids (XYZ / TMS
 // web maps, WMTS-style templates, Deep Zoom) by fetching and decoding the image tiles.
+import { decodeOff } from "./decode.ts";
 import * as zarr from "zarrita";
 
 export type Vec3 = [number, number, number];
@@ -282,6 +283,8 @@ export interface TileSpec {
 
 /** Decodes an image to RGBA pixels; the browser's decoder by default (tests swap it). */
 export let decodeImage = async (blob: Blob): Promise<{ data: Uint8ClampedArray; width: number; height: number }> => {
+  const off = decodeOff(blob, blob.type);  // in a worker
+  if (off) return off as Promise<{ data: Uint8ClampedArray; width: number; height: number }>;
   const bmp = await createImageBitmap(blob);
   const cv = new OffscreenCanvas(bmp.width, bmp.height);
   const ctx = cv.getContext("2d", { willReadFrequently: true })!;

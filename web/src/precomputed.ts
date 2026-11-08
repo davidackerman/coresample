@@ -6,6 +6,7 @@
 import {
   chunkName, compressedMorton, compressedSegmentation, Shards, type Fetch, type PrecomputedInfo, type PrecomputedScale,
 } from "../../../chunkmirage/web/src/precomputed.ts";
+import { decodeOff } from "./decode.ts";
 import { Lru, normalizeUrl, type Level, type Region, type Source, type Vec3 } from "./sources.ts";
 
 type Typed = Uint8Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Int32Array | Float32Array | Float64Array | BigUint64Array;
@@ -167,6 +168,12 @@ export class PrecomputedSource implements Source {
 /** A JPEG `width` x `height` (a chunk's x by its y * z) as `channels` planes of uint8, decoded
  * by the browser without colour management. */
 async function jpeg(bytes: ArrayBuffer, width: number, height: number, channels: number): Promise<Uint8Array> {
+  const off = decodeOff(bytes, "image/jpeg", { planes: channels, raw: true });  // in a worker
+  if (off) {
+    const d = await off;
+    if (d.width !== width || d.height !== height) throw new Error(`a JPEG chunk ${d.width} x ${d.height}, not ${width} x ${height}`);
+    return d.data as Uint8Array;
+  }
   const image = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
   if (image.width !== width || image.height !== height) throw new Error(`a JPEG chunk ${image.width} x ${image.height}, not ${width} x ${height}`);
   const g = new OffscreenCanvas(width, height).getContext("2d", { willReadFrequently: true })!;
