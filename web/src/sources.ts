@@ -39,7 +39,7 @@ export function normalizeUrl(url: string): string {
 // A small byte-bounded LRU, shared by the readers so display and search reuse fetches
 // ---------------------------------------------------------------------------------------
 
-class Lru<V> {
+export class Lru<V> {
   private map = new Map<string, { v: V; size: number }>();
   private total = 0;
   private limit: number;
@@ -167,6 +167,9 @@ export class OmeZarrSource implements Source {
     }
     return s;
   }
+
+  /** Neuroglancer's source string for this image. */
+  get ngSource() { return `zarr://${this.url}`; }
 
   /** Neuroglancer's global dimensions for this image (x, y and z in metres, at the finest
    * level), so a viewer can open at a place without first fitting the view to the data; null

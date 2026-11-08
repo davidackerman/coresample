@@ -4,7 +4,15 @@
 // the frame's `viewer`: clicks and zoom are read from it, hits are a local annotation layer, and
 // the hover box is drawn on a transparent canvas over the frame.
 import type { Layer } from "./datasets.ts";
-import type { OmeZarrSource } from "./sources.ts";
+import type { Vec3 } from "./sources.ts";
+
+/** What the viewer needs of a volume Neuroglancer can read itself (OME-Zarr, precomputed). */
+export interface NgSource {
+  name: string; url: string; dims: 2 | 3;
+  ngSource: string;
+  ngDimensions(): Record<string, [number, string]> | null;
+  ngOffset?: Vec3;  // z, y, x: where voxel 0 is in Neuroglancer's coordinates
+}
 
 export interface NgBox { fz: number; fy: number; fx: number; side: number; label?: string }
 type Json = Record<string, any>;
@@ -22,16 +30,18 @@ export class NgViewer {
   private initScale = 1;
   private explicit = false;  // the first state already had the place and coordinate space
 
-  constructor(private container: HTMLElement, private src: OmeZarrSource, init: { cx: number; cy: number; z: number; scale: number },
+  private off: Vec3;
+  constructor(private container: HTMLElement, private src: NgSource, init: { cx: number; cy: number; z: number; scale: number },
               private hover: HTMLCanvasElement,
               private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void },
               layers: Layer[] = []) {
     this.hoverCtx = hover.getContext("2d")!;
+    this.off = src.ngOffset ?? [0, 0, 0];
     this.iframe = document.createElement("iframe");
     this.iframe.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000";
     const dpr = window.devicePixelRatio || 1;
     const state: Json = {
-      layers: [{ type: "image", name: src.name, source: `zarr://${src.url}` },
+      layers: [{ type: "image", name: src.name, source: src.ngSource },
                // segmentations: every object of a layer in its colour, hidden layers fetch nothing
                ...layers.map((l) => (l.kind === "segmentation"
                  ? { type: "segmentation", name: l.name, source: l.url, visible: !!l.visible, segmentDefaultColor: l.color, selectedAlpha: 0.4, hoverHighlight: false }
@@ -48,7 +58,7 @@ export class NgViewer {
     if (dims) {
       this.explicit = true;
       state.dimensions = dims;
-      state.position = Object.keys(dims).map((n) => (n === "x" ? init.cx : n === "y" ? init.cy : init.z) + 0.5);
+      state.position = Object.keys(dims).map((n) => (n === "x" ? init.cx + this.off[2] : n === "y" ? init.cy + this.off[1] : init.z + this.off[0]) + 0.5);
       state.projectionScale = init.scale * dpr * Math.max(300, container.clientHeight) * 3;
       state.layers[state.layers.length - 1].source = { url: "local://annotations", transform: { outputDimensions: dims } };
     }
@@ -119,13 +129,15 @@ export class NgViewer {
   }
 
   private idx(n: string) { return this.names.indexOf(n); }
+  /** Voxel offset of an axis (Neuroglancer coordinate = array index + offset). */
+  private o(n: string) { return n === "z" ? this.off[0] : n === "y" ? this.off[1] : n === "x" ? this.off[2] : 0; }
   /** The voxel under the mouse, (z, y, x) at the finest level: the viewer's own mouse position
    * when it is current, else from the click's offset from the view centre at this zoom (the
    * single xy panel fills the frame). */
   private mousePosition(cx: number, cy: number): [number, number, number] {
     const ms = this.viewer.mouseState;
     if (ms?.active && ms.position?.length) {
-      const p = ms.position as Float32Array, at = (n: string) => (this.idx(n) >= 0 ? Math.floor(p[this.idx(n)]) : 0);
+      const p = ms.position as Float32Array, at = (n: string) => (this.idx(n) >= 0 ? Math.floor(p[this.idx(n)] - this.o(n)) : 0);
       return [at("z"), at("y"), at("x")];
     }
     // the panel under the click (the slice panel need not fill the frame: xy-3d layout)
@@ -145,7 +157,7 @@ export class NgViewer {
   center() {
     const p = this.viewer?.position?.value as Float32Array | undefined;
     if (!p) return { cx: 0, cy: 0, z: 0 };
-    const at = (n: string) => (this.idx(n) >= 0 ? p[this.idx(n)] : 0);
+    const at = (n: string) => (this.idx(n) >= 0 ? p[this.idx(n)] - this.o(n) : 0);
     return { cx: at("x"), cy: at("y"), z: at("z") };
   }
   extentPx() {
@@ -158,7 +170,7 @@ export class NgViewer {
     if (!this.viewer) return;
     const cur = this.viewer.position?.value as Float32Array | undefined;
     const pos = cur?.length ? Float32Array.from(cur) : new Float32Array(this.names.length);
-    const set = (n: string, v: number) => { if (this.idx(n) >= 0) pos[this.idx(n)] = v + 0.5; };
+    const set = (n: string, v: number) => { if (this.idx(n) >= 0) pos[this.idx(n)] = v + this.o(n) + 0.5; };
     set("x", fx); set("y", fy); if (this.src.dims === 3) set("z", fz);
     try {  // the viewer's own controls; a state restore if they are not there
       this.viewer.position.value = pos;
@@ -185,7 +197,7 @@ export class NgViewer {
     if (!layer) return;
     const box = (b: NgBox, id: string) => {
       const a = this.names.map(() => 0), c = this.names.map(() => 0);
-      const h = b.side / 2, put = (n: string, lo: number, hi: number) => { const i = this.idx(n); if (i >= 0) { a[i] = lo; c[i] = hi; } };
+      const h = b.side / 2, put = (n: string, lo: number, hi: number) => { const i = this.idx(n); if (i >= 0) { a[i] = lo + this.o(n); c[i] = hi + this.o(n); } };
       put("x", b.fx - h, b.fx + h); put("y", b.fy - h, b.fy + h);
       put("z", this.src.dims === 3 ? b.fz - h : 0, this.src.dims === 3 ? b.fz + h : 1);
       return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "" };

@@ -69,6 +69,7 @@ Ways to load data:
 | a preset from the menu | Mars CTX (5 m/px), Moon LRO WAC, Hubble Andromeda, Webb Carina, Legacy Surveys around NGC 6129, Sentinel-2 cloudless, IDR organoid EM and lung histology, OpenOrganelle jrc_hela-2 in 3-D |
 | a link to a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
 | your own OME-Zarr (v0.4/0.5, zarr v2/v3; 2-D or 3-D) | `https://...`, `s3://bucket/path`, `gs://bucket/path` under **Your own data** in the dataset menu |
+| your own Neuroglancer precomputed volume (sharded or not; raw, JPEG or segmentation) | `precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg` (the FlyEM hemibrain, 56 trillion voxels) |
 | your own web-map tiles | `https://host/.../{z}/{x}/{y}.png` (add `#maxZoom=12` to set the finest zoom) |
 | your own Zoomify image | `https://host/.../ImageProperties.xml` |
 | a DESI Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec in degrees) |

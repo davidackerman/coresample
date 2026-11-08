@@ -8,6 +8,7 @@ import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
+import { PrecomputedSource } from "./precomputed.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -410,12 +411,12 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   ngv?.destroy();
   ngv = null;
   ngBoxesKey = "";
-  const tiled = s instanceof TileSource, volume = s instanceof OmeZarrSource && (await hasNeuroglancer());
+  const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
   olDiv.style.display = tiled ? "block" : "none";
   canvas.style.display = tiled || volume ? "none" : "block";
   hover.style.display = tiled ? "none" : "block";
   if (volume) {
-    ngv = new NgViewer(canvas.parentElement!, s as OmeZarrSource, { cx: v.cx, cy: v.cy, z: v.z ?? view.z, scale: v.scale }, hover, {
+    ngv = new NgViewer(canvas.parentElement!, s as OmeZarrSource | PrecomputedSource, { cx: v.cx, cy: v.cy, z: v.z ?? view.z, scale: v.scale }, hover, {
       click: (fz, fy, fx) => queryAt(fx, fy, fz),
       hoverBox: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => drawHover(),
@@ -461,10 +462,15 @@ function idle() {
 async function openCustom(text: string) {
   text = text.trim();
   if (!text) return;
+  const openBtn = $<HTMLButtonElement>("open");
+  $("phase").textContent = "Opening your data";
+  $("status").textContent = text;
+  openBtn.disabled = true; openBtn.textContent = "Opening...";
   try {
     let s: Source;
     const m = /^legacy:\s*([-\d.]+)\s*,\s*([-\d.]+)/i.exec(text);
     if (m) s = legacySurvey(Number(m[1]), Number(m[2]));
+    else if (/^precomputed:\/\//i.test(text)) s = await PrecomputedSource.open(text);
     else if (/\{z\}/.test(text) && /\{x\}/.test(text) && /\{y\}/.test(text)) {
       // a web-map tile template: square world, 256 px tiles; "#maxZoom=N" sets the finest zoom
       const [tpl, frag] = text.split("#"), mz = Number(new URLSearchParams(frag ?? "").get("maxZoom") ?? 18);
@@ -473,7 +479,11 @@ async function openCustom(text: string) {
     } else if (/ImageProperties\.xml$/i.test(text) || /^zoomify:/i.test(text)) {
       const base = text.replace(/^zoomify:/i, "").replace(/\/?ImageProperties\.xml$/i, "");
       s = await openZoomify(base, base.split("/").filter(Boolean).pop() ?? "Zoomify image");
-    } else s = await OmeZarrSource.open(text);
+    } else {
+      // OME-Zarr, or else a precomputed volume (an info file at the URL)
+      try { s = await OmeZarrSource.open(text); }
+      catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
+    }
     const L0 = s.levels[0].shape;
     await setSource(s, { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
     const u = new URL(location.href);  // a link that opens this data again
@@ -481,8 +491,12 @@ async function openCustom(text: string) {
     history.replaceState(null, "", u);
     idle();
   } catch (e) {
+    const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
-    $("status").textContent = (e as Error).message;
+    $("status").textContent = (/fetch/i.test(msg) ? "The host did not answer, or does not allow reads from web pages (CORS). " : "") + msg
+      + "\nReadable: OME-Zarr, Neuroglancer precomputed (precomputed://...), web-map tiles, Zoomify, legacy:RA,Dec.";
+  } finally {
+    openBtn.disabled = false; openBtn.textContent = "Open";
   }
 }
 
