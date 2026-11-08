@@ -16,6 +16,7 @@ export interface State {
   tilesRead: number; tilesBudget: number; tilesTotal: number;
   patches: number; queued: number; hits: Hit[];
   bytes: number; seconds: number; scanSeconds: number; firstHitSeconds: number | null;
+  rough: { level: number; places: number } | null;  // the model's coarse pass that orders the reads
 }
 
 export interface Options {
@@ -26,6 +27,7 @@ export interface Options {
   topN?: number;
   keep?: number;              // candidates kept for re-ranking (the rest are dropped as read)
   spread?: Spread;
+  roughPass?: boolean;        // order reads by the model on a coarser level (GPU only; default on)
   method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
@@ -34,6 +36,21 @@ export interface Options {
 
 const MARGIN = 4;
 const KEEP = 3000;
+
+/** The model's pass over a coarser level that decides which tiles are read first (test 8: two
+ * levels up, the same physical box, it finds the right tiles sooner than the cheap statistics
+ * at the same cost). It runs in rounds, in the cheap scan's order, a few hundred places at a
+ * time; tiles are read best rough score first, and a new round starts when only tiles below
+ * the median rough score are left. Nothing is cut: every tile is still read in the end. */
+interface Rough {
+  L: number; p: number; stride: number; k: number;
+  q0: Float32Array; q: Float32Array;             // the query at level L (and after feedback)
+  goods: Float32Array[]; bads: Float32Array[];   // marked hits seen at level L
+  pool: { t: Vec3; s: number; embs: Float32Array[] }[];  // scored tiles not read yet
+  scores: number[];                              // every rough score so far (for the median)
+  cursor: number;                                // next tile of the cheap order to score
+  cells: number;                                 // places scored
+}
 
 /** A candidate kept for ranking: its place, embedding, pixels and current score. */
 interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number }
@@ -109,13 +126,17 @@ export class Search {
     this.bytes0 = src.bytesRead;
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
                    tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
-                   scanSeconds: 0, firstHitSeconds: null };
+                   scanSeconds: 0, firstHitSeconds: null, rough: null };
   }
 
   on(f: (s: State) => void) { this.listeners.push(f); }
   /** The searched region (working-level voxels) and the tiles read so far (tile indices). */
   get regionBox(): [Vec3, Vec3] { return this.region; }
-  readTiles(): Vec3[] { return this.order.slice(0, this.next); }
+  readTiles(): Vec3[] { return this.readList; }
+  private readList: Vec3[] = [];
+  private rough: Rough | null = null;
+  private medN = -1;
+  private medV = -Infinity;
   private emit(patch: Partial<State>) {
     this.state = { ...this.state, ...patch, bytes: this.src.bytesRead - this.bytes0, seconds: (performance.now() - this.t0) / 1000 };
     for (const f of this.listeners) f(this.state);
@@ -194,6 +215,7 @@ export class Search {
             if (!(prior.get(key)! >= v)) prior.set(key, v);
           }
       this.order = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k.split(",").map(Number) as Vec3);
+      await this.setupRough();
       this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
       await this.resume();
     } catch (e) {
@@ -265,8 +287,8 @@ export class Search {
       if (this.tokenMode) {  // a few tiles at a time, every crop of them through the model in one go
         const limit = Math.min(budget, this.order.length);
         if (this.next >= limit) break;
-        const tiles = this.order.slice(this.next, Math.min(limit, this.next + (this.emb.provider === "webgpu" ? 4 : 1)));
-        this.next += tiles.length;
+        const tiles = await this.takeTiles(this.emb.provider === "webgpu" ? 4 : 1, limit);
+        if (!tiles.length) break;
         const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
         const grids = await this.emb.tokens(preps.flatMap((p) => p.crops));
         const fresh: number[] = [];
@@ -282,8 +304,7 @@ export class Search {
       const B = this.emb.provider === "webgpu" ? 64 : 16;
       const limit = Math.min(budget, this.order.length);
       if (this.queue.length < 2 * B && this.next < limit) {
-        const tiles = this.order.slice(this.next, Math.min(limit, this.next + ahead));
-        this.next += tiles.length;
+        const tiles = await this.takeTiles(ahead, limit);
         await Promise.all(tiles.map((t) => this.readTile(t)));
         this.queue.sort((x, y) => y.pri - x.pri);
       }
@@ -314,6 +335,116 @@ export class Search {
                 message: all ? "read every tile of the region" : "stopped" });
   }
   private reading = false;
+
+  /** The next `n` tiles to read: in the cheap scan's order, or, with the rough pass, the best
+   * rough scores first (another round scored when only below-median ones are left). */
+  private async takeTiles(n: number, limit: number): Promise<Vec3[]> {
+    n = Math.min(n, limit - this.next);
+    let out: Vec3[];
+    const r = this.rough;
+    if (!r) out = this.order.slice(this.next, this.next + n);
+    else {
+      const med = () => {  // the median rough score, sorted again only when a round added scores
+        if (!r.scores.length) return -Infinity;
+        if (this.medN !== r.scores.length) { const b = [...r.scores].sort((x, y) => x - y); this.medV = b[b.length >> 1]; this.medN = b.length; }
+        return this.medV;
+      };
+      const best = () => r.pool.reduce((m, t) => Math.max(m, t.s), -Infinity);
+      while (r.cursor < this.order.length && !this.stopFlag && (r.pool.length < n || best() < med())) await this.roughRound();
+      r.pool.sort((a, b) => b.s - a.s);
+      out = r.pool.splice(0, n).map((t) => t.t);
+    }
+    this.next += out.length;
+    this.readList.push(...out);
+    return out;
+  }
+
+  /** Decide whether there is a rough pass and set it up: the model two levels coarser (one, for
+   * small boxes), the same physical box (at least 16 px there), on the GPU only. */
+  private async setupRough() {
+    // on by default with a GPU; `roughPass: true` forces it (tests, slow CPUs), false turns it off
+    if (this.opt.roughPass === false || (this.opt.roughPass !== true && this.emb.provider !== "webgpu")) return;
+    const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3;
+    const k = P / 4 >= 16 && W + 2 < this.src.levels.length ? 2 : P / 2 >= 16 && W + 1 < this.src.levels.length ? 1 : 0;
+    if (!k) return;
+    const L = W + k, p = P / 2 ** k, f = 2 ** k;
+    const q = this.query, c: Vec3 = [d3 ? Math.floor(q[0] / f) : 0, Math.floor(q[1] / f), Math.floor(q[2] / f)];
+    const base = (await this.readAt(L, [c], p))[0];
+    if (!base || !informative(base.data)) return;
+    const q0 = (await this.emb.embed([base]))[0];
+    // 2-D grids are not overlapping (stride P at the working level): sample every other place
+    this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], scores: [], cursor: 0, cells: 0 };
+  }
+
+  /** p x p patches at level L around `centers` (z, y, x of that level). */
+  private async readAt(L: number, centers: Vec3[], p: number): Promise<(Patch | null)[]> {
+    const h = p / 2;
+    return Promise.all(centers.map(async (c) => {
+      try {
+        const r = await this.src.read(L, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
+        return { data: r.data, size: p, channels: r.channels };
+      } catch { return null; }
+    }));
+  }
+
+  /** One round of the rough pass: the next tiles of the cheap order, every place in them at
+   * level L through the model, each tile scored by its best place. */
+  private async roughRound() {
+    const r = this.rough!, W = this.opt.working, d3 = this.src.dims === 3, ch = this.src.levels[W].chunk, f = 2 ** r.k;
+    const [rlo, rhi] = this.region, h = r.p / 2;
+    const perTile = (d3 ? Math.max(1, ch[0] / f / r.stride) : 1) * Math.max(1, ch[1] / f / r.stride) * Math.max(1, ch[2] / f / r.stride);
+    const budget = this.emb.provider === "webgpu" ? 768 : 48;  // places per round
+    const tiles = this.order.slice(r.cursor, r.cursor + Math.max(1, Math.floor(budget / perTile)));
+    r.cursor += tiles.length;
+    const cells: { ti: number; c: Vec3 }[] = [];
+    const axis = (a: number, t: Vec3) => {  // places of this tile along axis a, at level L
+      const lo = Math.max(t[a] * ch[a], rlo[a]) / f, hi = Math.min((t[a] + 1) * ch[a], rhi[a]) / f, out: number[] = [];
+      if (a === 0 && !d3) return [0];
+      for (let v = Math.ceil((lo + h) / r.stride) * r.stride; v + h <= hi; v += r.stride) out.push(v);
+      if (!out.length && hi - lo >= r.p) out.push(Math.floor((lo + hi) / 2));
+      return out;
+    };
+    tiles.forEach((t, ti) => { for (const z of axis(0, t)) for (const y of axis(1, t)) for (const x of axis(2, t)) cells.push({ ti, c: [z, y, x] }); });
+    const patches = await this.readAt(r.L, cells.map((c) => c.c), r.p);
+    const keep = cells.map((_, i) => i).filter((i) => patches[i] && informative(patches[i]!.data));
+    const embs = keep.length ? await this.emb.embed(keep.map((i) => patches[i]!)) : [];
+    const per = tiles.map(() => ({ s: -Infinity, embs: [] as Float32Array[] }));
+    keep.forEach((i, j) => {
+      const t = per[cells[i].ti];
+      t.embs.push(embs[j]);
+      t.s = Math.max(t.s, similarity(embs[j], r.q, "whole"));
+    });
+    tiles.forEach((t, i) => {
+      // a tile with nothing informative at level L still gets read, last
+      r.pool.push({ t, s: per[i].s, embs: per[i].embs });
+      if (per[i].s > -Infinity) r.scores.push(per[i].s);
+    });
+    r.cells += keep.length;
+    this.emit({ rough: { level: r.L, places: r.cells } });
+  }
+
+  /** Feedback reaches the rough pass too: the marked hit seen at level L moves the rough query,
+   * and the tiles not read yet are scored again, so the reads follow the marks. */
+  private async roughFeedback(id: number, good: boolean) {
+    const r = this.rough, it = this.items.get(id);
+    if (!r || !it) return;
+    const f = 2 ** r.k, c: Vec3 = [this.src.dims === 3 ? Math.floor(it.c[0] / f) : 0, Math.floor(it.c[1] / f), Math.floor(it.c[2] / f)];
+    const p = (await this.readAt(r.L, [c], r.p))[0];
+    if (!p || !informative(p.data)) return;
+    (good ? r.goods : r.bads).push((await this.emb.embed([p]))[0]);
+    const q = Float32Array.from(r.q0);
+    const add = (vs: Float32Array[], w: number) => { for (const v of vs) for (let d = 0; d < q.length; d++) q[d] += (w / vs.length) * v[d]; };
+    add(r.goods, 0.75);
+    add(r.bads, -0.25);
+    for (let o = 0; o < q.length; o += PART) {
+      let n = 0;
+      for (let d = o; d < o + PART; d++) n += q[d] * q[d];
+      n = Math.sqrt(n) || 1;
+      for (let d = o; d < o + PART; d++) q[d] /= n;
+    }
+    r.q = q;
+    for (const t of r.pool) t.s = t.embs.reduce((m, e) => Math.max(m, similarity(e, q, "whole")), -Infinity);
+  }
 
   /** Drop all but the best `keep` candidates (marked ones stay), so memory stays bounded however
    * long the search reads. */
@@ -487,6 +618,7 @@ export class Search {
   /** Mark hit (patch index) good or bad and re-rank everything embedded so far. */
   mark(index: number, good: boolean) {
     (good ? this.good : this.bad).push(index);
+    this.roughFeedback(index, good);
     this.applyFeedback();
     this.rank();
     this.emit({});

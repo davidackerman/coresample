@@ -37,6 +37,16 @@ where similar things might be; the full-resolution tiles under the best-ranked p
 read first, every patch in them is embedded, and hits are ranked by embedding similarity to
 your click (the number under each thumbnail). Nothing is precomputed or uploaded anywhere.
 
+With a GPU, the model also takes a rough look first: two levels coarser than the search level
+(the same physical box, a quarter of the pixels each way), a few hundred places at a time in
+the cheap scan's order, and the full-detail tiles are read best rough match first; a new round
+starts when only below-median tiles are left. It only reorders the reads, never skips any. On
+labelled EM (test 8, mito) it found the right tiles sooner than the cheap statistics at the
+same download: p@10 0.42 vs 0.33 after 1% of the tiles, 0.53 vs 0.41 after 5% (reading all of
+them gives 0.48). Marking a hit good or bad also moves this rough query, so the tiles read next
+follow your marks, not only the list. Add `&rough=0` to the address to turn it off (`&rough=1`
+forces it on a CPU, where it is slow).
+
 ### How matching works
 
 The number under each hit is the similarity of its DINOv2 embedding to your click's (1 =
