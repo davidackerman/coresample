@@ -5,8 +5,11 @@ import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source } fro
 
 export interface Preset {
   id: string;
-  label: string;
+  label: string;   // name
+  detail: string;  // resolution and kind, one line
   kind: string;
+  count: number;   // pixels (2-D) or voxels (3-D) at full resolution: the picker sorts by it
+  volume?: boolean;
   open: () => Promise<Source>;
   view: { cx: number; cy: number; z?: number; scale: number };
   patch?: number;
@@ -27,7 +30,7 @@ const S2_W = 256 * 2 ** 14;
 
 export const PRESETS: Preset[] = [
   {
-    id: "mars-ctx", label: "Mars: CTX global mosaic, 5 m/px (8.8 trillion pixels)", kind: "planetary map",
+    id: "mars-ctx", label: "Mars: CTX global mosaic", detail: "5 m/px, Murray Lab / Esri", kind: "planetary map", count: CTX_W * CTX_H,
     open: async () => new TileSource({
       name: "Mars CTX mosaic (Murray Lab)", tileSize: 512, maxZoom: 12, width: CTX_W, height: CTX_H, channels: 1,
       unit: "m", pixelSize: 5.05, attribution: "NASA/JPL/MSSS/Caltech Murray Lab/Esri (OnMars)",
@@ -40,7 +43,7 @@ export const PRESETS: Preset[] = [
     note: "Start: Jezero crater. Click a crater, dune field or channel.",
   },
   {
-    id: "moon-wac", label: "Moon: LRO WAC global mosaic, 100 m/px (8.6 gigapixels)", kind: "planetary map",
+    id: "moon-wac", label: "Moon: LRO WAC global mosaic", detail: "100 m/px, NASA Trek", kind: "planetary map", count: WAC_W * WAC_H,
     open: async () => new TileSource({
       name: "Moon LRO WAC (NASA Trek)", tileSize: 256, maxZoom: 8, width: WAC_W, height: WAC_H, channels: 1,
       unit: "m", pixelSize: 100, attribution: "NASA/GSFC/Arizona State University (NASA Trek)",
@@ -52,26 +55,26 @@ export const PRESETS: Preset[] = [
     note: "Start: Tycho crater.",
   },
   {
-    id: "andromeda", label: "Andromeda: Hubble PHAT mosaic (1.5 gigapixels)", kind: "astronomy",
+    id: "andromeda", label: "Andromeda: Hubble PHAT mosaic", detail: "Hubble, ESA", kind: "astronomy", count: 1.5e9,
     open: () => openZoomify("https://cdn.esahubble.org/archives/images/zoomable/heic1502a", "Hubble PHAT Andromeda (heic1502a)",
       "NASA, ESA, J. Dalcanton, B.F. Williams, L.C. Johnson (University of Washington), the PHAT team, R. Gendler (CC BY 4.0)"),
     view: { cx: 34768, cy: 11115, scale: 8 },
     note: "Click a star cluster, a dust lane or a background galaxy.",
   },
   {
-    id: "legacy-ngc6129", label: "Sky: DESI Legacy Surveys, 1.2 degrees around NGC 6129 (268 megapixels)", kind: "astronomy",
+    id: "legacy-ngc6129", label: "Sky: DESI Legacy Surveys near NGC 6129", detail: "0.26\u2033/px, 1.2\u00b0 field", kind: "astronomy", count: 16384 * 16384,
     open: async () => legacySurvey(245.4296, 37.9956, "ls-dr9", 16384, 0.262, "Legacy Surveys DR9 around NGC 6129"),
     view: { cx: 8192, cy: 8192, scale: 4 },
     note: "Click a galaxy to find others like it (elliptical, spiral, edge-on...).",
   },
   {
-    id: "webb", label: "Webb: Carina 'Cosmic Cliffs' (123 megapixels)", kind: "astronomy",
+    id: "webb", label: "Carina: Webb 'Cosmic Cliffs'", detail: "JWST NIRCam, ESA", kind: "astronomy", count: 123e6,
     open: () => openZoomify("https://cdn.esawebb.org/archives/images/zoomable/weic2205a", "JWST Carina (weic2205a)",
       "NASA, ESA, CSA, STScI (CC BY 4.0)"),
     view: { cx: 7287, cy: 4220, scale: 8 },
   },
   {
-    id: "s2", label: "Earth: Sentinel-2 cloudless 2024, 10 m/px (17.6 trillion pixels)", kind: "satellite",
+    id: "s2", label: "Earth: Sentinel-2 cloudless 2024", detail: "10 m/px, EOX", kind: "satellite", count: S2_W * S2_W,
     open: async () => new TileSource({
       name: "Sentinel-2 cloudless 2024 (EOX)", tileSize: 256, maxZoom: 14, channels: 3, unit: "m", pixelSize: 9.55,
       attribution: "Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024), CC BY-NC-SA 4.0",
@@ -81,18 +84,18 @@ export const PRESETS: Preset[] = [
     note: "Start: center-pivot irrigation in Kansas. Try a field, a town or a river bend.",
   },
   {
-    id: "hela", label: "HeLa cell: FIB-SEM volume, 4 nm (122 gigavoxels, OpenOrganelle)", kind: "3-D EM",
+    id: "hela", label: "HeLa cell: FIB-SEM volume", detail: "4 nm voxels, OpenOrganelle", kind: "3-D EM", count: 122e9, volume: true,
     open: () => OmeZarrSource.open("s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8", "jrc_hela-2 EM"),
     view: { cx: 8978, cy: 558, z: 2666, scale: 4 },
     note: "A 3-D volume: change the z slice with the slider or [ and ].",
   },
   {
-    id: "idr-organoid", label: "Intestinal organoid: EM (13.5 gigapixels, IDR idr0083)", kind: "2-D EM",
+    id: "idr-organoid", label: "Intestinal organoid: EM", detail: "IDR idr0083", kind: "2-D EM", count: 13.5e9,
     open: () => OmeZarrSource.open("https://livingobjects.ebi.ac.uk/idr/zarr/v0.4/idr0083A/9822152.zarr", "IDR idr0083 hSIOs-2 EM"),
     view: { cx: 72192, cy: 46592, scale: 16 },
   },
   {
-    id: "idr-lung", label: "Lung tissue: whole-slide colour image (347 megapixels, IDR)", kind: "histology",
+    id: "idr-lung", label: "Lung tissue: whole-slide image", detail: "colour, IDR idr0073", kind: "histology", count: 347e6,
     open: () => OmeZarrSource.open("https://livingobjects.ebi.ac.uk/idr/zarr/v0.4/idr0073A/9798462.zarr", "IDR idr0073 lung08"),
     view: { cx: 10557, cy: 8216, scale: 8 },
   },

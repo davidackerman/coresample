@@ -1,8 +1,9 @@
 // The progressive search (test 3's chunk-wise strategy): scan a coarse level with cheap scores,
 // rank the working level's tiles by the best window inside each, then read tiles in that order,
-// embed every patch in each tile read, and keep an updated, non-overlapping hit list. Results
-// stream: the caller gets a new state after every batch of tiles and can stop, continue, or mark
-// hits good/bad (Rocchio feedback re-ranks everything embedded so far).
+// embed every patch in each tile read, and keep an updated, non-overlapping hit list. It keeps
+// reading, best-ranked tiles first, until every tile of the region is read or it is stopped;
+// results stream after every batch. Memory stays bounded: only the best few thousand candidates
+// (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those.
 import { PART, similarity, type Embedder, type Focus, type Patch } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
@@ -21,17 +22,19 @@ export interface Options {
   working: number;
   patch: number;
   region?: [Vec3, Vec3];      // working-level voxels; default the whole level
-  budgetFrac?: number;        // fraction of the region's tiles read before pausing
-  minTiles?: number;
   maxCoarseVoxels?: number;
   topN?: number;
-  maxTiles?: number;          // cap on the first pass, whatever budgetFrac says
+  keep?: number;              // candidates kept for re-ranking (the rest are dropped as read)
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
 }
 
 const MARGIN = 4;
+const KEEP = 3000;
+
+/** A candidate kept for ranking: its place, embedding, pixels and current score. */
+interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number }
 
 /** How candidates are compared with the query (test 5 measured each on labelled EM). */
 export interface MatchOptions {
@@ -62,11 +65,11 @@ export class Search {
   private qvars: Float32Array[] = [];  // the query's embeddings (variants), feedback applied
   private q0vars: Float32Array[] = []; // the same before feedback
   private sum: Float64Array | null = null;  // running sum of candidate embeddings (for "adapt")
-  private good: number[] = [];
+  private good: number[] = [];       // item ids
   private bad: number[] = [];
-  private centers: Vec3[] = [];
-  private embs: Float32Array[] = [];
-  private pixels: Uint8Array[] = [];
+  private items = new Map<number, Item>();
+  private nextId = 0;
+  private embedded = 0;              // patches embedded so far (kept or not)
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
   private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
   skipped = 0;  // patches not embedded: no data or blank
@@ -101,8 +104,8 @@ export class Search {
   }
 
   /** Pixels of the patch (y, x, c as bytes) of hit or query `i` (-1 = the query). */
-  patchPixels(i: number): Uint8Array { return i < 0 ? this.qpix : this.pixels[i]; }
-  center(i: number): Vec3 { return this.centers[i]; }
+  patchPixels(i: number): Uint8Array { return i < 0 ? this.qpix : this.items.get(i)!.pix; }
+  center(i: number): Vec3 { return this.items.get(i)!.c; }
   private qpix!: Uint8Array;
 
   private async readPatches(centers: Vec3[]): Promise<{ patches: Patch[]; bytes: Uint8Array[] }> {
@@ -164,17 +167,13 @@ export class Search {
             if (!(prior.get(key)! >= v)) prior.set(key, v);
           }
       this.order = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k.split(",").map(Number) as Vec3);
-      const total = (d3 ? Math.ceil((rhi[0] - rlo[0]) / ch[0]) : 1) * Math.ceil((rhi[1] - rlo[1]) / ch[1]) * Math.ceil((rhi[2] - rlo[2]) / ch[2]);
-      const budget = Math.min(this.order.length, this.opt.maxTiles ?? Infinity,
-                              Math.max(this.opt.minTiles ?? 12, Math.round((this.opt.budgetFrac ?? 0.03) * total)));
-      this.emit({ phase: "read", tilesTotal: total, tilesBudget: budget, message: "reading the best-ranked tiles" });
-      await this.readUntil(budget);
+      this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
+      await this.resume();
     } catch (e) {
       this.emit({ phase: "error", message: String((e as Error).message ?? e) });
     }
   }
 
-  /** Read more tiles, up to `budget` in total (continue after a pause). */
   /** Cheap-scan score at a working-level position (the window centred nearest it). */
   private priorAt(c: Vec3): number {
     const sc = this.scanInfo;
@@ -221,13 +220,18 @@ export class Search {
     }
   }
 
-  /** Read more tiles, up to `budget` in total (continue after a pause). Tiles are read a few at
-   * a time in coarse-scan order; their patches join one queue ranked by the cheap score at
-   * each patch; the best queued patches are embedded in small batches and the hits update after
-   * every batch, so results stream and the likeliest come first. */
+  /** Read tiles until every ranked tile is read or `stop()` (also continues after a stop).
+   * Tiles are read a few at a time in coarse-scan order; their patches join one queue ranked by
+   * the cheap score at each patch; the best queued patches are embedded in small batches and the
+   * hits update after every batch, so results stream and the likeliest come first. */
+  async resume() { await this.readUntil(this.order.length); }
+
+  /** Read tiles up to `budget` in total (tests use it to read a fixed number). */
   async readUntil(budget: number) {
+    if (this.reading) return;
+    this.reading = true;
     this.stopFlag = false;
-    this.emit({ phase: "read", tilesBudget: budget });
+    this.emit({ phase: "read", tilesBudget: budget, message: "reading tiles, best-ranked first" });
     const W = this.opt.working, P = this.opt.patch, d3 = this.src.dims === 3;
     const ahead = d3 ? 6 : 3;
     while (!this.stopFlag) {
@@ -245,21 +249,36 @@ export class Search {
       }
       const batch = this.queue.splice(0, B);
       const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`));
+      const fresh: number[] = [];
       batch.forEach((q, k) => {
         this.sum ??= new Float64Array(e[k].length);
         for (let d = 0; d < e[k].length; d++) this.sum[d] += e[k][d];
-        this.centers.push(q.c);
-        this.embs.push(e[k]);
-        this.pixels.push(Uint8Array.from(q.patch.data));
+        const id = this.nextId++;
+        this.items.set(id, { c: q.c, e: e[k], pix: Uint8Array.from(q.patch.data), s: -Infinity });
+        fresh.push(id);
       });
-      this.rank();
+      this.embedded += batch.length;
+      this.rank(fresh);
+      this.prune();
       await new Promise((r) => setTimeout(r, 0));  // let the page draw
-      this.emit({ tilesRead: this.next, patches: this.centers.length, queued: this.queue.length,
+      this.emit({ tilesRead: this.next, patches: this.embedded, queued: this.queue.length,
                   firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
     }
+    this.reading = false;
     const all = this.next >= this.order.length && !this.queue.length;
     this.emit({ phase: all ? "done" : "paused", tilesRead: this.next, queued: this.queue.length,
-                message: all ? "read every ranked tile" : this.stopFlag ? "stopped" : "paused: read more to continue" });
+                message: all ? "read every tile of the region" : "stopped" });
+  }
+  private reading = false;
+
+  /** Drop all but the best `keep` candidates (marked ones stay), so memory stays bounded however
+   * long the search reads. */
+  private prune() {
+    const keep = this.opt.keep ?? KEEP;
+    if (this.items.size <= keep * 1.25) return;
+    const marked = new Set([...this.good, ...this.bad]);
+    const ids = [...this.items.keys()].filter((i) => !marked.has(i)).sort((a, b) => this.items.get(b)!.s - this.items.get(a)!.s);
+    for (const i of ids.slice(keep)) this.items.delete(i);
   }
 
   stop() { this.stopFlag = true; }
@@ -321,7 +340,7 @@ export class Search {
       const q = Float32Array.from(q0);
       const add = (ids: number[], wgt: number) => {
         if (!ids.length) return;
-        for (const i of ids) for (let d = 0; d < q.length; d++) q[d] += (wgt / ids.length) * this.embs[i][d];
+        for (const i of ids) { const e = this.items.get(i)!.e; for (let d = 0; d < q.length; d++) q[d] += (wgt / ids.length) * e[d]; }
       };
       add(this.good, 0.75);
       add(this.bad, -0.25);
@@ -335,24 +354,26 @@ export class Search {
     });
   }
 
-  private rank() {
+  /** Score the candidates `only` (all of them when not given, or when "adapt" moves the mean)
+   * and rebuild the non-overlapping hit list. */
+  private rank(only?: number[]) {
     const P = this.opt.patch, d3 = this.src.dims === 3, N = this.opt.topN ?? 60, m = this.opt.match ?? DEFAULT_MATCH;
     let mu: Float32Array | undefined;
-    if (m.adapt && this.sum && this.embs.length > 16) {
+    if (m.adapt && this.sum && this.embedded > 16) {
       mu = new Float32Array(this.sum.length);
-      for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embs.length;
+      for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embedded;
     }
-    const scored = this.embs.map((e, i) => {
+    for (const i of mu || !only ? this.items.keys() : only) {
+      const it = this.items.get(i)!;
       let s = -Infinity;
-      for (const q of this.qvars) s = Math.max(s, similarity(e, q, m.focus, mu));
-      return { i, s };
-    });
-    scored.sort((a, b) => b.s - a.s);
+      for (const q of this.qvars) s = Math.max(s, similarity(it.e, q, m.focus, mu));
+      it.s = s;
+    }
+    const scored = [...this.items.entries()].sort((a, b) => b[1].s - a[1].s);
     const hits: Hit[] = [];
     const bad = new Set(this.bad);
-    for (const { i, s } of scored) {
+    for (const [i, { s, c }] of scored) {
       if (bad.has(i)) continue;
-      const c = this.centers[i];
       if (hits.every((h) => Math.abs(h.center[1] - c[1]) >= P || Math.abs(h.center[2] - c[2]) >= P || (d3 && Math.abs(h.center[0] - c[0]) >= P))) {
         hits.push({ center: c, score: s, index: i });
         if (hits.length >= N) break;

@@ -1,6 +1,6 @@
 // Headless Chromium smoke test of the built page (Playwright). Opens a preset, waits for the
-// view, searches from the centre of the canvas with the smallest settings, waits for hits and
-// saves screenshots. usage: node test/pw_smoke.mjs <preset id> <out prefix> [max seconds]
+// view, searches from the centre of the view, lets the search read for up to [max seconds] (or
+// until it is done), pauses it and saves screenshots. usage: node test/pw_smoke.mjs <preset id> <out prefix> [max seconds]
 import { createRequire } from "node:module";
 const require = createRequire(process.env.PW_DIR + "/package.json");
 const { chromium } = require("playwright-core");
@@ -19,20 +19,22 @@ page.on("crash", () => console.log("[crash] renderer crashed"));
 browser.on("disconnected", () => console.log("[disconnected]"));
 const t0 = Date.now(), el = (s) => ((Date.now() - t0) / 1000).toFixed(0) + "s";
 await page.goto(`http://127.0.0.1:5180/?d=${preset}`);
-await page.waitForTimeout(15000);
+await page.waitForTimeout(Number(process.env.PW_WAIT ?? 15000));
 await page.screenshot({ path: `${out}_view.png` });
 console.log(el(), "model:", await page.textContent("#model"));
-await page.selectOption("#budget", process.env.PW_BUDGET ?? "0.005");
-await page.selectOption("#region", process.env.PW_REGION ?? "1");
+await page.evaluate((v) => { const r = document.querySelector("#region"); r.value = v; }, process.env.PW_REGION ?? "1");
 const box = await page.locator("#stage").boundingBox();
 await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 let last = "";
 while ((Date.now() - t0) / 1000 < Number(maxS)) {
   await page.waitForTimeout(Number(process.env.PW_POLL ?? 4000));
-  const st = (await page.innerText("#status")).replace(/\n/g, " | ");
+  const st = (await page.innerText("#phase")) + " | " + (await page.innerText("#status")).replace(/\n/g, " | ");
   if (st !== last) { console.log(el(), st); last = st; }
-  if (/paused|done|error/.test(st)) break;
+  if (/^(Done|Something went wrong)/.test(st)) break;
 }
+if (await page.isEnabled("#stop") && (await page.innerText("#stop")) === "Pause") await page.click("#stop");
+await page.waitForTimeout(1500);
+console.log(el(), (await page.innerText("#phase")), "|", (await page.innerText("#status")).replace(/\n/g, " | "));
 console.log(el(), "hits:", await page.locator(".hit").count(), "| model:", await page.textContent("#model"));
 await page.screenshot({ path: `${out}_search.png` });
 await browser.close();

@@ -248,6 +248,11 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
 - **Smoke tests in headless Chromium** (CPU only, about 8 patches/s, no GPU here): Mars CTX,
   Hubble Andromeda, Legacy Surveys NGC 6129 and the 3-D HeLa volume all open, scan in
   0.1-2.4 s and stream hits; first hits at 8 s on the volume.
+- **Opening the HeLa volume in Neuroglancer** (live site, headless Chromium): the viewer first
+  loaded a fit of the whole volume, then the page moved it to the preset place twice, cancelling
+  its requests: 855 requests and 120 MB in 35 s, 138 cancelled, still loading. Giving the viewer
+  the place, zoom and coordinate space in its first state: 112 requests, 19 MB, done in 5 s,
+  none cancelled. The model download now waits for that (8 s, or the first click).
 
 ## Kill rule
 
