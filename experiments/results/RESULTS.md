@@ -1,8 +1,19 @@
 # coresample feasibility: results
 
-1. **Test 1 passes as a where-is-the-content map, not as an organelle detector.** Free chunk sizes separate cell from resin (AUC 0.95; 0.98 for the free s0/s1 size ratio) and trace the nucleus and cell outline, but within the cell they predict mito or vesicles only weakly (AUC 0.57-0.71).
-2. **Test 2, point-wise coarse-to-fine, passes for vesicles and fails for mito.** Vesicles match brute force on the top hits from s3, s4 or s5 while reading 3-8% of the working level's bytes as stored; mito need about 25% over the whole volume.
-3. **Test 3: read the coarse scan's top chunks whole, embed everything in them.** That matches or beats brute force on the top hits at **2.4% of the bytes for vesicles and 2.7% for mito over the whole volume** (both including the coarse scan), well ahead of random or adaptive sampling at that budget. Mito in the 1/9 subvolume still miss on the top 25. The advantage is in the first hits only: past about 5% every strategy converges, and recall still needs most of the data.
+In short (details and numbers below):
+
+1. **Chunk sizes** map cell vs resin for free (AUC 0.95-0.98), organelles only weakly.
+2. **Cutting candidates level by level** works for vesicles (3-8% of the bytes) and loses mito.
+3. **Reading the coarse scan's top chunks whole** matches brute force on the top hits at about
+   2.5% of the bytes; the page's search is built on this.
+4. **Good/bad feedback** helps a little, not consistently.
+5. **Comparison options** (pooling, rotation, 224 px, centring): none moves precision by more
+   than 0.02; the default stays.
+6. **Other models:** none beats DINOv2-small on both targets.
+7. **Tile tokens** (the Mars CTX explorer's matching) match the default with fewer model runs.
+8. **The model two levels up** orders the reads best (the page's rough pass).
+9. **Several examples** help where the class looks alike (vesicles +0.11 with 8 averaged).
+10. **Drawings** find nothing on EM.
 
 Dataset: `jrc_hela-2` (OpenOrganelle), EM `recon-1/em/fibsem-uint8`, 6368 x 1600 x 12000
 voxels at 5.24 x 4 x 4 nm, six 2x levels (s0 chunks 128^3, s1-s5 chunks 64^3, zstd 6),
