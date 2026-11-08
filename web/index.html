@@ -78,6 +78,16 @@ Opening it puts ?url=... in the address bar: share that link.">
         <span class="lbl">region</span>
         <select id="region"><option value="auto" selected>auto</option><option value="whole">whole</option><option value="8">8x view</option><option value="1">view</option></select>
       </div>
+      <div class="row" title="How candidates are compared with your click">
+        <span class="lbl">match</span>
+        <select id="detail" title="Model input: detailed (224 px) is about 30% more precise on labelled EM and 4x the compute; the default on a GPU">
+          <option value="112" selected>fast</option><option value="224">detailed</option></select>
+        <select id="focus" title="Compare the whole patch, or the object at its centre (where you clicked)">
+          <option value="center" selected>center object</option><option value="whole">whole patch</option></select>
+        <label title="Also match the query rotated and mirrored (8 ways): for things with no fixed orientation (craters, galaxies)"><input type="checkbox" id="rot"> any rotation</label>
+        <label title="Also match the query at half and double the size (the levels above and below)"><input type="checkbox" id="scl"> any size</label>
+        <label title="Compare after removing what all patches here have in common (helps when everything looks alike)"><input type="checkbox" id="adapt"> adapt</label>
+      </div>
       <div class="row">
         <button id="stop" disabled>Stop</button>
         <button id="more" disabled>Read 2x more</button>

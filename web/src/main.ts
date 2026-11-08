@@ -1,9 +1,9 @@
 // coresample's page: a pan/zoom viewer over any multiscale source, click to search, hits stream
 // into the side panel. Raw data only; nothing is precomputed.
 import { PRESETS, type Preset } from "./datasets.ts";
-import { Embedder } from "./embedder.ts";
+import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
-import { Search, coarseLevelFor, type State } from "./search.ts";
+import { Search, coarseLevelFor, type MatchOptions, type State } from "./search.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
@@ -38,12 +38,10 @@ let hitEls: HTMLElement[] = [];
 // ---------------------------------------------------------------------------------------
 // model (warmed up on load, so the first click does not wait for 88 MB)
 // ---------------------------------------------------------------------------------------
-const emb = new Embedder(new URL("models/dinov2-small-112.onnx", document.baseURI).href, (l) => console.log("[onnx]", l));
-const modelEl = $("model");
-emb.model.bytes = async () => {  // kept in Cache Storage: later visits do not download 88 MB again
-  const url = new URL("models/dinov2-small-112.onnx", document.baseURI).href;
+/** A model file from Cache Storage when there, else downloaded once into it (88 MB each). */
+async function cachedBytes(url: string): Promise<ArrayBuffer> {
   try {
-    const cache = await caches.open("coresample-models-v1");
+    const cache = await caches.open("coresample-models-v2");  // v2: the [CLS | mean | centre] export
     const hit = await cache.match(url);
     if (hit) return hit.arrayBuffer();
     const r = await fetch(url);
@@ -53,17 +51,22 @@ emb.model.bytes = async () => {  // kept in Cache Storage: later visits do not d
   } catch {
     return (await fetch(url)).arrayBuffer();
   }
-};
-setTimeout(async () => {  // after the viewer and first data have had the network
+}
+const emb = new Embedder((size) => new URL(`models/dinov2-small-${size}.onnx`, document.baseURI).href,
+                         (l) => console.log("[onnx]", l), cachedBytes);
+const modelEl = $("model");
+
+/** Load the model at the chosen input size and measure it. */
+async function warmUp() {
   try {
-    modelEl.textContent = "model: loading DINOv2-small (88 MB the first time, then cached)";
+    modelEl.textContent = `model: loading DINOv2-small at ${emb.input} px (88 MB the first time, then cached)`;
     const t = performance.now();
     await emb.embed([{ data: new Float32Array(64 * 64), size: 64, channels: 1 }]);
     const n = 32, d = new Float32Array(64 * 64);
     const t2 = performance.now();
     await emb.embed(Array.from({ length: n }, () => ({ data: d, size: 64, channels: 1 })));
     const rate = n / ((performance.now() - t2) / 1000);
-    modelEl.textContent = `model: ${emb.provider === "webgpu" ? "GPU (WebGPU)" : "CPU (WebAssembly, slow)"} ready, ${rate.toFixed(0)} patches/s (${((t2 - t) / 1000).toFixed(0)} s to load)`;
+    modelEl.textContent = `model: ${emb.provider === "webgpu" ? "GPU (WebGPU)" : "CPU (WebAssembly, slow)"}, ${emb.input} px input, ${rate.toFixed(0)} patches/s (${((t2 - t) / 1000).toFixed(0)} s to load)`;
     if (emb.provider !== "webgpu")
       modelEl.title = window.isSecureContext
         ? "No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
@@ -71,6 +74,12 @@ setTimeout(async () => {  // after the viewer and first data have had the networ
   } catch (e) {
     modelEl.textContent = `model failed: ${(e as Error).message}`;
   }
+}
+setTimeout(async () => {  // after the viewer and first data have had the network
+  await warmUp();
+  // more detail where there is a GPU for it (test 5: 224 px input, about +30% top-10 precision)
+  const det = $<HTMLSelectElement>("detail");
+  if (emb.provider === "webgpu" && det.dataset.touched !== "1") { det.value = "224"; emb.input = 224; await warmUp(); }
 }, 2500);
 
 // ---------------------------------------------------------------------------------------
@@ -462,7 +471,8 @@ function queryAt(fx: number, fy: number, fz?: number) {
   clearSearch();
   const region = regionFor(W, P);
   search = new Search(s, emb, c, { working: W, patch: P, region, budgetFrac: Number($<HTMLSelectElement>("budget").value),
-                                   maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60, maxTiles: 48 });
+                                   maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60, maxTiles: 48,
+                                   match: matchOptions() });
   for (const b of ["stop", "clear"]) $<HTMLButtonElement>(b).disabled = false;
   let queued = false;
   const me = search;
@@ -545,6 +555,20 @@ function goTo(i: number) {
   if (link) { a.href = link; a.style.display = ""; } else a.style.display = "none";
   render();
 }
+
+// match options (test 5 compared them on labelled EM; see README "How matching works")
+function matchOptions(): MatchOptions {
+  return { focus: $<HTMLSelectElement>("focus").value as Focus, rotations: $<HTMLInputElement>("rot").checked,
+           scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked };
+}
+for (const id of ["focus", "rot", "scl", "adapt"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
+$("detail").addEventListener("change", async () => {
+  const det = $<HTMLSelectElement>("detail");
+  det.dataset.touched = "1";
+  emb.input = Number(det.value);
+  await warmUp();
+  if (search) { const q = search.query, f = 2 ** search.state.working; queryAt(q[2] * f, q[1] * f, q[0] * f); }  // embeddings differ: search again
+});
 
 // the map / globe toggle (planetary mosaics)
 const globeBtn = $<HTMLButtonElement>("globe");

@@ -3,7 +3,7 @@
 // embed every patch in each tile read, and keep an updated, non-overlapping hit list. Results
 // stream: the caller gets a new state after every batch of tiles and can stop, continue, or mark
 // hits good/bad (Rocchio feedback re-ranks everything embedded so far).
-import { cosine, type Embedder, type Patch } from "./embedder.ts";
+import { PART, similarity, type Embedder, type Focus, type Patch } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
@@ -26,11 +26,21 @@ export interface Options {
   maxCoarseVoxels?: number;
   topN?: number;
   maxTiles?: number;          // cap on the first pass, whatever budgetFrac says
+  match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
 }
 
 const MARGIN = 4;
+
+/** How candidates are compared with the query (test 5 measured each on labelled EM). */
+export interface MatchOptions {
+  focus: Focus;        // "whole" patch or the "center" object
+  rotations: boolean;  // also the query rotated/flipped 8 ways, best match counts
+  scales: boolean;     // also the query at half and double the field of view
+  adapt: boolean;      // subtract the candidates' mean embedding before comparing
+}
+export const DEFAULT_MATCH: MatchOptions = { focus: "center", rotations: false, scales: false, adapt: false };
 
 /** The finest level at least 2 levels above `W` (1 if need be) that can be scanned whole over
  * `region` within `budget` voxels while the query window stays >= 4 (>= 2) voxels; -1 if none. */
@@ -48,8 +58,9 @@ export function coarseLevelFor(src: Source, W: number, P: number, region: [Vec3,
 export class Search {
   state: State;
   query: Vec3;
-  private qvec!: Float32Array;
-  private q0!: Float32Array;
+  private qvars: Float32Array[] = [];  // the query's embeddings (variants), feedback applied
+  private q0vars: Float32Array[] = []; // the same before feedback
+  private sum: Float64Array | null = null;  // running sum of candidate embeddings (for "adapt")
   private good: number[] = [];
   private bad: number[] = [];
   private centers: Vec3[] = [];
@@ -117,8 +128,8 @@ export class Search {
       if (missingFraction(q.patches[0].data) > 0.05)
         throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
       this.qpix = q.bytes[0];
-      this.q0 = (await this.emb.embed(q.patches))[0];
-      this.qvec = this.q0;
+      this.q0vars = await this.queryVariants(q.patches[0]);
+      this.qvars = this.q0vars.map((v) => Float32Array.from(v));
       // 1. cheap scan of the coarse level
       const C = this.chooseCoarse(), f = 2 ** (C - W);
       const s = Math.max(2, Math.round(P / f));
@@ -234,6 +245,8 @@ export class Search {
       const batch = this.queue.splice(0, B);
       const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`));
       batch.forEach((q, k) => {
+        this.sum ??= new Float64Array(e[k].length);
+        for (let d = 0; d < e[k].length; d++) this.sum[d] += e[k][d];
         this.centers.push(q.c);
         this.embs.push(e[k]);
         this.pixels.push(Uint8Array.from(q.patch.data));
@@ -250,31 +263,89 @@ export class Search {
 
   stop() { this.stopFlag = true; }
 
-  /** Mark hit (patch index) good or bad and re-rank everything embedded so far. */
-  mark(index: number, good: boolean) {
-    (good ? this.good : this.bad).push(index);
-    const q = Float32Array.from(this.q0);
-    const add = (ids: number[], wgt: number) => {
-      if (!ids.length) return;
-      for (const i of ids) for (let d = 0; d < q.length; d++) q[d] += (wgt / ids.length) * this.embs[i][d];
-    };
-    add(this.good, 0.75);
-    add(this.bad, -0.25);
-    // keep each half (CLS, mean) unit length, as the embeddings are
-    for (const [a, b] of [[0, q.length / 2], [q.length / 2, q.length]]) {
-      let n = 0;
-      for (let d = a; d < b; d++) n += q[d] * q[d];
-      n = Math.sqrt(n) || 1;
-      for (let d = a; d < b; d++) q[d] /= n;
+  /** The query's embeddings: the patch itself, plus its 7 other rotations/flips and its view at
+   * half and double the field (one level finer and coarser), as the match options ask. */
+  private async queryVariants(base: Patch): Promise<Float32Array[]> {
+    const m = this.opt.match ?? DEFAULT_MATCH, P = base.size, C = base.channels;
+    const patches: Patch[] = [base];
+    if (m.rotations) {
+      const rot = (d: Float32Array, k: number, flip: boolean) => {  // k quarter turns, optional mirror
+        const o = new Float32Array(d.length);
+        for (let y = 0; y < P; y++) for (let x = 0; x < P; x++) {
+          let sx = flip ? P - 1 - x : x, sy = y;
+          for (let t = 0; t < k; t++) [sx, sy] = [sy, P - 1 - sx];
+          for (let c = 0; c < C; c++) o[(y * P + x) * C + c] = d[(sy * P + sx) * C + c];
+        }
+        return o;
+      };
+      for (const flip of [false, true]) for (let k = 0; k < 4; k++) if (k || flip) patches.push({ data: rot(base.data, k, flip), size: P, channels: C });
     }
-    this.qvec = q;
+    if (m.scales) {
+      const W = this.opt.working, h = P / 2, q = this.query, d3 = this.src.dims === 3;
+      for (const L of [W - 1, W + 1]) {
+        if (L < 0 || L >= this.src.levels.length) continue;
+        const f = 2 ** (W - L), c = [d3 ? Math.floor(q[0] * f) : 0, Math.floor(q[1] * f), Math.floor(q[2] * f)];
+        const r = await this.src.read(L, [c[0], c[1] - h, c[2] - h], [c[0] + 1, c[1] + h, c[2] + h]);
+        if (informative(r.data)) patches.push({ data: r.data, size: P, channels: r.channels });
+      }
+    }
+    return this.emb.embed(patches);
+  }
+
+  /** New match options: re-rank everything embedded so far (variants re-embedded if needed). */
+  async setMatch(m: MatchOptions) {
+    const old = this.opt.match ?? DEFAULT_MATCH;
+    this.opt.match = m;
+    if (m.rotations !== old.rotations || m.scales !== old.scales) {
+      const q = await this.readPatches([this.query]);
+      this.q0vars = await this.queryVariants(q.patches[0]);
+      this.applyFeedback();
+    }
     this.rank();
     this.emit({});
   }
 
+  /** Mark hit (patch index) good or bad and re-rank everything embedded so far. */
+  mark(index: number, good: boolean) {
+    (good ? this.good : this.bad).push(index);
+    this.applyFeedback();
+    this.rank();
+    this.emit({});
+  }
+
+  /** Rocchio on every query variant: toward the good hits, away from the bad ones, each part
+   * kept unit length as the embeddings are. */
+  private applyFeedback() {
+    this.qvars = this.q0vars.map((q0) => {
+      const q = Float32Array.from(q0);
+      const add = (ids: number[], wgt: number) => {
+        if (!ids.length) return;
+        for (const i of ids) for (let d = 0; d < q.length; d++) q[d] += (wgt / ids.length) * this.embs[i][d];
+      };
+      add(this.good, 0.75);
+      add(this.bad, -0.25);
+      for (let o = 0; o < q.length; o += PART) {
+        let n = 0;
+        for (let d = o; d < o + PART; d++) n += q[d] * q[d];
+        n = Math.sqrt(n) || 1;
+        for (let d = o; d < o + PART; d++) q[d] /= n;
+      }
+      return q;
+    });
+  }
+
   private rank() {
-    const P = this.opt.patch, d3 = this.src.dims === 3, N = this.opt.topN ?? 60;
-    const scored = this.embs.map((e, i) => ({ i, s: cosine(e, this.qvec) }));
+    const P = this.opt.patch, d3 = this.src.dims === 3, N = this.opt.topN ?? 60, m = this.opt.match ?? DEFAULT_MATCH;
+    let mu: Float32Array | undefined;
+    if (m.adapt && this.sum && this.embs.length > 16) {
+      mu = new Float32Array(this.sum.length);
+      for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embs.length;
+    }
+    const scored = this.embs.map((e, i) => {
+      let s = -Infinity;
+      for (const q of this.qvars) s = Math.max(s, similarity(e, q, m.focus, mu));
+      return { i, s };
+    });
     scored.sort((a, b) => b.s - a.s);
     const hits: Hit[] = [];
     const bad = new Set(this.bad);
