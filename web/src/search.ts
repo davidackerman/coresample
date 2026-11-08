@@ -11,6 +11,16 @@ import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
 export interface Hit { center: Vec3; score: number; index: number }
+/** How a candidate scored (Search.explain): the score is the mean of its parts' cosines with the
+ * query variant that matched best. */
+export interface Explain {
+  score: number;
+  parts: { name: "look" | "parts" | "centre" | "tokens"; value: number }[];
+  variant: string;   // "id", a rotation "r1".."r7", a scale "s-1"/"s+1"
+  example: number;   // with "match any": the example (0-based) that matched best, else -1
+  feedback: number;  // what the good/bad marks added to the score
+  adapted: boolean;  // compared after removing the candidates' mean ("adapt to data")
+}
 export interface State {
   phase: "query" | "scan" | "read" | "paused" | "done" | "error";
   message: string;
@@ -137,6 +147,7 @@ export class Search {
   private qvars: Float32Array[] = [];  // the query's embeddings (variants), feedback applied
   private q0vars: Float32Array[] = []; // the same before feedback: the mean of the examples'
   private examples: Example[] = [];
+  private qlabels: { ex: number; key: string }[] = [];  // which example and variant each query vector is
   private sum: Float64Array | null = null;  // running sum of candidate embeddings (for "adapt")
   private good: number[] = [];       // item ids
   private bad: number[] = [];
@@ -592,10 +603,15 @@ export class Search {
    * variants side by side (a candidate scores its best match among them). Test 9: the mean
    * gains with more examples on vesicles, "any" did better on mito. */
   private combine() {
-    if ((this.opt.match ?? DEFAULT_MATCH).combine === "any") { this.q0vars = this.examples.flatMap((e) => [...e.vars.values()]); return; }
+    if ((this.opt.match ?? DEFAULT_MATCH).combine === "any") {
+      this.q0vars = this.examples.flatMap((e) => [...e.vars.values()]);
+      this.qlabels = this.examples.flatMap((e, ex) => [...e.vars.keys()].map((key) => ({ ex, key })));
+      return;
+    }
     const keys: string[] = [];
     for (const e of this.examples) for (const k of e.vars.keys()) if (!keys.includes(k)) keys.push(k);
     this.q0vars = keys.map((k) => unitMean(this.examples.flatMap((e) => (e.vars.has(k) ? [e.vars.get(k)!] : []))));
+    this.qlabels = keys.map((key) => ({ ex: -1, key }));
   }
 
   /** Drop all but the best `keep` candidates (marked ones stay), so memory stays bounded however
@@ -796,15 +812,38 @@ export class Search {
     });
   }
 
+  /** The candidates' mean embedding, when "adapt to data" subtracts it. */
+  private adaptMean(): Float32Array | undefined {
+    if (!(this.opt.match ?? DEFAULT_MATCH).adapt || !this.sum || this.embedded <= 16) return undefined;
+    const mu = new Float32Array(this.sum.length);
+    for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embedded;
+    return mu;
+  }
+
+  /** How candidate `i` scored: each compared part's cosine with the query variant that matched
+   * best ("look": the CLS token, the patch as a whole; "parts": the mean of its patch tokens,
+   * what is in it; "centre": the centre-weighted tokens; "tokens": a window's mean token), which
+   * variant and example that was, and what feedback added. */
+  explain(i: number): Explain | null {
+    const it = this.items.get(i);
+    if (!it || !this.qvars.length) return null;
+    const m = this.opt.match ?? DEFAULT_MATCH, mu = this.adaptMean();
+    let best = 0, bs = -Infinity;
+    this.qvars.forEach((q, j) => { const v = similarity(it.e, q, m.focus, mu); if (v > bs) { bs = v; best = j; } });
+    const q = this.qvars[best], tok = it.e.length === PART;
+    const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]] : [["look", 0], ["parts", 1]];
+    const part = (p: number) => { const o = p * PART, sl = (a: Float32Array) => a.subarray(o, o + PART); return similarity(sl(it.e), sl(q), "whole", mu && sl(mu)); };
+    let s0 = -Infinity;
+    for (const q0 of this.q0vars) s0 = Math.max(s0, similarity(it.e, q0, m.focus, mu));
+    return { score: bs, parts: ps.map(([name, p]) => ({ name, value: part(p) })), variant: this.qlabels[best]?.key ?? "id",
+             example: this.qlabels[best]?.ex ?? -1, feedback: bs - s0, adapted: !!mu };
+  }
+
   /** Score the candidates `only` (all of them when not given, or when "adapt" moves the mean)
    * and rebuild the non-overlapping hit list. */
   private rank(only?: number[]) {
     const P = this.opt.patch, d3 = this.src.dims === 3, N = this.opt.topN ?? 60, m = this.opt.match ?? DEFAULT_MATCH;
-    let mu: Float32Array | undefined;
-    if (m.adapt && this.sum && this.embedded > 16) {
-      mu = new Float32Array(this.sum.length);
-      for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embedded;
-    }
+    const mu = this.adaptMean();
     for (const i of mu || !only ? this.items.keys() : only) {
       const it = this.items.get(i)!;
       let s = -Infinity;

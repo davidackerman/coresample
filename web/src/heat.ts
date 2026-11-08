@@ -16,6 +16,11 @@ const LUT = (() => {
   }
   return t;
 })();
+/** The ramp's colour at `t` (0-1). */
+export function heatColor(t: number): [number, number, number] {
+  const j = Math.round(Math.max(0, Math.min(1, t)) * 255) * 3;
+  return [LUT[j], LUT[j + 1], LUT[j + 2]];
+}
 /** The ramp as a CSS gradient (for the legend). */
 export const HEAT_GRADIENT = `linear-gradient(90deg, ${STOPS.map(([p, r, g, b]) => `rgb(${r},${g},${b}) ${p * 100}%`).join(", ")})`;
 

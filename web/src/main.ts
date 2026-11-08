@@ -11,7 +11,7 @@ import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { PrecomputedSource } from "./precomputed.ts";
-import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
+import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange, heatColor } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -79,7 +79,7 @@ async function warmUp() {
     const rate = n / ((performance.now() - t2) / 1000);
     const gpu = emb.provider === "webgpu";
     const detail = `DINOv2-small, ${emb.input} px input, ${rate.toFixed(0)} patches/s, ${((t2 - t) / 1000).toFixed(0)} s to load.`;
-    setModel(gpu ? "gpu" : "cpu", `${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
+    setModel(gpu ? "gpu" : "cpu", `DINOv2-small \u00b7 ${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
       gpu ? detail : detail + (window.isSecureContext
         ? " No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
         : " WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead."));
@@ -627,6 +627,7 @@ function clearSearch() {
   olv?.setHeat(null);
   heatCache = null;
   qDrawn = "";
+  maps.clear(); mapFor = null;
   setAdding(false);
   $<HTMLButtonElement>("addex").disabled = true;
   render();
@@ -724,6 +725,7 @@ function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
     requestAnimationFrame(() => { queued = false; if (search === me) { panel(me.state); render(); } });
   });
   search.start();
+  showWhyHelp();
 }
 
 function patchImage(pix: Uint8Array, P: number, C: number): ImageData {
@@ -778,6 +780,7 @@ function panel(st: State) {
   const lines = st.phase === "error" ? [st.message] : [
     st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(st.tilesTotal)} tiles` : st.message,
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
+    `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
     st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `read in the order of the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
                                                          : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
     st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " (a drawing and places)" : ""} (shift-click adds more): hits match ${combineText()}`
@@ -806,7 +809,7 @@ function panel(st: State) {
     if (!el) {
       el = document.createElement("div");
       el.className = "hit";
-      el.innerHTML = `<canvas title="go there"></canvas><div class="fb"><button data-g="1" title="good: more like this">&#10003;</button><button data-g="0" title="bad: fewer like this">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div>`;
+      el.innerHTML = `<canvas title="go there"></canvas><canvas class="map"></canvas><div class="fb"><button data-g="1" title="good: more like this">&#10003;</button><button data-g="0" title="bad: fewer like this">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div><div class="why"></div>`;
       box.appendChild(el);
       hitEls[k] = el;
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
@@ -818,13 +821,127 @@ function panel(st: State) {
     if (el.dataset.index !== String(h.index)) {
       el.dataset.index = String(h.index);
       drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
+      drawMap(el, h.index);
     }
     el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
     el.querySelector(".z")!.textContent = d.text + (src?.dims === 3 ? `, z ${num(h.center[0] * 2 ** st.working)}` : "");
+    if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
   hitEls.length = st.hits.length;
+  if (whyOn) fillMaps();
+}
+
+// ---------------------------------------------------------------------------------------
+// why: how each hit was matched. Under each hit, the parts of its score; over it, a map of
+// which parts of it look like the query (each of its 16 x 16 tokens from the 224 px model,
+// by cosine with the query's average token: the "parts" term of the score, in finer detail)
+// ---------------------------------------------------------------------------------------
+const modelName = () => `DINOv2-small (${emb.input === 224 ? "detailed, 224" : "fast, 112"} px)`;
+let whyOn = false;
+const maps = new Map<number, Float32Array>();  // hit index -> token cosines (g x g)
+let mapFor: Search | null = null, mapKey = "", qtok: Float32Array | null = null, mapRange: [number, number] = [0, 1], filling = false;
+const VARIANT: Record<string, string> = { "s-1": "at half size", "s+1": "at double size" };
+function whyText(s: Search, i: number): string {
+  const e = s.explain(i);
+  if (!e) return "";
+  const name = { look: "look", parts: "parts", centre: "centre", tokens: "tokens" };
+  const bits = [e.parts.map((p) => `${name[p.name]} ${p.value.toFixed(2)}`).join(" \u00b7 ")];
+  if (e.variant !== "id") bits.push(VARIANT[e.variant] ?? `turned (${e.variant.slice(1)})`);
+  if (e.example >= 0) bits.push(`closest: example ${e.example + 1}`);
+  if (Math.abs(e.feedback) >= 0.005) bits.push(`marks ${e.feedback > 0 ? "+" : ""}${e.feedback.toFixed(2)}`);
+  return bits.join(", ");
+}
+function showWhyHelp() {
+  const h = $("whyhelp");
+  h.hidden = !whyOn;
+  if (!whyOn || !search) return;
+  const m = search.opt.match, tok = search.opt.method === "tokens";
+  h.innerHTML = `Scored by <b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
+    + (tok ? "of the window's average token. "
+       : `the mean of <b>look</b> (the model's summary of the whole box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
+         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "the average of its 8 x 8 pieces"}). `)
+    + `Magenta: the pieces most like the query${emb.input === 224 ? "" : " (from the 224 px model, 88 MB the first time)"}. `
+    + `Cheap statistics only choose what is read first.`;
+}
+$("why").addEventListener("click", () => {
+  whyOn = !whyOn;
+  $("why").classList.toggle("on", whyOn);
+  document.body.classList.toggle("why", whyOn);
+  showWhyHelp();
+  if (search) panel(search.state);
+});
+/** The query's average token (the examples' averaged), from the 224 px model. */
+async function queryToken(s: Search): Promise<Float32Array> {
+  const P = s.state.patch, C = src!.channels;
+  const grids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })));
+  const D = grids[0].D, q = new Float32Array(D);
+  for (const g of grids) {
+    const m = new Float32Array(D);
+    for (let t = 0; t < g.g * g.g; t++) for (let d = 0; d < D; d++) m[d] += g.tokens[t * D + d];
+    const n = Math.hypot(...m) || 1;
+    for (let d = 0; d < D; d++) q[d] += m[d] / n;
+  }
+  const n = Math.hypot(...q) || 1;
+  return q.map((v) => v / n);
+}
+/** Match maps for the hits shown that have none yet, a few at a time. */
+async function fillMaps() {
+  const s = search;
+  if (!s || filling) return;
+  const key = `${s.state.examples}|${s.state.patch}|${emb.input}`;
+  if (mapFor !== s || mapKey !== key) { maps.clear(); mapFor = s; mapKey = key; qtok = null; }
+  filling = true;
+  try {
+    qtok ??= await queryToken(s);
+    for (;;) {
+      if (search !== s || !whyOn) return;
+      const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !maps.has(i)).slice(0, 8);
+      if (!todo.length) return;
+      const P = s.state.patch, C = src!.channels;
+      const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })));
+      grids.forEach((g, k) => {
+        const v = new Float32Array(g.g * g.g), n = g.g;
+        for (let t = 0; t < v.length; t++) { let d = 0; for (let j = 0; j < g.D; j++) d += g.tokens[t * g.D + j] * qtok![j]; v[t] = d; }
+        // softened (3 x 3, weights 1-2-1): single tokens are noisy
+        const b = new Float32Array(v.length);
+        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+          let sum = 0, w = 0;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const yy = y + dy, xx = x + dx;
+            if (yy < 0 || xx < 0 || yy >= n || xx >= n) continue;
+            const ww = (2 - Math.abs(dy)) * (2 - Math.abs(dx));
+            sum += ww * v[yy * n + xx]; w += ww;
+          }
+          b[y * n + x] = sum / w;
+        }
+        maps.set(todo[k], b);
+      });
+      // one colour scale for every hit: only the pieces above the 60th percentile of all so far
+      const all = [...maps.values()].flatMap((m) => Array.from(m)).sort((a, b) => a - b);
+      mapRange = [all[Math.floor(all.length * 0.6)], all[Math.floor(all.length * 0.995)]];
+      for (const el of hitEls) drawMap(el, Number(el.dataset.index));
+    }
+  } catch (e) { console.warn("why maps:", e); } finally { filling = false; }
+}
+function drawMap(el: HTMLElement, i: number) {
+  const cv = el.querySelector<HTMLCanvasElement>(".map"), m = maps.get(i);
+  if (!cv) return;
+  if (!m || mapFor !== search) { cv.getContext("2d")?.clearRect(0, 0, cv.width, cv.height); return; }
+  const g = Math.round(Math.sqrt(m.length)), img = new ImageData(g, g), [lo, hi] = mapRange;
+  for (let t = 0; t < m.length; t++) {
+    const f = Math.max(0, Math.min(1, (m[t] - lo) / Math.max(1e-6, hi - lo))), [r, gg, b] = heatColor(f);
+    img.data.set([r, gg, b, f > 0 ? Math.round(60 + 170 * f) : 0], 4 * t);
+  }
+  const tmp = document.createElement("canvas");
+  tmp.width = g; tmp.height = g;
+  tmp.getContext("2d")!.putImageData(img, 0, 0);
+  cv.width = 128; cv.height = 128;
+  const c2 = cv.getContext("2d")!;
+  c2.imageSmoothingEnabled = true; c2.imageSmoothingQuality = "high";
+  c2.clearRect(0, 0, 128, 128);
+  c2.drawImage(tmp, 0, 0, 128, 128);
 }
 
 // ---------------------------------------------------------------------------------------

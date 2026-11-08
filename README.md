@@ -75,7 +75,15 @@ forces it on a CPU, where it is slow).
 ### How matching works
 
 The number under each hit is the similarity of its DINOv2 embedding to your click's (1 =
-identical). The controls under **Options** choose how that is computed. Tests 5 and 7 measured
+identical): the box is resized to 112 px and DINOv2-small turns it into a summary token (CLS)
+and 8 x 8 tokens for its pieces; the score is the mean of two cosines, **look** (CLS: the box as
+a whole) and **parts** (the average of the piece tokens: what is in it). **why**, above the
+hits, shows this per hit (the two parts, the rotation, size or example that matched best, what
+your good/bad marks added) and lays a map over each thumbnail of which pieces look like the
+query (each of its 16 x 16 tokens from the 224 px model, by cosine with the query's average
+token, softened; the brightest 40% coloured). The header names the model; it is DINOv2-small in
+every mode for now (test 6 compares others). The cheap statistics and the rough pass only decide
+what is read first; this score alone ranks the hits. The controls under **Options** choose how that is computed. Tests 5 and 7 measured
 each on labelled EM: 30 queries per target, the same candidates and queries for every option,
 differences paired per query (`results/RESULTS.md` has the tables):
 

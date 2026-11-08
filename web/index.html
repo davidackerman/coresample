@@ -116,6 +116,14 @@
   .hit .cap b { color: var(--text); font-weight: 500; }
   .hit .z { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .hit .z:empty { display: none; }
+  .hit canvas.map { position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 1; border-radius: 6px; pointer-events: none; display: none; image-rendering: auto; border: 2px solid transparent; background: transparent; }
+  body.why .hit canvas.map { display: block; }
+  .hit .why { display: none; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.35; }
+  body.why .hit .why { display: block; }
+  button.tog { padding: 1px 8px; font-size: 11px; color: var(--dim); }
+  button.tog.on { color: var(--text); border-color: #d55181; background: #d5518122; }
+  #whyhelp { margin: 8px 14px 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim); background: var(--raise); border: 1px solid var(--line); border-radius: 8px; }
+  #whyhelp[hidden] { display: none; } #whyhelp b { color: var(--text); font-weight: 600; }
   .empty { color: var(--faint); grid-column: 1 / -1; font-size: 12px; }
   #where { width: 100%; display: block; cursor: pointer; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--faint); }
@@ -274,7 +282,9 @@
       </div>
     </div>
     <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
-      <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div>
+      <div class="row" style="gap:6px"><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
+      <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
+    <div id="whyhelp" hidden></div>
     <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one to mark it good or bad: the list re-ranks.</div></div>
   </aside>
 </main>
