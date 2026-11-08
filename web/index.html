@@ -122,12 +122,13 @@
   .hit .z { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
   .hit .z:empty { display: none; }
   .hit canvas.map { position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 1; border-radius: 6px; pointer-events: none; display: none; image-rendering: auto; border: 2px solid transparent; background: transparent; }
-  body.why .hit canvas.map { display: block; }
+  body.why .hit canvas.map, body.match .hit canvas.map { display: block; }
+  body.match #qmap { display: block; opacity: 1; }
+  #matchhelp { padding: 0 14px 8px; font-size: 11px; color: var(--dim); line-height: 1.4; }
   body.why.parts .hit canvas.map, #qmap { opacity: .7; }
   #qbox { position: relative; flex: none; width: 64px; height: 64px; }
   #qmap { position: absolute; left: 0; top: 0; width: 64px; height: 64px; border: 2px solid transparent; border-radius: 6px; pointer-events: none; display: none; }
   body.why.parts #qmap { display: block; }
-  #whymode { margin-bottom: 6px; }
   .hit .why { display: none; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.35; }
   body.why .hit .why { display: block; }
   button.tog { padding: 1px 8px; font-size: 11px; color: var(--dim); }
@@ -292,13 +293,13 @@
       </div>
     </div>
     <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
-      <div class="row" style="gap:6px"><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
+      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where each hit matches what you clicked: the matching parts lit, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
       <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
     <div id="marks" hidden><span id="markstext"></span> · <button id="undomark" class="link" title="Undo the last mark">undo last</button> · <button id="clearmarks" class="link" title="Undo every mark: the query goes back to the examples alone">clear marks</button></div>
+    <div id="matchhelp" hidden>Lit: the parts of each hit most like what you clicked (the centre of the query, minus what everything shares); dimmed: the rest. On the query: the part being matched.</div>
     <div id="whyhelp" hidden>
-      <div class="seg small" id="whymode" title="How to colour the hits"><button data-m="parts" class="on">matching parts</button><button data-m="alike">where alike</button></div>
       <div id="whytext"></div></div>
-    <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this (hidden). The query moves, the list re-ranks and the reads follow.</div></div>
+    <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div></div>
   </aside>
 </main>
 <script type="module" src="./src/main.ts"></script>

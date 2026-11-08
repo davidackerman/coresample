@@ -11,7 +11,7 @@ import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { PrecomputedSource } from "./precomputed.ts";
-import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange, heatColor } from "./heat.ts";
+import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -634,7 +634,7 @@ function clearSearch() {
   search = null;
   hitEls = [];
   $("marks").hidden = true;
-  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this (hidden). The query moves, the list re-ranks and the reads follow.</div>';
+  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div>';
   $("hitcount").textContent = "";
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = true; stopBtn.textContent = "Pause";
@@ -648,7 +648,7 @@ function clearSearch() {
   ngv?.setHeat(null);
   heatCache = null;
   qDrawn = "";
-  maps.clear(); toks.clear(); mapFor = null; pca = null; qgrids = null;
+  maps.clear(); toks.clear(); mapFor = null; pca = null; qgrids = null; qmaps = [];
   $<HTMLCanvasElement>("qmap").width = 128;
   setAdding(false);
   $<HTMLButtonElement>("addex").disabled = true;
@@ -878,8 +878,8 @@ function panel(st: State) {
         boxesNow = true;  // the boxes follow the re-ranked list at once
         if (good && search.markOf(i) === "good") { search.unmark(i); toast("Mark undone."); return; }
         search.mark(i, good);
-        toast(good ? "✓ More like this: the query moved toward it, so the hits are scored again and the tiles still to read favour places like it. Click ✓ again to undo."
-                   : "✗ Fewer like this: hidden, and the query moved away from it. Undo it under Hits.");
+        toast(good ? "✓ More like this: hits re-ranked and reads steered toward it. Click ✓ again to undo."
+                   : "✗ Fewer like this: hidden, hits re-ranked away from it. Undo under Hits.");
       }));
     }
     if (el.dataset.index !== String(h.index)) {
@@ -898,7 +898,7 @@ function panel(st: State) {
   $("marks").hidden = !(mk.good + mk.bad);
   $("markstext").textContent = [mk.good ? `${mk.good} ✓ more like this` : "", mk.bad ? `${mk.bad} ✗ fewer like this (hidden)` : ""].filter(Boolean).join(", ");
   hitEls.length = st.hits.length;
-  if (whyOn) fillMaps();
+  if (whyOn || matchOn) fillMaps();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -908,15 +908,18 @@ function panel(st: State) {
 // ---------------------------------------------------------------------------------------
 const modelName = () => `DINOv2-small (${emb.input === 224 ? "detailed, 224" : "fast, 112"} px)`;
 let whyOn = false;
-/** How the hits are coloured: "parts", the model's view of each piece as a colour (the three
- * main directions of the tokens of the query and the hits, as red, green and blue), so pieces
- * it sees alike share a colour in the query and in every hit; "alike", magenta where a hit's
- * pieces are like the query's average piece. */
-let whyMode: "parts" | "alike" = "parts";
-const maps = new Map<number, Float32Array>();  // hit index -> token cosines with the query's average token (g x g)
+/** match: a spotlight on each hit where it matches what was clicked (the rest dimmed), and on
+ * the query, the part being matched. Each piece (16 x 16 per box, 224 px model) is scored by
+ * its cosine with the query's centre-weighted piece after both lose the typical piece of the
+ * query and the hits (their mean): what they share everywhere, such as background, drops out
+ * and what is distinctive about the clicked thing stays. Each thumbnail on its own scale: its
+ * best-matching parts lit (how good the hit is overall is the score under it). */
+let matchOn = false;
+const maps = new Map<number, Float32Array>();  // hit index -> how each of its pieces matches the clicked thing (g x g, softened)
 const toks = new Map<number, Float32Array>();  // hit index -> its unit tokens (g x g x D)
-let mapFor: Search | null = null, mapKey = "", qgrids: TokenGrid[] | null = null, qtok: Float32Array | null = null;
-let mapRange: [number, number] = [0, 1], filling = false;
+let mapFor: Search | null = null, mapKey = "", qgrids: TokenGrid[] | null = null, qtok: Float32Array | null = null, qcen: Float32Array | null = null;
+let filling = false;
+let qmaps: Float32Array[] = [];  // the same for each example's own pieces
 let pca: { mean: Float32Array; comps: Float32Array[]; lo: number[]; hi: number[] } | null = null;
 const VARIANT: Record<string, string> = { "s-1": "at half size", "s+1": "at double size" };
 function whyText(s: Search, i: number): string {
@@ -931,17 +934,15 @@ function whyText(s: Search, i: number): string {
 }
 function showWhyHelp() {
   $("whyhelp").hidden = !whyOn;
-  document.body.classList.toggle("parts", whyOn && whyMode === "parts");
-  for (const b of $("whymode").querySelectorAll("button")) b.classList.toggle("on", b.dataset.m === whyMode);
+  document.body.classList.toggle("parts", whyOn && !matchOn);
+  $("matchhelp").hidden = !matchOn;
   if (!whyOn || !search) return;
   const m = search.opt.match, tok = search.opt.method === "tokens";
   $("whytext").innerHTML = `Scored by <b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (tok ? "of the window's average token. "
        : `the mean of <b>look</b> (the model's summary of the whole box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "the average of its 8 x 8 pieces"}). `)
-    + (whyMode === "parts"
-      ? "Colours: how the model sees each piece; pieces it sees alike have the same colour, in the query and in every hit, so a hit's colours show which of its parts match which parts of the query. "
-      : "Magenta: the pieces most like the query's average piece. ")
+    + (matchOn ? "" : "Colours: how the model sees each piece; pieces it sees alike have the same colour, in the query and in every hit, so a hit's colours show which of its parts match which parts of the query. ")
     + (emb.input === 224 ? "" : "(From the 224 px model: 88 MB the first time.) ")
     + "Cheap statistics only choose what is read first.";
 }
@@ -953,11 +954,12 @@ $("why").addEventListener("click", () => {
   if (search) panel(search.state);
   drawQueryMap();
 });
-$("whymode").addEventListener("click", (e) => {
-  const m = (e.target as HTMLElement).closest("button")?.dataset.m as typeof whyMode | undefined;
-  if (!m) return;
-  whyMode = m;
+$("match").addEventListener("click", () => {
+  matchOn = !matchOn;
+  $("match").classList.toggle("on", matchOn);
+  document.body.classList.toggle("match", matchOn);
   showWhyHelp();
+  if (search) panel(search.state);
   for (const el of hitEls) drawMap(el, Number(el.dataset.index));
   drawQueryMap();
 });
@@ -1043,6 +1045,19 @@ async function queryTokens(s: Search) {
   }
   const n = Math.hypot(...q) || 1;
   qtok = q.map((v) => v / n);
+  // the centre-weighted average piece (Gaussian, sigma a quarter of the grid, as the "centre" embedding)
+  const c = new Float32Array(D);
+  for (const g of qgrids) {
+    const m = new Float32Array(D), sg = g.g / 4, mid = (g.g - 1) / 2;
+    for (let y = 0; y < g.g; y++) for (let x = 0; x < g.g; x++) {
+      const w = Math.exp(-((y - mid) ** 2 + (x - mid) ** 2) / (2 * sg * sg)), t = y * g.g + x;
+      for (let d = 0; d < D; d++) m[d] += w * g.tokens[t * D + d];
+    }
+    const k = Math.hypot(...m) || 1;
+    for (let d = 0; d < D; d++) c[d] += m[d] / k;
+  }
+  const kc = Math.hypot(...c) || 1;
+  qcen = c.map((v) => v / kc);
 }
 /** Maps for the hits shown that have none yet, a few at a time; the colours' directions are
  * fitted once, on the query and the first hits, so colours stay put as more arrive. */
@@ -1050,29 +1065,52 @@ async function fillMaps() {
   const s = search;
   if (!s || filling) return;
   const key = `${s.state.examples}|${s.state.patch}|${emb.input}`;
-  if (mapFor !== s || mapKey !== key) { maps.clear(); toks.clear(); mapFor = s; mapKey = key; qgrids = null; qtok = null; pca = null; }
+  if (mapFor !== s || mapKey !== key) { maps.clear(); toks.clear(); mapFor = s; mapKey = key; qgrids = null; qtok = null; qcen = null; qmaps = []; pca = null; }
   filling = true;
   try {
     if (!qgrids) { await queryTokens(s); drawQueryMap(); }
     for (;;) {
-      if (search !== s || !whyOn) return;
-      const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !maps.has(i)).slice(0, 8);
+      if (search !== s || !(whyOn || matchOn)) return;
+      const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !toks.has(i)).slice(0, 8);
       if (!todo.length) return;
       const P = s.state.patch, C = src!.channels;
       const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })));
-      grids.forEach((g, k) => {
-        const v = new Float32Array(g.g * g.g);
-        for (let t = 0; t < v.length; t++) { let d = 0; for (let j = 0; j < g.D; j++) d += g.tokens[t * g.D + j] * qtok![j]; v[t] = d; }
-        maps.set(todo[k], soften(v, g.g));
-        toks.set(todo[k], g.tokens);
-      });
+      grids.forEach((g, k) => toks.set(todo[k], g.tokens));
       if (!pca) { pca = fitPca([...qgrids!.map((g) => g.tokens), ...toks.values()], grids[0].D); drawQueryMap(); }
-      // one scale for every hit's "alike" map: only the pieces above the 60th percentile of all so far
-      const all = [...maps.values()].flatMap((m) => Array.from(m)).sort((a, b) => a - b);
-      mapRange = [all[Math.floor(all.length * 0.6)], all[Math.floor(all.length * 0.995)]];
+      matchMaps();
       for (const el of hitEls) drawMap(el, Number(el.dataset.index));
+      drawQueryMap();
     }
   } catch (e) { console.warn("why maps:", e); } finally { filling = false; }
+}
+/** Every map again (the typical piece changes as hits arrive; cheap: one cosine per piece). */
+function matchMaps() {
+  if (!qgrids || !qcen) return;
+  const D = qgrids[0].D, mu = new Float32Array(D);
+  let n = 0;
+  for (const tk of [...qgrids.map((g) => g.tokens), ...toks.values()]) {
+    for (let i = 0; i < tk.length; i++) mu[i % D] += tk[i];
+    n += tk.length / D;
+  }
+  for (let d = 0; d < D; d++) mu[d] /= Math.max(1, n);
+  const c = qcen.map((v, d) => v - mu[d]), cn = Math.hypot(...c) || 1;
+  const score = (tk: Float32Array, g: number) => {
+    const v = new Float32Array(g * g);
+    for (let t = 0; t < v.length; t++) {
+      let dot = 0, nn = 0;
+      for (let d = 0; d < D; d++) { const x = tk[t * D + d] - mu[d]; dot += x * c[d]; nn += x * x; }
+      v[t] = dot / (Math.sqrt(nn) * cn || 1);
+    }
+    return soften(v, g);
+  };
+  for (const [i, tk] of toks) maps.set(i, score(tk, Math.round(Math.sqrt(tk.length / D))));
+  qmaps = qgrids.map((g) => score(g.tokens, g.g));
+}
+/** The spotlight over one map, on its own scale: clear on its best-matching parts (from its
+ * 95th percentile up), darker the less a part matches, darkest below its median. */
+function spotlight(m: Float32Array): (t: number) => [number, number, number, number] {
+  const s = Array.from(m).sort((a, b) => a - b), lo = s[Math.floor(s.length * 0.5)], hi = s[Math.floor(s.length * 0.95)];
+  return (t) => [0, 0, 0, Math.round(210 * (1 - Math.max(0, Math.min(1, (m[t] - lo) / Math.max(1e-6, hi - lo)))))];
 }
 function drawMap(el: HTMLElement, i: number) {
   const cv = el.querySelector<HTMLCanvasElement>(".map"), m = maps.get(i), tk = toks.get(i);
@@ -1080,24 +1118,26 @@ function drawMap(el: HTMLElement, i: number) {
   cv.width = 128; cv.height = 128;  // (cleared)
   if (!m || mapFor !== search) return;
   const g = Math.round(Math.sqrt(m.length));
-  if (whyMode === "parts") {
+  if (!matchOn) {
     if (!pca || !tk) return;
     const col = pcaColours(tk, g, tk.length / (g * g));
     paintMap(cv, g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255]);
     return;
   }
-  const [lo, hi] = mapRange;
-  paintMap(cv, g, (t) => {
-    const f = Math.max(0, Math.min(1, (m[t] - lo) / Math.max(1e-6, hi - lo))), [r, gg, b] = heatColor(f);
-    return [r, gg, b, f > 0 ? Math.round(60 + 170 * f) : 0];
-  });
+  paintMap(cv, g, spotlight(m));
 }
-/** The query's pieces in the same colours, over its thumbnail (each example in its cell). */
+/** Over the query's thumbnail (each example in its cell): with match on, the spotlight on the part
+ * being matched; with why, its pieces in the hits' colours. */
 function drawQueryMap() {
   const cv = $<HTMLCanvasElement>("qmap");
   cv.width = 128; cv.height = 128;
-  if (!whyOn || whyMode !== "parts" || !pca || !qgrids || mapFor !== search) return;
+  if (!qgrids || mapFor !== search) return;
   const cells = mosaic(qgrids.length, 128);  // laid out as the examples are (drawExamples)
+  if (matchOn) {
+    qmaps.forEach((v, k) => paintMap(cv, qgrids![k].g, spotlight(v), cells[k]));
+    return;
+  }
+  if (!whyOn || !pca) return;
   qgrids.forEach((g, k) => {
     const col = pcaColours(g.tokens, g.g, g.D);
     paintMap(cv, g.g, (t) => [255 * col[3 * t], 255 * col[3 * t + 1], 255 * col[3 * t + 2], 255], cells[k]);
