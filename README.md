@@ -18,8 +18,14 @@ Pick a dataset (the menu lists them by size, type or name, and takes your own da
 pan, scroll to zoom, then click something: hits stream into the right panel, best first. The
 search keeps going, best-ranked tiles first, until it has read the whole region or you press
 **Pause** (**Resume** carries on); the first hits usually come within seconds and later reads
-only add to them. Click a thumbnail to go there; hover one to mark it good or bad, which
-re-ranks the list. The search runs at the zoom level you are looking at, so zoom until the
+only add to them. The progress line is the share of the searched area (Options > region;
+auto = the whole dataset whenever the quick first pass can cover it) read at full detail so far,
+and the **Where it has looked** map shows it: the area from above and, for a volume, from the
+side, with the tiles read, the hits, the query and your view (click it to go there). Click a
+thumbnail to go there; hover one to mark it good or bad, which re-ranks the list. Each hit shows
+how far it is from the query; the list can be ordered best first, nearest or farthest, and
+Options > spacing leaves out hits within 2-25 boxes of the query (its own surroundings are the
+easy matches) or spreads hits 2-10 boxes apart. The search runs at the zoom level you are looking at, so zoom until the
 thing you care about is clear, then click. However long it reads, memory stays bounded: it
 keeps the best 3,000 candidates (and any you marked) for re-ranking.
 

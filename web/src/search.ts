@@ -25,6 +25,7 @@ export interface Options {
   maxCoarseVoxels?: number;
   topN?: number;
   keep?: number;              // candidates kept for re-ranking (the rest are dropped as read)
+  spread?: Spread;
   method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
@@ -44,6 +45,11 @@ export interface MatchOptions {
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
 }
+/** How far apart hits must be, in boxes (patch sides): from the query, and from each other
+ * (1 = no overlap). */
+export interface Spread { fromQuery: number; between: number }
+export const DEFAULT_SPREAD: Spread = { fromQuery: 0, between: 1 };
+
 /** How candidates are embedded. "patches": every patch of the stride grid through the model on
  * its own (test 5's baseline). "tokens": the Mars CTX explorer's way (test 7): each tile is cut
  * into crops twice the patch size, each crop goes through the model once, and every window of
@@ -107,6 +113,9 @@ export class Search {
   }
 
   on(f: (s: State) => void) { this.listeners.push(f); }
+  /** The searched region (working-level voxels) and the tiles read so far (tile indices). */
+  get regionBox(): [Vec3, Vec3] { return this.region; }
+  readTiles(): Vec3[] { return this.order.slice(0, this.next); }
   private emit(patch: Partial<State>) {
     this.state = { ...this.state, ...patch, bytes: this.src.bytesRead - this.bytes0, seconds: (performance.now() - this.t0) / 1000 };
     for (const f of this.listeners) f(this.state);
@@ -468,6 +477,13 @@ export class Search {
     this.emit({});
   }
 
+  /** New spacing rules: re-rank at once (nothing is re-embedded). */
+  setSpread(sp: Spread) {
+    this.opt.spread = sp;
+    this.rank();
+    this.emit({});
+  }
+
   /** Mark hit (patch index) good or bad and re-rank everything embedded so far. */
   mark(index: number, good: boolean) {
     (good ? this.good : this.bad).push(index);
@@ -515,9 +531,12 @@ export class Search {
     const scored = [...this.items.entries()].sort((a, b) => b[1].s - a[1].s);
     const hits: Hit[] = [];
     const bad = new Set(this.bad);
+    const sp = this.opt.spread ?? DEFAULT_SPREAD, q = this.query, gap = sp.between * P, far = sp.fromQuery * P;
     for (const [i, { s, c }] of scored) {
       if (bad.has(i)) continue;
-      if (hits.every((h) => Math.abs(h.center[1] - c[1]) >= P || Math.abs(h.center[2] - c[2]) >= P || (d3 && Math.abs(h.center[0] - c[0]) >= P))) {
+      // at least `fromQuery` boxes from the query (straight-line, in voxels of the search level)
+      if (far > 0 && Math.hypot(d3 ? c[0] - q[0] : 0, c[1] - q[1], c[2] - q[2]) < far) continue;
+      if (hits.every((h) => Math.abs(h.center[1] - c[1]) >= gap || Math.abs(h.center[2] - c[2]) >= gap || (d3 && Math.abs(h.center[0] - c[0]) >= gap))) {
         hits.push({ center: c, score: s, index: i });
         if (hits.length >= N) break;
       }
