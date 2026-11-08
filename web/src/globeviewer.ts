@@ -79,7 +79,9 @@ export class GlobeViewer {
     tiles.requestImage = async (x: number, y: number, level: number) => {
       const b = await this.src.blob(level, x, y);
       if (!b) throw new Error(`no tile ${level}/${y}/${x}`);
-      return createImageBitmap(b);
+      // flipped vertically, as Cesium makes its own imagery bitmaps (WebGL cannot flip a bitmap
+      // on upload): unflipped, every tile was drawn upside down
+      return createImageBitmap(b, { imageOrientation: "flipY" });
     };
     this.viewer.imageryLayers.addImageryProvider(tiles);
     this.goTo(init.cx, init.cy, init.scale, false);
