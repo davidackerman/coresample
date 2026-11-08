@@ -66,12 +66,13 @@ jobs:
         id: neuroglancer
         with:
           path: web/public/ng
-          key: neuroglancer-${{ env.NEUROGLANCER }}
+          key: neuroglancer-${{ env.NEUROGLANCER }}-${{ hashFiles('web/scripts/patch_neuroglancer.sh') }}
       - name: Build Neuroglancer
         if: steps.neuroglancer.outputs.cache-hit != 'true'
         run: |
           git clone -q --depth 1 --branch "$NEUROGLANCER" https://github.com/google/neuroglancer "$RUNNER_TEMP/ng"
           cd "$RUNNER_TEMP/ng"
+          bash "$GITHUB_WORKSPACE/web/scripts/patch_neuroglancer.sh"
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           npm run build -- --output="$GITHUB_WORKSPACE/web/public/ng"
           find "$GITHUB_WORKSPACE/web/public/ng" -name '*.map' -delete
