@@ -28,21 +28,26 @@ your click (the number under each thumbnail). Nothing is precomputed or uploaded
 ### How matching works
 
 The number under each hit is the similarity of its DINOv2 embedding to your click's (1 =
-identical). The controls on the **match** row choose how that is computed; test 5
-(`test5_matching.py`, labelled EM, 10 queries per target) measured each:
+identical). The controls on the **match** row choose how that is computed. Test 5
+(`test5_matching.py`) measured each on labelled EM, 10 queries per run, the same candidates for
+every variant (top-10 precision; about +/-0.1 is noise at 10 queries):
 
-| control | what it does | measured |
-|---|---|---|
-| **detailed** vs fast | 224 px model input instead of 112 (4x the compute) | mito top-10 precision 0.47 -> 0.60-0.62; the default on a GPU |
-| **center object** vs whole patch | compare the centre-weighted part of the patch (where you clicked) instead of all of it | as good or slightly better (0.62 vs 0.60 at 224); the default |
-| **any rotation** | also match your patch rotated/mirrored 8 ways | no gain on EM; for things with no fixed orientation (craters, galaxies) |
-| **any size** | also match your patch at half and double the field | no gain on EM; for objects that come in many sizes |
-| **adapt** | compare after removing what all patches here share | small gain on mito at 112 px (0.47 -> 0.51) |
-| good / bad | re-rank toward the good hits, away from the bad | small (about +0.03) |
+| control | what it does | mito, subvolume | mito, whole volume | vesicles |
+|---|---|---|---|---|
+| (default) fast, whole patch | 112 px input, CLS + mean of tokens | 0.47 | 0.47 | 0.85 |
+| **detailed** | 224 px input (4x the compute) | 0.60 | 0.37 | not run |
+| **center object** | the centre-weighted tokens (where you clicked) | 0.46 | 0.50 | 0.76 |
+| **any rotation** | also your patch rotated/mirrored 8 ways | 0.48 | 0.48 | 0.84 |
+| **any size** | also your patch at half and double the field | 0.44 | 0.44 | 0.80 |
+| **adapt** | compare after removing what all patches share (center object) | 0.51 | 0.47 | 0.80 |
+| good / bad | re-rank toward good hits, away from bad | +0.03 | +0.03 | +0.04 |
 
-The cheap scan that decides which tiles to read first never sees the model; these options only
-change how what has been read is ranked, so changing them re-ranks instantly ("detailed"
-re-embeds, so it searches again).
+No option beat the default consistently on EM, so the default is the baseline and the rest are
+there to try: rotation for things with no fixed orientation (craters, galaxies), size for objects
+that come in many sizes, center when the surroundings vary. A larger run (30 queries) is in
+`results/RESULTS.md` when done. The cheap scan that decides which tiles to read never sees the
+model; these options only re-rank what has been read, instantly ("detailed" re-embeds, so it
+searches again).
 
 Ways to load data:
 

@@ -75,12 +75,7 @@ async function warmUp() {
     modelEl.textContent = `model failed: ${(e as Error).message}`;
   }
 }
-setTimeout(async () => {  // after the viewer and first data have had the network
-  await warmUp();
-  // more detail where there is a GPU for it (test 5: 224 px input, about +30% top-10 precision)
-  const det = $<HTMLSelectElement>("detail");
-  if (emb.provider === "webgpu" && det.dataset.touched !== "1") { det.value = "224"; emb.input = 224; await warmUp(); }
-}, 2500);
+setTimeout(warmUp, 2500);  // after the viewer and first data have had the network
 
 // ---------------------------------------------------------------------------------------
 // the cheap scan in a worker

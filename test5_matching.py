@@ -163,7 +163,7 @@ def run(name, cfg, args, data, log, full=False):
     per = {}
     base32 = {k: C[k].astype(np.float32) for k in ("cls", "mean", "center")}
     prep = {}
-    for pool in POOLS:  # pooled candidates, their mean and a PCA whitening, from the candidates alone (no labels)
+    for pool in args.pools:  # pooled candidates, their mean and a PCA whitening, from the candidates alone (no labels)
         E = pooled(base32, pool)
         mu = E.mean(0)
         Ec = E[::max(1, len(E) // 20000)] - mu
@@ -173,19 +173,27 @@ def run(name, cfg, args, data, log, full=False):
         rots, scs = query_patches(data, W, P, qc)
         Qr, Qs = m112(rots), m112(scs)
         notself = ~np.all(np.abs(gc - qc) < P / 2, 1)
-        for pool in POOLS:
+        for pool in args.pools:
             E, mu, white = prep[pool]
             qr, qs = pooled(Qr, pool), pooled(Qs, pool)
             qsets = {"single": qr[:1], "rot-max": qr, "rot-mean": unit(qr.mean(0, keepdims=True)),
                      "scale-max": qs, "rot+scale-max": np.concatenate([qr, qs[1:]])}
-            for qm, sim in itertools.product(QMODES, SIMS):
+            for qm, sim in itertools.product(args.qmodes, args.sims):
                 s = scores(E, qsets[qm], sim, mu, white)
                 per.setdefault((pool, qm, sim), []).append(grade(gc, s, notself, cents, P))
         log(f"[{key} q{qi}] done")
 
+    def stats(gl):  # mean and standard error over queries
+        out = {}
+        for k in ("p@10", "p@25", "r@100"):
+            v = np.array([g[k] for g in gl])
+            out[k] = float(v.mean())
+            out[k + "_se"] = float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else 0.0
+            out[k + "_per_query"] = [float(x) for x in v]
+        return out
+
     for (pool, qm, sim), gl in per.items():
-        res["rows"].append({"pool": pool, "query": qm, "sim": sim, "input": 112,
-                            **{k: float(np.mean([g[k] for g in gl])) for k in ("p@10", "p@25", "r@100")}})
+        res["rows"].append({"pool": pool, "query": qm, "sim": sim, "input": 112, **stats(gl)})
 
     # feedback: Rocchio (the page's current rule) vs good hits as extra queries (max), on cls+mean cosine
     E = pooled({k: C[k].astype(np.float32) for k in ("cls", "mean", "center")}, "cls+mean")
@@ -208,7 +216,7 @@ def run(name, cfg, args, data, log, full=False):
         fb["multi-max"].append(grade(gc, (E @ unit(np.concatenate([q, E[good]])).T).max(1), keep, cents, P))
     res["feedback"] = {k: {m: float(np.mean([g[m] for g in v])) for m in ("p@10", "p@25", "r@100")} for k, v in fb.items()}
 
-    if name == "mito":  # input 224 (4x the compute), and token max-sim
+    if args.size224 or name == "mito":  # input 224 (4x the compute), and token max-sim
         m224 = Model(224)
         C2 = embed_all(m224, "224")
         for pool in ("cls+mean", "cls+center", "center"):
@@ -221,9 +229,8 @@ def run(name, cfg, args, data, log, full=False):
                 gl["single"].append(grade(gc, (E @ qr[:1].T).max(1), notself, cents, P))
                 gl["rot-max"].append(grade(gc, (E @ qr.T).max(1), notself, cents, P))
             for qm, v in gl.items():
-                res["rows"].append({"pool": pool, "query": qm, "sim": "cosine", "input": 224,
-                                    **{k: float(np.mean([g[k] for g in v])) for k in ("p@10", "p@25", "r@100")}})
-        if not full:
+                res["rows"].append({"pool": pool, "query": qm, "sim": "cosine", "input": 224, **stats(v)})
+        if not full and not args.no_tokens:
             mt = Model(112, keep_tokens=True)
             CT = embed_all(mt, "112tok")
             T = CT["tokens"].astype(np.float32)  # (n, 64, 384), unit tokens
@@ -234,15 +241,15 @@ def run(name, cfg, args, data, log, full=False):
                 notself = ~np.all(np.abs(gc - qc) < P / 2, 1)
                 s = np.einsum("ntd,qd->ntq", T, qt).max(1).mean(1)  # each query token's best match, averaged
                 gl.append(grade(gc, s, notself, cents, P))
-            res["rows"].append({"pool": "tokens", "query": "single", "sim": "max-sim", "input": 112,
-                                **{k: float(np.mean([g[k] for g in gl])) for k in ("p@10", "p@25", "r@100")}})
+            res["rows"].append({"pool": "tokens", "query": "single", "sim": "max-sim", "input": 112, **stats(gl)})
 
-    (RESULTS / f"test5_{key}.json").write_text(json.dumps(res, indent=1))
+    (RESULTS / f"test5_{key}{args.tag}.json").write_text(json.dumps(res, indent=1))
     rows = sorted(res["rows"], key=lambda r: -(r["p@10"] + r["p@25"]))
     base = next(r for r in res["rows"] if r["pool"] == "cls+mean" and r["query"] == "single" and r["sim"] == "cosine" and r["input"] == 112)
-    log(f"== {key}: current (cls+mean, single, cosine, 112): p@10 {base['p@10']:.2f} p@25 {base['p@25']:.2f} r@100 {base['r@100']:.3f}")
-    for r in rows[:8]:
-        log(f"   {r['pool']:<10} {r['query']:<13} {r['sim']:<9} {r['input']}: p@10 {r['p@10']:.2f} p@25 {r['p@25']:.2f} r@100 {r['r@100']:.3f}")
+    se = lambda r, k: f"+/-{r[k + '_se']:.2f}" if k + "_se" in r else ""
+    log(f"== {key}{args.tag}: current (cls+mean, single, cosine, 112): p@10 {base['p@10']:.2f}{se(base, 'p@10')} p@25 {base['p@25']:.2f}{se(base, 'p@25')} r@100 {base['r@100']:.3f}")
+    for r in rows[:10]:
+        log(f"   {r['pool']:<10} {r['query']:<13} {r['sim']:<9} {r['input']}: p@10 {r['p@10']:.2f}{se(r, 'p@10')} p@25 {r['p@25']:.2f}{se(r, 'p@25')} r@100 {r['r@100']:.3f}")
     log(f"   feedback: " + " | ".join(f"{k} p@10 {v['p@10']:.2f} p@25 {v['p@25']:.2f}" for k, v in res["feedback"].items()))
 
 
@@ -252,6 +259,12 @@ def main():
     ap.add_argument("--queries", type=int, default=10)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--full-mito", action="store_true")
+    ap.add_argument("--pools", nargs="*", default=POOLS)
+    ap.add_argument("--qmodes", nargs="*", default=QMODES)
+    ap.add_argument("--sims", nargs="*", default=SIMS)
+    ap.add_argument("--size224", action="store_true", help="the 224 px comparison for every target")
+    ap.add_argument("--no-tokens", action="store_true")
+    ap.add_argument("--tag", default="", help="appended to result file names")
     args = ap.parse_args()
     logf = open(RESULTS / "test5.log", "a")
 
