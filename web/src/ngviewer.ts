@@ -33,7 +33,8 @@ export class NgViewer {
   private off: Vec3;
   constructor(private container: HTMLElement, private src: NgSource, init: { cx: number; cy: number; z: number; scale: number },
               private hover: HTMLCanvasElement,
-              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void },
+              private on: { click: (fz: number, fy: number, fx: number) => void; hoverBox: () => { side: number; text: string } | null; moved: () => void;
+                            pointer?: (fx: number, fy: number, fz: number) => void },
               layers: Layer[] = []) {
     this.hoverCtx = hover.getContext("2d")!;
     this.off = src.ngOffset ?? [0, 0, 0];
@@ -106,7 +107,12 @@ export class NgViewer {
       setTimeout(() => this.goTo(init.cx, init.cy, init.z, this.initScale), 1500);  // in case the viewer fits again
     }
     const doc = this.iframe.contentDocument!;
-    doc.addEventListener("mousemove", (e) => { this.mouse = { x: e.clientX, y: e.clientY }; this.drawHover(); }, true);
+    doc.addEventListener("mousemove", (e) => {
+      this.mouse = { x: e.clientX, y: e.clientY };
+      this.drawHover();
+      if (this.on.pointer) { const p = this.mousePosition(e.clientX, e.clientY); this.on.pointer(p[2], p[1], p[0]); }
+    }, true);
+    try { this.viewer.position.changed.add(() => this.on.moved()); } catch { /* older viewers */ }  // panned or moved in z
     doc.addEventListener("mouseleave", () => { this.mouse = null; this.drawHover(); }, true);
     doc.addEventListener("wheel", () => setTimeout(() => { this.drawHover(); this.on.moved(); }, 0), true);
     doc.addEventListener("mousedown", (e) => { if (e.button === 0) this.down = { x: e.clientX, y: e.clientY }; }, true);

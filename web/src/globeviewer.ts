@@ -42,7 +42,8 @@ export class GlobeViewer {
   ready: Promise<void>;
 
   constructor(private div: HTMLElement, private src: TileSource, private spec: GlobeSpec, init: { cx: number; cy: number; scale: number },
-              private on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void }) {
+              private on: { click: (fx: number, fy: number) => void; hover: () => { side: number; text: string } | null; moved: () => void;
+                            pointer?: (fx: number, fy: number) => void }) {
     this.W = src.levels[0].shape[2];
     this.H = src.levels[0].shape[1];
     this.ready = this.start(init);
@@ -83,7 +84,12 @@ export class GlobeViewer {
       const [fx, fy] = this.pixel(ll[0], ll[1]);
       this.on.click(fx, fy);
     }, C.ScreenSpaceEventType.LEFT_CLICK);
-    h.setInputAction((e: any) => { this.lastMouse = e.endPosition; this.refreshHover(); }, C.ScreenSpaceEventType.MOUSE_MOVE);
+    h.setInputAction((e: any) => {
+      this.lastMouse = e.endPosition;
+      this.refreshHover();
+      const ll = this.pick(e.endPosition);
+      if (ll) { const [fx, fy] = this.pixel(ll[0], ll[1]); this.on.pointer?.(fx, fy); }
+    }, C.ScreenSpaceEventType.MOUSE_MOVE);
     this.viewer.camera.changed.addEventListener(() => { this.refreshHover(); this.on.moved(); });
     this.viewer.camera.percentageChanged = 0.05;
   }

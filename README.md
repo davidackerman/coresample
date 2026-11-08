@@ -25,7 +25,9 @@ side, with the tiles read, the hits, the query and your view (click it to go the
 thumbnail to go there; hover one to mark it good or bad, which re-ranks the list. Each hit shows
 how far it is from the query; the list can be ordered best first, nearest or farthest, and
 Options > spacing leaves out hits within 2-25 boxes of the query (its own surroundings are the
-easy matches) or spreads hits 2-10 boxes apart. The search runs at the zoom level you are looking at, so zoom until the
+easy matches) or spreads hits 2-10 boxes apart. The bottom right shows the coordinates under
+the cursor (full-resolution pixels; latitude and longitude on Mars, the Moon and Earth;
+physical position on volumes), and takes coordinates to go to (x, y[, z], or lat, lon). The search runs at the zoom level you are looking at, so zoom until the
 thing you care about is clear, then click. However long it reads, memory stays bounded: it
 keeps the best 3,000 candidates (and any you marked) for re-ranking.
 
@@ -74,6 +76,7 @@ Ways to load data:
 | your own Zoomify image | `https://host/.../ImageProperties.xml` |
 | a DESI Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec in degrees) |
 | a link to your data | `?url=<any of the above>`: opening data puts this in the address bar, so the link can be shared |
+| a link to a place | `&v=x,y,z,scale` (full-resolution pixels and zoom): the address bar keeps the current view, so a copied link opens the same place |
 
 The page shows each dataset's size (pixels or voxels, and levels) when it opens. Volumes and
 OME-Zarr open in Neuroglancer (the raw data streams natively; hits appear as annotation boxes),
