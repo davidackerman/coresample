@@ -3,7 +3,7 @@
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
 import type { Dims, ScanInput } from "./scan.ts";
-import { NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
+import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
 import type { Patch, TokenGrid } from "./embedder.ts";
 import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
 import { GlobeViewer } from "./globeviewer.ts";
@@ -564,7 +564,7 @@ async function openPreset(p: Preset) {
 }
 function idle() {
   $("phase").textContent = "Click on the image to search";
-  $("status").textContent = "It reads the best-ranked tiles first and keeps going until it has read the whole region or you pause it.";
+  $("status").textContent = "It reads the most promising tiles first and keeps going until it has covered the region or you pause it.";
 }
 
 async function openCustom(text: string) {
@@ -659,16 +659,21 @@ $("stop").addEventListener("click", () => {  // pause, or carry on from where it
   if (!search) return;
   if (search.state.phase === "read") search.stop();
   else if (search.state.phase === "paused") search.resume();
+  else if (search.state.phase === "done" && search.state.ruledOut) search.readRest();
 });
 
-function regionFor(W: number, P: number): [Vec3, Vec3] {
+/** The first area to search, at level W: as Options > region says; auto takes the largest area
+ * the quick pass can scan whole, smaller than the view if need be (a tilted globe shows a huge
+ * area; the search goes on outward from it anyway), then around `at` (level W, if given). */
+function regionFor(W: number, P: number, at?: Vec3): [Vec3, Vec3] {
   const s = src!, L = s.levels[W], f = 2 ** W, d3 = s.dims === 3;
   const whole: [Vec3, Vec3] = [[0, 0, 0], [...L.shape] as Vec3];
   const vis = gv ? gv.extentPx() : olv ? olv.extentPx() : ngv ? ngv.extentPx() : { x0: view.cx - (canvas.width * view.scale) / 2, x1: view.cx + (canvas.width * view.scale) / 2,
                                       y0: view.cy - (canvas.height * view.scale) / 2, y1: view.cy + (canvas.height * view.scale) / 2 };
   const around = (k: number): [Vec3, Vec3] => {
     const hw = ((vis.x1 - vis.x0) * k) / 2 / f, hh = ((vis.y1 - vis.y0) * k) / 2 / f;
-    const cx = (vis.x0 + vis.x1) / 2 / f, cy = (vis.y0 + vis.y1) / 2 / f;
+    const mid = k < 1 && at?.every(Number.isFinite);
+    const cx = mid ? at![2] : (vis.x0 + vis.x1) / 2 / f, cy = mid ? at![1] : (vis.y0 + vis.y1) / 2 / f;
     const lo: Vec3 = [0, Math.max(0, Math.floor(cy - hh)), Math.max(0, Math.floor(cx - hw))];
     const hi: Vec3 = [d3 ? L.shape[0] : 1, Math.min(L.shape[1], Math.ceil(cy + hh)), Math.min(L.shape[2], Math.ceil(cx + hw))];
     return [lo, hi];
@@ -676,8 +681,8 @@ function regionFor(W: number, P: number): [Vec3, Vec3] {
   const mode = $<HTMLSelectElement>("region").value;
   if (mode === "whole") return whole;
   if (mode !== "auto") return around(Number(mode));
-  for (const r of [whole, around(16), around(8), around(4), around(2), around(1)])
-    if (coarseLevelFor(s, W, P, r, COARSE_BUDGET) >= 0) return r;
+  if (coarseLevelFor(s, W, P, whole, COARSE_BUDGET) >= 0) return whole;
+  for (let k = 16; k >= 1 / 256; k /= 2) if (coarseLevelFor(s, W, P, around(k), COARSE_BUDGET) >= 0) return around(k);
   return around(1);
 }
 
@@ -733,7 +738,7 @@ function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   clearSearch();
   warm();
   $("hint").classList.add("gone");
-  const region = regionFor(W, P);
+  const region = regionFor(W, P, c);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
                                    match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
                                    expand: $<HTMLSelectElement>("region").value === "auto",
@@ -822,25 +827,30 @@ function panel(st: State) {
     $("qcanvas").classList.remove("none");
     qDrawn = `${st.examples}`;
   }
-  // tiles read, discounted by the patches still waiting to be compared; searching outward, of
-  // the whole level, else of the search area
-  const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal;
-  const frac = total ? (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued)) : 0;
+  // with the rough pass, the tiles it has looked over; else the tiles read, discounted by the
+  // patches still waiting to be compared; searching outward, of the whole level, else of the area
+  const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal, rough = st.rough && st.looked;
+  const frac = !total ? 0 : rough ? st.looked / total : (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued));
   const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : frac >= 0.0001 || frac === 0 ? (100 * frac).toFixed(2) : "<0.01";
   const [rlo, rhi] = s.regionBox, Ls = src.levels[st.working].shape;
   const whole = expand || (rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]));
   const what = whole ? (src.dims === 3 ? "the volume" : "the image") : "the search area";
-  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} read`
-                         : st.phase === "done" ? `Done: every tile of ${what} read`
+  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} ${rough ? "looked over" : "read"}`
+                         : st.phase === "done" ? (st.ruledOut ? `Done: all of ${what} looked over` : `Done: every tile of ${what} read`)
                          : st.phase === "error" ? PHASE.error : PHASE[st.phase];
-  $("phase").title = `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `
+  $("phase").title = (rough ? `How much of ${what} the model has looked over at level ${st.rough!.level}; the most promising `
+                              + `${100 * DETAIL}% of that is read at full detail (level ${st.working}) and compared. `
+                            : `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `)
                    + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
-    st.tilesTotal ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles` : st.message,
+    !st.tilesTotal ? st.message
+      : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
+                + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
+      : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,
     expand && st.tilesTotal && !firstIsWhole(s) ? `outward from the query: ${num(st.areas)} area${st.areas > 1 ? "s" : ""} of ${fmtArea(s)} so far, nearest first` : "",
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
-    st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `read in the order of the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
+    st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `picked by the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
                                                          : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
     st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " (a drawing and places)" : ""} (shift-click adds more): hits match ${combineText()}`
       : s.opt.sketch ? "searching for your drawing; shift-click adds a real example"
@@ -849,8 +859,10 @@ function panel(st: State) {
   $("status").textContent = lines.filter(Boolean).join("\n");
   ($("bar").firstElementChild as HTMLElement).style.width = `${(100 * frac).toFixed(2)}%`;
   const stopBtn = $<HTMLButtonElement>("stop");
-  stopBtn.disabled = !(st.phase === "read" || st.phase === "paused");
-  stopBtn.textContent = st.phase === "paused" ? "Resume" : "Pause";
+  const rest = st.phase === "done" && st.ruledOut > 0;  // the tiles the model ruled out can still be read
+  stopBtn.disabled = !(st.phase === "read" || st.phase === "paused" || rest);
+  stopBtn.textContent = rest ? "Read the rest" : st.phase === "paused" ? "Resume" : "Pause";
+  stopBtn.title = rest ? `Also read the ${num(st.ruledOut)} tiles the model ruled out, most promising first` : "";
   drawWhere(st);
   const box = $("hits");
   const sp = spread();

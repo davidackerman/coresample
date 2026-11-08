@@ -11,7 +11,7 @@ In short (details and numbers below):
    than 0.02; the default stays.
 6. **Other models:** none beats DINOv2-small on both targets.
 7. **Tile tokens** (the Mars CTX explorer's matching) match the default with fewer model runs.
-8. **The model two levels up** orders the reads best (the page's rough pass).
+8. **The model two levels up** orders the reads best: its top 5% match reading everything (the page's rough pass reads its top 10%).
 9. **Several examples** help where the class looks alike (vesicles +0.11 with 8 averaged).
 10. **Drawings** find nothing on EM.
 
@@ -435,6 +435,15 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
   the check as an image, the rebuild failed, and the duplicate was drawn. Non-images now count
   as broken, a failed decode tries the next level up, and a broken tile is rebuilt from its four
   children first (sharp), then from an ancestor.
+
+- **Reading speed** (Mars CTX, a user's search: 0.11% of the planet in 122 s). The 2-D patch
+  grid started at the search area's corner, so patches straddled tiles and each tile read
+  downloaded its 8 neighbours too (1.5 MB per tile); reads went 3 at a time and waited for the
+  model. Now the grid starts at 0 (one download per tile), up to 12 reads run while the model
+  works, the rough pass downloads its next round meanwhile, and only its top 10% is read in
+  detail. Same spot, 90 s each, a stand-in model at 400 patches/s: 174 tiles read and ~100
+  looked over (254 MB) before; 530 read and 5,688 looked over (213 MB) after, so 30x the
+  ground covered. The model is now the limit (the rough pass is three quarters of its work).
 
 ## Kill rule
 
