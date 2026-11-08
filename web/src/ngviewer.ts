@@ -30,7 +30,8 @@ export class NgViewer {
     const state = {
       layers: [{ type: "image", name: src.name, source: `zarr://${src.url}` },
                { type: "annotation", name: LAYER, source: "local://annotations", annotationColor: "#ffd24a", annotations: [] }],
-      layout: "xy", showSlices: false, selectedLayer: { visible: false }, layerListPanel: { visible: false },
+      // a volume: the slice and a 3-D view, where every hit box shows wherever it is in z
+      layout: src.dims === 3 ? "xy-3d" : "xy", showSlices: true, selectedLayer: { visible: false }, layerListPanel: { visible: false },
       crossSectionScale: init.scale * dpr,
     };
     this.iframe.src = `ng/index.html#!${encodeURIComponent(JSON.stringify(state))}`;
@@ -93,8 +94,11 @@ export class NgViewer {
       const p = ms.position as Float32Array, at = (n: string) => (this.idx(n) >= 0 ? Math.floor(p[this.idx(n)]) : 0);
       return [at("z"), at("y"), at("x")];
     }
+    // the panel under the click (the slice panel need not fill the frame: xy-3d layout)
+    const el = this.iframe.contentDocument?.elementFromPoint(cx, cy)?.closest(".neuroglancer-rendered-data-panel") as HTMLElement | null;
+    const r = el?.getBoundingClientRect() ?? { left: 0, top: 0, width: this.iframe.clientWidth, height: this.iframe.clientHeight };
     const c = this.center(), k = this.scale() * (window.devicePixelRatio || 1);
-    const dx = (cx - this.iframe.clientWidth / 2) * k, dy = (cy - this.iframe.clientHeight / 2) * k;
+    const dx = (cx - (r.left + r.width / 2)) * k, dy = (cy - (r.top + r.height / 2)) * k;
     return [Math.floor(c.z), Math.floor(c.cy + dy), Math.floor(c.cx + dx)];
   }
   private json(): Json { return this.viewer.state.toJSON(); }
@@ -124,7 +128,13 @@ export class NgViewer {
     set("x", fx); set("y", fy); if (this.src.dims === 3) set("z", fz);
     try {  // the viewer's own controls; a state restore if they are not there
       this.viewer.position.value = pos;
-      if (scale !== null) this.viewer.navigationState.zoomFactor.value = scale * (window.devicePixelRatio || 1);
+      if (scale !== null) {
+        this.viewer.navigationState.zoomFactor.value = scale * (window.devicePixelRatio || 1);
+        // the 3-D panel's own zoom (projection scale = the view's height in voxels): a few
+        // slice-views around the place, so the hit boxes nearby show in 3-D
+        const pz = this.viewer.perspectiveNavigationState?.zoomFactor;
+        if (pz) pz.value = scale * (window.devicePixelRatio || 1) * this.iframe.clientHeight * 3;
+      }
     } catch {
       const st = this.json();
       st.position = Array.from(pos);

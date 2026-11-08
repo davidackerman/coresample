@@ -305,6 +305,7 @@ export class TileSource implements Source {
           try {
             const r = await this.slot(() => fetch(this.spec.url(zoom, x, y)));
             if (r.status === 404 || r.status === 400) return null;  // no tile there
+            if (r.status >= 500 && r.status !== 503 && attempt >= 1) return null;  // a broken tile (some caches have gaps)
             if (r.status === 429 || r.status === 503) wait = 1500 * 2 ** attempt;  // asked to slow down
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const blob = await r.blob();
@@ -336,7 +337,7 @@ export class TileSource implements Source {
     const zoom = this.spec.maxZoom - level;
     const shape: Vec3 = [1, hi[1] - lo[1], hi[2] - lo[2]];
     const C = this.channels;
-    const out = new Float32Array(shape[1] * shape[2] * C);
+    const out = new Float32Array(shape[1] * shape[2] * C).fill(NaN);  // NaN = no data (outside, or a tile that failed)
     const L = this.levels[level];
     const y0 = Math.max(0, lo[1]), y1 = Math.min(L.shape[1], hi[1]);
     const x0 = Math.max(0, lo[2]), x1 = Math.min(L.shape[2], hi[2]);
@@ -345,7 +346,7 @@ export class TileSource implements Source {
     for (let ty = Math.floor(y0 / ts); ty <= Math.floor((y1 - 1) / ts); ty++)
       for (let tx = Math.floor(x0 / ts); tx <= Math.floor((x1 - 1) / ts); tx++)
         jobs.push(this.tile(zoom, tx, ty).then((img) => {
-          if (!img) return;
+          if (!img) return;  // stays NaN
           const ox = tx > 0 ? ov : 0, oy = ty > 0 ? ov : 0;  // Deep Zoom tiles carry their overlap
           const ya = Math.max(y0, ty * ts), yb = Math.min(y1, (ty + 1) * ts);
           const xa = Math.max(x0, tx * ts), xb = Math.min(x1, (tx + 1) * ts);
@@ -427,4 +428,36 @@ export function legacySurvey(ra0: number, dec0: number, layer = "ls-dr9", size =
       return `https://www.legacysurvey.org/viewer?ra=${ra.toFixed(5)}&dec=${dec.toFixed(5)}&layer=${layer}&zoom=14`;
     },
   });
+}
+
+/** Fraction of a region's values that are no data (NaN). */
+export function missingFraction(a: Float32Array): number {
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== a[i]) n++;
+  return a.length ? n / a.length : 1;
+}
+
+/** Copy with no-data (NaN) replaced by the median of the valid values (neutral for the scan). */
+export function fillMissing(a: Float32Array): Float32Array {
+  const out = Float32Array.from(a), valid: number[] = [];
+  const step = Math.max(1, Math.floor(a.length / 100000));
+  for (let i = 0; i < a.length; i += step) if (a[i] === a[i]) valid.push(a[i]);
+  valid.sort((x, y) => x - y);
+  const med = valid.length ? valid[valid.length >> 1] : 0;
+  for (let i = 0; i < out.length; i++) if (out[i] !== out[i]) out[i] = med;
+  return out;
+}
+
+/** A patch worth embedding: all data present, not blank (no-data zeros or a flat area). */
+export function informative(a: Float32Array): boolean {
+  let n = 0, zeros = 0, sum = 0, sq = 0;
+  for (let i = 0; i < a.length; i++) {
+    const v = a[i];
+    if (v !== v) return false;
+    n++; sum += v; sq += v * v;
+    if (v === 0) zeros++;
+  }
+  if (!n || zeros > 0.25 * n) return false;
+  const m = sum / n;
+  return sq / n - m * m > 1.5 * 1.5;
 }
