@@ -21,6 +21,8 @@ export interface Source {
   attribution?: string;
   /** Bytes fetched from the network so far (compressed, as stored). */
   bytesRead: number;
+  /** Chunks (tiles) the reads have taken so far, fetched, cached or missing: the progress of a long read. */
+  chunksRead?: number;
   read(level: number, lo: Vec3, hi: Vec3): Promise<Region>;
   /** A link that opens the original data at a place, when there is a viewer for it. */
   link?(level: number, center: Vec3): string | null;
@@ -92,6 +94,7 @@ export class Lru<V> {
  * reading through more than one address of the same data when it has them. */
 class CountingStore {
   bytes = 0;
+  chunks = 0;  // keys asked for (fetched, cached or missing)
   private inners: zarr.FetchStore[];
   private first: { key: string; n: number } | null = null;  // a file read, to check other addresses with
   private cache = new Lru<Uint8Array | null>(768 << 20);
@@ -116,6 +119,9 @@ class CountingStore {
     urls.forEach((u, i) => { if (ok[i]) this.inners.push(new zarr.FetchStore(u)); });
   }
   async get(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
+    try { return await this.getOnce(key, opts); } finally { this.chunks++; }
+  }
+  private async getOnce(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
     const hit = this.cache.get(key);
     if (hit !== undefined) return hit ?? undefined;
     let p = this.pending.get(key);
@@ -165,6 +171,7 @@ export class OmeZarrSource implements Source {
     this.ngUrl = url;
   }
   get bytesRead() { return this.store.bytes; }
+  get chunksRead() { return this.store.chunks; }
 
   static async open(url: string, name?: string, { mirrors = true } = {}): Promise<OmeZarrSource> {
     const s = new OmeZarrSource(normalizeUrl(url), name);
@@ -360,6 +367,7 @@ export class TileSource implements Source {
   unit: string;
   attribution?: string;
   bytesRead = 0;
+  chunksRead = 0;
   private cache = new Lru<Promise<{ data: Uint8ClampedArray; width: number; height: number } | null>>(4000);
   private nLevels: number;
 
@@ -503,6 +511,7 @@ export class TileSource implements Source {
     for (let ty = Math.floor(y0 / ts); ty <= Math.floor((y1 - 1) / ts); ty++)
       for (let tx = Math.floor(x0 / ts); tx <= Math.floor((x1 - 1) / ts); tx++)
         jobs.push(this.tile(zoom, tx, ty).then((img) => {
+          this.chunksRead++;
           if (!img) return;  // stays NaN
           const ox = tx > 0 ? ov : 0, oy = ty > 0 ? ov : 0;  // Deep Zoom tiles carry their overlap
           const ya = Math.max(y0, ty * ts), yb = Math.min(y1, (ty + 1) * ts);
