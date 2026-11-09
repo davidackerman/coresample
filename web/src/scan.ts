@@ -118,11 +118,11 @@ export function textureStats(a: Float32Array, d: Dims, w: Dims): { maps: Float32
   return { maps: [mean, std, gm, dg], dims };
 }
 
-function percentile(a: Float32Array, q: number[]): number[] {
+export function percentile(a: Float32Array, q: number[]): number[] {
   const step = Math.max(1, Math.floor(a.length / 2000000));  // a sample is plenty
-  const s: number[] = [];
-  for (let i = 0; i < a.length; i += step) s.push(a[i]);
-  s.sort((x, y) => x - y);
+  const s = new Float32Array(Math.ceil(a.length / step));
+  for (let i = 0, k = 0; i < a.length; i += step, k++) s[k] = a[i];
+  s.sort();  // a typed array sorts by value, the same order as (x, y) => x - y, about 10x faster
   return q.map((p) => s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))]);
 }
 
@@ -159,10 +159,19 @@ export interface ScanInput {
   margin: Dims;
 }
 
-/** Combined score (mean z-score of -EMD and -texture distance) of every window whose corner
- * lies in the region (the volume minus its margin); index i of the result is the window
- * whose corner is at margin + i. */
-export function scan(inp: ScanInput): { score: Float32Array; dims: Dims } {
+/** What the scan needs from the whole volume before its windows are scored: the 16 histogram
+ * bins (from percentiles of the region itself), the query's cumulative histogram and its four
+ * texture statistics. */
+export interface ScanPrep { edges: number[]; qcdf: Float32Array; qstats: number[] }
+
+/** The windows scored: those whose corner lies in the region (the volume minus its margin),
+ * `od` of them per axis; the result's index i is the window whose corner is at margin + i. */
+export function scanDims(dims: Dims, w: Dims, m: Dims): Dims {
+  const region: Dims = [dims[0] - 2 * m[0], dims[1] - 2 * m[1], dims[2] - 2 * m[2]];
+  return [Math.max(1, region[0] - w[0] + 1), Math.max(1, region[1] - w[1] + 1), Math.max(1, region[2] - w[2] + 1)];
+}
+
+export function scanPrep(inp: ScanInput): ScanPrep {
   const { vol, dims, query, qdims, window: w, margin: m } = inp;
   // statistics of the region itself (not its margin, which is zero past the array's edge),
   // as search.py takes them from the inner volume
@@ -198,38 +207,100 @@ export function scan(inp: ScanInput): { score: Float32Array; dims: Dims } {
   const qt = textureStats(query, qdims, w);
   const qi = (m[0] * qt.dims[1] + m[1]) * qt.dims[2] + m[2];
   const qstats = qt.maps.map((mp) => mp[qi]);
+  return { edges, qcdf, qstats };
+}
 
-  const tex = textureStats(vol, dims, w);
-  const hist = histMap(vol, dims, w, qcdf, edges);
-  // crop both to windows whose corner is inside the region
-  const region: Dims = [dims[0] - 2 * m[0], dims[1] - 2 * m[1], dims[2] - 2 * m[2]];
-  const od: Dims = [Math.max(1, region[0] - w[0] + 1), Math.max(1, region[1] - w[1] + 1), Math.max(1, region[2] - w[2] + 1)];
-  const n = od[0] * od[1] * od[2];
-  const td = tex.dims;
-  // per-feature spread over windows inside the region (search.py: texture_stats(inner).std())
-  const spread = tex.maps.map((mp) => {
-    let mu = 0, v = 0, cnt = 0;
-    for (let z = m[0]; z + w[0] <= dims[0] - m[0]; z++)
-      for (let y = m[1]; y + w[1] <= dims[1] - m[1]; y++)
-        for (let x = m[2]; x + w[2] <= dims[2] - m[2]; x++) { mu += mp[(z * td[1] + y) * td[2] + x]; cnt++; }
-    mu /= Math.max(cnt, 1);
-    for (let z = m[0]; z + w[0] <= dims[0] - m[0]; z++)
-      for (let y = m[1]; y + w[1] <= dims[1] - m[1]; y++)
-        for (let x = m[2]; x + w[2] <= dims[2] - m[2]; x++) v += (mp[(z * td[1] + y) * td[2] + x] - mu) ** 2;
-    return Math.sqrt(v / Math.max(cnt, 1)) + 1e-9;
-  });
-  const t = new Float32Array(n), h = new Float32Array(n);
+/** One slab of the scan: the volume's voxels `lo`..`hi` along `axis` (0, or 1 for a 2-D image),
+ * holding the windows whose corners are `c0`..`c1` of the `scanDims` along that axis, plus HALO
+ * voxels each side where the volume has them, so every filter sees inside the slab what it would
+ * see in the whole volume. Slabs cut the slowest axis that has more than one voxel, so each is one
+ * contiguous run of the volume and its windows one run of the result. */
+export interface ScanSlab { axis: 0 | 1; c0: number; c1: number; lo: number; hi: number }
+/** The filters' reach: the Gaussian of sigma 2 at scipy's truncate 4 (the others reach less). */
+export const HALO = 8;
+
+/** Cut the scan into at most `k` slabs, each at least 4 windows thick. */
+export function scanSlabs(dims: Dims, w: Dims, m: Dims, k: number): ScanSlab[] {
+  const od = scanDims(dims, w, m), axis: 0 | 1 = dims[0] > 1 ? 0 : 1, n = od[axis];
+  const parts = Math.max(1, Math.min(k, Math.floor(n / 4)));
+  const out: ScanSlab[] = [];
+  for (let p = 0; p < parts; p++) {
+    const c0 = Math.floor((p * n) / parts), c1 = Math.floor(((p + 1) * n) / parts);
+    out.push({ axis, c0, c1, lo: Math.max(0, m[axis] + c0 - HALO), hi: Math.min(dims[axis], m[axis] + c1 - 1 + w[axis] + HALO) });
+  }
+  return out;
+}
+
+/** A slab's own voxels (a copy) and their shape. */
+export function slabVolume(vol: Float32Array, dims: Dims, s: ScanSlab): { vol: Float32Array; dims: Dims } {
+  const plane = s.axis === 0 ? dims[1] * dims[2] : dims[2];
+  const d: Dims = s.axis === 0 ? [s.hi - s.lo, dims[1], dims[2]] : [dims[0], s.hi - s.lo, dims[2]];
+  return { vol: vol.slice(s.lo * plane, s.hi * plane), dims: d };
+}
+
+/** The raw maps of one slab's windows: texture mean, std, mean gradient and mean |DoG|, then the
+ * histogram distance, each shaped like the result with `c1 - c0` along the slab's axis. */
+export function scanBlock(vol: Float32Array, sd: Dims, s: ScanSlab, dims: Dims, w: Dims, m: Dims, prep: ScanPrep): Float32Array[] {
+  const tex = textureStats(vol, sd, w);
+  const hist = histMap(vol, sd, w, prep.qcdf, prep.edges);
+  const td = tex.dims, maps = [...tex.maps, hist.data];
+  const bd = scanDims(dims, w, m);
+  bd[s.axis] = s.c1 - s.c0;
+  const off: Dims = [m[0], m[1], m[2]];  // the slab's first window corner, in slab voxels
+  off[s.axis] = m[s.axis] + s.c0 - s.lo;
+  const out = maps.map(() => new Float32Array(bd[0] * bd[1] * bd[2]));
   let i = 0;
-  for (let z = 0; z < od[0]; z++)
-    for (let y = 0; y < od[1]; y++)
-      for (let x = 0; x < od[2]; x++, i++) {
-        const j = ((z + m[0]) * td[1] + (y + m[1])) * td[2] + (x + m[2]);
-        let s = 0;
-        for (let f = 0; f < 4; f++) s += ((tex.maps[f][j] - qstats[f]) / spread[f]) ** 2;
-        t[i] = -Math.sqrt(s);
-        h[i] = hist.data[j];
+  for (let z = 0; z < bd[0]; z++)
+    for (let y = 0; y < bd[1]; y++)
+      for (let x = 0; x < bd[2]; x++, i++) {
+        const j = ((z + off[0]) * td[1] + (y + off[1])) * td[2] + (x + off[2]);
+        for (let f = 0; f < 5; f++) out[f][i] = maps[f][j];
       }
-  const zt = zscore(t), zh = zscore(h), score = new Float32Array(n);
+  return out;
+}
+
+/** The slabs' maps joined (in slab order) and scored: each texture distance scaled by its spread
+ * over the windows, then the mean z-score of -EMD and -texture distance. */
+export function scanMerge(parts: Float32Array[][], dims: Dims, w: Dims, m: Dims, prep: ScanPrep): { score: Float32Array; dims: Dims } {
+  const od = scanDims(dims, w, m), n = od[0] * od[1] * od[2];
+  const maps = [0, 1, 2, 3, 4].map(() => new Float32Array(n));
+  let at = 0;
+  for (const p of parts) {
+    for (let f = 0; f < 5; f++) maps[f].set(p[f], at);
+    at += p[0].length;
+  }
+  if (at !== n) throw new Error(`scan slabs cover ${at} of ${n} windows`);
+  // per-feature spread over the windows inside the region (search.py: texture_stats(inner).std());
+  // none fit when the region is smaller than a window on some axis
+  const inside = [0, 1, 2].every((a) => dims[a] - 2 * m[a] >= w[a]);
+  const spread = maps.slice(0, 4).map((mp) => {
+    if (!inside) return 1e-9;
+    let mu = 0, v = 0;
+    for (let i = 0; i < n; i++) mu += mp[i];
+    mu /= n;
+    for (let i = 0; i < n; i++) v += (mp[i] - mu) ** 2;
+    return Math.sqrt(v / n) + 1e-9;
+  });
+  const t = new Float32Array(n), { qstats } = prep;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let f = 0; f < 4; f++) s += ((maps[f][i] - qstats[f]) / spread[f]) ** 2;
+    t[i] = -Math.sqrt(s);
+  }
+  const zt = zscore(t), zh = zscore(maps[4]), score = new Float32Array(n);
   for (let k = 0; k < n; k++) score[k] = (zt[k] + zh[k]) / 2;
   return { score, dims: od };
+}
+
+/** Combined score (mean z-score of -EMD and -texture distance) of every window whose corner
+ * lies in the region (the volume minus its margin); index i of the result is the window
+ * whose corner is at margin + i. In one piece; the page runs the same steps on slabs in
+ * several workers (scanpool.ts). */
+export function scan(inp: ScanInput): { score: Float32Array; dims: Dims } {
+  const { vol, dims, window: w, margin: m } = inp, prep = scanPrep(inp);
+  const parts = scanSlabs(dims, w, m, 1).map((s) => {
+    const sv = slabVolume(vol, dims, s);
+    return scanBlock(sv.vol, sv.dims, s, dims, w, m, prep);
+  });
+  return scanMerge(parts, dims, w, m, prep);
 }

@@ -2,7 +2,7 @@
 // into the side panel. Raw data only; nothing is precomputed.
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, type Focus } from "./embedder.ts";
-import type { Dims, ScanInput } from "./scan.ts";
+import { scanInWorkers } from "./scanpool.ts";
 import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
 import type { Patch, TokenGrid } from "./embedder.ts";
 import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
@@ -146,26 +146,6 @@ function liveRate() {
  * comes first), or at the first click, whichever is sooner. */
 const warm = () => (warmed ??= warmUp());
 setTimeout(warm, 8000);
-
-// ---------------------------------------------------------------------------------------
-// the cheap scan in a worker
-// ---------------------------------------------------------------------------------------
-const worker = new Worker(new URL("./scan.worker.ts", import.meta.url), { type: "module" });
-let wid = 0;
-const waiting = new Map<number, (r: { score: Float32Array; dims: Dims } | Error) => void>();
-worker.onmessage = (e) => {
-  const { id, score, dims, error } = e.data;
-  waiting.get(id)?.(error ? new Error(error) : { score, dims });
-  waiting.delete(id);
-};
-function scanInWorker(inp: ScanInput): Promise<{ score: Float32Array; dims: Dims }> {
-  const id = ++wid;
-  return new Promise((resolve, reject) => {
-    waiting.set(id, (r) => (r instanceof Error ? reject(r) : resolve(r)));
-    const vol = Float32Array.from(inp.vol), query = Float32Array.from(inp.query);
-    worker.postMessage({ id, inp: { ...inp, vol, query } }, [vol.buffer, query.buffer]);
-  });
-}
 
 // ---------------------------------------------------------------------------------------
 // viewer
@@ -784,7 +764,7 @@ function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   warm();
   $("hint").classList.add("gone");
   const region = regionFor(W, P, c);
-  search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorker, topN: 60,
+  search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorkers, topN: 60,
                                    match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
                                    expand: $<HTMLSelectElement>("region").value === "auto",
                                    roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
