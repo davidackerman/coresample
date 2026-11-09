@@ -54,10 +54,10 @@ export const PRESETS: Preset[] = [
       url: (z, x, y) => `https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/${z}/${y}/${x}`,
       skipZooms: [5, 11],  // Esri's cache: zoom 11 tiles are truncated PNGs, zoom 5 returns error pages in places
     }),
-    view: { ...equirect(CTX_W, CTX_H, 77.45, 18.44), scale: 16 },  // Jezero crater
+    view: { ...equirect(CTX_W, CTX_H, -65, -8), scale: 1024 },  // the whole planet, Valles Marineris across the middle
     globe: { radii: [3396190, 3396190, 3376200], template: "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
              credit: "NASA/JPL/MSSS/Caltech Murray Lab/Esri" },
-    note: "Start: Jezero crater. Click a crater, dune field or channel.",
+    note: "Start: the whole planet, Valles Marineris across the middle. A click searches at the zoom on screen: zoom in to a crater, dune field or channel first.",
   },
   {
     id: "moon-wac", geo: "equirect", label: "Moon: LRO WAC global mosaic", detail: "100 m/px, NASA Trek", kind: "planetary map", count: WAC_W * WAC_H,
