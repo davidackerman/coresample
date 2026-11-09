@@ -44,7 +44,8 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
    candidates are kept for re-ranking.
 
-Nothing is uploaded. The **Options** (detailed 224 px input, centre object, any rotation, any
+Nothing is uploaded. The live site counts dataset views and searches with GoatCounter (no
+cookies; your own data counts only as its format, never its address). The **Options** (detailed 224 px input, centre object, any rotation, any
 size, adapt to data, tiles + tokens, combining examples) are for data where they make sense:
 on labelled EM none moved top-10 precision by more than a few hundredths, and no other model
 beat DINOv2-small on both targets (tests 5-9, [RESULTS.md](experiments/results/RESULTS.md)).
