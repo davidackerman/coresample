@@ -15,6 +15,7 @@ import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type
 import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
 import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, type Folder } from "./local.ts";
+import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -520,9 +521,15 @@ $("open").addEventListener("click", () => { dsMenu.hidden = true; openCustom($<H
 function openOwnBox() { dsMenu.hidden = true; showMenu("own"); }
 $("ownbtn").addEventListener("click", () => showMenu("own"));
 $("ownlink").addEventListener("click", openOwnBox);
+$("pickimg").addEventListener("click", () => $<HTMLInputElement>("imgfile").click());
+$("imgfile").addEventListener("change", () => {
+  const f = $<HTMLInputElement>("imgfile").files?.[0];
+  dsMenu.hidden = true;
+  if (f) void openImage(f);
+  $<HTMLInputElement>("imgfile").value = "";
+});
 $("pick").hidden = !canPick;
-if (canPick) $("pickhelp").textContent = "or drop one anywhere on the page";
-else $("pickhelp").textContent = "Or drop a folder anywhere on the page.";
+$("pickhelp").textContent = "or drop either anywhere on the page";
 $("pick").addEventListener("click", async () => {
   dsMenu.hidden = true;
   try { const f = await pickFolder(); if (f) await openLocal(f); }
@@ -677,8 +684,16 @@ async function showOwn(s: Source, link: string | null, fmt: string) {
   countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
 }
 
+/** An image file on this computer (PNG, JPEG, TIFF...), read whole and searched as an OME-Zarr. */
+async function openImage(file: File) {
+  $("phase").textContent = `Opening ${file.name}`;
+  $("status").textContent = "Reading the image into memory";
+  try { await openLocal(await imageFolder(file), "image"); }
+  catch (e) { $("phase").textContent = "Could not open the image"; $("status").textContent = (e as Error).message || String(e); }
+}
+
 /** A folder on this computer: the image in it (the folder itself, or the first inside). */
-async function openLocal(f: Folder) {
+async function openLocal(f: Folder, fmt?: string) {
   $("phase").textContent = `Opening ${f.name}`;
   $("status").textContent = "Looking for an image in the folder";
   try {
@@ -688,7 +703,7 @@ async function openLocal(f: Folder) {
     const { path, kind } = ok[0], base = await serveFolder(f), url = path ? `${base}/${path}` : base;
     const name = path ? `${f.name}/${path}` : f.name;
     const s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false });
-    await showOwn(s, null, `local-${kind}`);
+    await showOwn(s, null, `local-${fmt ?? kind}`);
     if (ok.length > 1) $("status").textContent = `Opened ${name}. Also in the folder: ${ok.slice(1).map((x) => x.path).join(", ")} (drop one of those to open it).`;
   } catch (e) {
     $("phase").textContent = "Could not open the folder";
@@ -710,10 +725,11 @@ dropEl.addEventListener("dragleave", (e) => { if (e.target === dropEl) dropEl.hi
 function dropped(e: DragEvent) {
   dropEl.hidden = true;
   const items = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === "file");
-  const entry = items[0]?.webkitGetAsEntry?.();  // only during the event
+  const entry = items[0]?.webkitGetAsEntry?.(), file = items[0]?.getAsFile();  // only during the event
   if (entry?.isDirectory) { void openLocal(entryFolder(entry as FileSystemDirectoryEntry)); return; }
-  $("phase").textContent = "Drop a folder";
-  $("status").textContent = `${entry?.name ?? "That"} is a file: drop the folder of an OME-Zarr image (.zarr) or a precomputed volume. Single image files are not read yet.`;
+  if (file && IMAGE_FILE.test(file.name)) { void openImage(file); return; }
+  $("phase").textContent = "Drop a folder or an image";
+  $("status").textContent = `${file?.name ?? "That"} is not read here: drop an OME-Zarr or precomputed folder, or a PNG, JPEG, WebP or TIFF.`;
 }
 
 /** The extra layers (segmentations...) as toggles; they show in Neuroglancer. */
