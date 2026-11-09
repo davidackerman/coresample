@@ -10,6 +10,7 @@ import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
+import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
@@ -582,9 +583,11 @@ let startView: Preset["view"] | null = (() => {
 })();
 function takeStartView() { const v = startView; startView = null; return v; }
 
+/** What the usage counts call the open dataset: a preset's id, or "custom/<format>". */
+let countAs = "";
 async function openPreset(p: Preset) {
   $("phase").textContent = `Opening ${p.label}`;
-  try { await setSource(await p.open(), takeStartView() ?? p.view, p); idle(); }
+  try { await setSource(await p.open(), takeStartView() ?? p.view, p); idle(); countAs = p.id; countOpen(p.id, p.label); }
   catch (e) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; }
 }
 function idle() {
@@ -623,6 +626,8 @@ async function openCustom(text: string) {
     u.searchParams.delete("d"); u.searchParams.set("url", text);
     history.replaceState(null, "", u);
     idle();
+    const fmt = m ? "legacy" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
+    countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
   } catch (e) {
     const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
@@ -754,6 +759,7 @@ function queryAt(fx: number, fy: number, fz?: number, add = false) {
   const c: Vec3 = [s.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
+  countEvent(`search/${countAs || "unknown"}`);
   begin(c, W, P);
 }
 
@@ -1524,6 +1530,7 @@ $("padgo").addEventListener("click", () => {
   if (!src || !padAt) return;
   const sk = pad.patch(src.channels, $<HTMLInputElement>("padtex").checked);
   $("pad").hidden = true;
+  countEvent(`draw/${countAs || "unknown"}`);
   begin(NOWHERE, padAt.W, padAt.P, sk);
 });
 
