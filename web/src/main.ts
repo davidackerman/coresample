@@ -898,7 +898,7 @@ function panel(st: State) {
                    + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
     st.phase === "query" && modelNote ? `waiting for the model (${modelNote.replace(/ the model:?/, "")})` + (modelNote.startsWith("downloading") ? ": only the first time, then the browser keeps it" : "")
-      : !st.tilesTotal ? st.message
+      : !st.tilesTotal ? st.message + (st.phase === "scan" && src instanceof TileSource && src.waiting ? `: waiting for ${num(src.waiting)} images from the server` : "")
       : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
                 + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
       : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,

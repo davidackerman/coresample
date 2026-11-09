@@ -322,8 +322,8 @@ export class Search {
       }
       this.qscan = { C, f, w, m, query: fillMissing(luminance(qr)), qdims: qr.shape };
       // 2. the region scanned, its tiles ranked
-      const ts = performance.now();
-      this.order = await this.scanRegion(this.region);
+      const ts = performance.now(), tick = setInterval(() => this.emit({}), 1000);  // time and bytes keep counting on a slow server
+      try { this.order = await this.scanRegion(this.region); } finally { clearInterval(tick); }
       this.emit({ scanSeconds: (performance.now() - ts) / 1000 });
       await this.setupRough();
       this.setReady();

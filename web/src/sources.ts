@@ -274,8 +274,13 @@ export interface TileSpec {
   pixelSize?: number;  // physical size of a full-resolution pixel, in `unit`
   attribution?: string;
   link?: (zoom: number, x: number, y: number) => string | null;
-  /** Requests in flight at once (a cutout service rate-limits; plain tile CDNs do not). */
+  /** Requests in flight at once (a cutout service rate-limits: Legacy Surveys refuses a third
+   * at once with 429; plain tile CDNs do not). */
   maxConcurrent?: number;
+  /** Tiles the viewer shows instead of `url`'s (searches still read `url`): a server's own
+   * ready-made tiles that other sites may show but not read (no CORS), on the same pixel grid,
+   * `tileSize` px each, zooms counted for that size. */
+  display?: { tileSize: number; url: (zoom: number, x: number, y: number) => string };
   /** Zooms whose tiles are broken on the server (truncated, or error pages): the viewer skips
    * them and searches read the next finer zoom, halved. */
   skipZooms?: number[];
@@ -336,11 +341,17 @@ export class TileSource implements Source {
 
   private active = 0;
   private queue: (() => void)[] = [];
+  private cool = 0;  // no request starts before this time (the server asked to slow down)
+  /** Requests in flight or waiting for a slot. */
+  get waiting() { return this.active + this.queue.length; }
   private async slot<T>(f: () => Promise<T>): Promise<T> {
     const max = this.spec.maxConcurrent ?? 12;
     if (this.active >= max) await new Promise<void>((r) => this.queue.push(r));
     this.active++;
-    try { return await f(); } finally { this.active--; this.queue.shift()?.(); }
+    try {
+      for (let w = this.cool - Date.now(); w > 0; w = this.cool - Date.now()) await new Promise((r) => setTimeout(r, w));
+      return await f();
+    } finally { this.active--; this.queue.shift()?.(); }
   }
 
   private blobs = new Lru<Promise<Blob | null>>(4000);
@@ -366,13 +377,19 @@ export class TileSource implements Source {
 
   /** The tile's file as the server sends it (retried; null when there is none). */
   private async fetchTile(zoom: number, x: number, y: number): Promise<Blob | null> {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      let wait = 300 * 2 ** attempt;
+    for (let attempt = 0, slowed = 0; attempt < 5; attempt++) {
+      const wait = 300 * 2 ** attempt;
       try {
         const r = await this.slot(() => fetch(this.spec.url(zoom, x, y)));
         if (r.status === 404 || r.status === 400) return null;  // no tile there
         if (r.status >= 500 && r.status !== 503 && attempt >= 1) return null;  // a broken tile (some caches have gaps)
-        if (r.status === 429 || r.status === 503) wait = 1500 * 2 ** attempt;  // asked to slow down
+        if (r.status === 429 || r.status === 503) {
+          // asked to slow down: every request of this source waits (1, 2, 4, 8 s), and this
+          // try does not count as a failure (up to 10 times)
+          this.cool = Math.max(this.cool, Date.now() + 1000 * Math.min(8, 2 ** slowed));
+          if (++slowed <= 10) attempt--;
+          continue;
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const blob = await r.blob();
         this.bytesRead += blob.size;
@@ -534,7 +551,7 @@ export function legacySurvey(ra0: number, dec0: number, layer = "ls-dr9", size =
     name: name ?? `Legacy Surveys ${layer} at RA ${ra0.toFixed(3)}, Dec ${dec0.toFixed(3)}`,
     tileSize: ts, maxZoom, width: size, height: size, channels: 3, unit: "arcsec", pixelSize: pixscale,
     attribution: "DESI Legacy Imaging Surveys (legacysurvey.org), cutout service",
-    maxConcurrent: 3,
+    maxConcurrent: 2,
     url: (z, x, y) => {
       const level = maxZoom - z, ps = pixscale * 2 ** level, n = size / 2 ** level;
       const dx = ((x + 0.5) * ts - n / 2) * ps, dy = ((y + 0.5) * ts - n / 2) * ps;  // arcsec from the field centre
@@ -562,7 +579,10 @@ export function legacySky(layer = "ls-dr10"): TileSource {
   return new TileSource({
     name: `Legacy Surveys ${layer.replace("ls-", "").toUpperCase()}, the whole sky`, tileSize: ts, maxZoom, minZoom,
     width: W, height: W, channels: 3, unit: "arcsec", pixelSize: eq,
-    attribution: "DESI Legacy Imaging Surveys (legacysurvey.org), cutout service", maxConcurrent: 3,
+    attribution: "DESI Legacy Imaging Surveys (legacysurvey.org), cutout service", maxConcurrent: 2,
+    // the viewer's own tiles (ready-made, about 0.5 s each against 1-28 s for a cutout) to look at:
+    // they have no CORS, so searches cannot read them; 256 px, the same grid one zoom finer
+    display: { tileSize: 256, url: (z, x, y) => `https://www.legacysurvey.org/viewer/${layer}/1/${z}/${x}/${y}.jpg` },
     url: (z, x, y) => {
       const f = 2 ** (maxZoom - z), ra = 360 - (((x + 0.5) * ts * f) / W) * 360, d = dec((y + 0.5) * ts * f);
       const ps = eq * f * Math.cos((d * Math.PI) / 180);
