@@ -174,8 +174,10 @@
   #heatval { color: var(--dim); min-width: 28px; font-variant-numeric: tabular-nums; }
   #addex.on { border-color: var(--acc); color: var(--acc); }
   #stage.adding #view, #stage.adding canvas { cursor: copy; }
-  #pad { position: absolute; left: 12px; top: 12px; z-index: 15; width: 292px; padding: 10px 12px 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 32px #000a; }
-  #pad[hidden] { display: none; }
+  #pad, #bpad { position: absolute; left: 12px; top: 12px; z-index: 15; width: 292px; padding: 10px 12px 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 32px #000a; }
+  #pad[hidden], #bpad[hidden] { display: none; }
+  #bpadcv { display: block; width: 266px; height: 266px; margin: 8px 0; border: 1px solid var(--line2); border-radius: 6px; cursor: crosshair; touch-action: none; background: #000; }
+  #brushbtn.on { color: var(--acc); border-color: var(--acc); }
   .padhead { display: flex; justify-content: space-between; align-items: center; }
   .padhead button { border: 0; background: transparent; color: var(--dim); padding: 0 4px; }
   #padcv { display: block; width: 266px; height: 266px; margin: 8px 0; image-rendering: pixelated; border: 1px solid var(--line2); border-radius: 6px; cursor: crosshair; touch-action: none; background: #000; }
@@ -251,6 +253,13 @@
       <div class="row padrow"><label title="Turn every colour into the data's own by brightness (black: its darkest, white: its brightest), soften the drawing and give it the data's grain before the model sees it"><input type="checkbox" id="padtex" checked> look like the data</label></div>
       <div class="row padrow"><button id="padgo" class="primary">Search for this</button></div>
     </div>
+    <div id="bpad" hidden>
+      <div class="padhead"><b>What matters in your box</b><button id="bpadx" title="Close">&#10005;</button></div>
+      <div class="help">Drag over the parts that matter; a drag that starts on a marked part unmarks. The match then compares only those parts, where they sit in the box. The search starts again.</div>
+      <canvas id="bpadcv" title="Drag to mark the parts that matter"></canvas>
+      <div class="row padrow"><button id="bpadall">mark all</button><button id="bpadnone">clear</button></div>
+      <div class="row padrow"><button id="bpadgo" class="primary">Search with this</button><button id="bpadoff" title="Every part of the box alike again">without marks</button></div>
+    </div>
     <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
     <div id="attrib"></div>
     <div id="coords"><span id="cursor" title="Under the cursor: full-resolution pixels (and longitude/latitude or physical position)"></span>
@@ -314,7 +323,8 @@
       <div id="stages"></div>
       <div class="row actions">
         <div class="row"><button id="stop" disabled>Pause</button><button id="clear" disabled>Clear</button>
-          <button id="addex" disabled title="Add another example of the same thing: press, then click it on the image (or shift-click any time). The query becomes the mean of the examples.">+ example</button></div>
+          <button id="addex" disabled title="Add another example of the same thing: press, then click it on the image (or shift-click any time). The query becomes the mean of the examples.">+ example</button>
+          <button id="brushbtn" disabled title="Mark which parts of your box matter: the match then compares only those parts">what matters</button></div>
         <a id="link" target="_blank" style="display:none">open hit in its viewer &#8599;</a>
       </div>
     </div>

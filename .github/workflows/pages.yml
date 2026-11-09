@@ -85,7 +85,7 @@ jobs:
       # not as a blank viewer on the site
       - name: Check the site
         run: |
-          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx ort/ort-wasm-simd-threaded.asyncify.wasm; do
+          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx ort/ort-wasm-simd-threaded.asyncify.wasm; do
             [ -f "web/dist/$f" ] || { echo "::error::web/dist/$f is missing"; exit 1; }
           done
           touch web/dist/.nojekyll

@@ -1,4 +1,4 @@
-"""Export DINOv2-small to ONNX for the browser, at two input sizes (112 and 224).
+"""Export DINOv2-small to ONNX for the browser: 112 px (pooled), 224 px and 112 px (tokens).
 
 Input (batch, 3, S, S) ImageNet-normalized.
 
@@ -8,8 +8,11 @@ Input (batch, 3, S, S) ImageNet-normalized.
   224 px: output (batch, 257, 384) = the last hidden state (CLS, then the 16 x 16 patch tokens),
           raw. The page pools the same 1152-d embedding from it for "detailed" matching, and
           matches windows of tokens for the tile-token (Mars CTX explorer) mode (experiments/test7_template.py).
+  112 px, tokens: output (batch, 65, 384), the last hidden state, raw: for a brush (which parts of
+          the box matter), whose weighted mean of tokens the page pools; only fetched then, so the
+          usual search keeps the small pooled output (experiments/test12_brush.py).
 
-Writes web/public/models/dinov2-small-{S}.onnx and checks each against PyTorch."""
+Writes web/public/models/dinov2-small-{112,224,112-tokens}.onnx and checks each against PyTorch."""
 
 import os
 import sys
@@ -23,7 +26,7 @@ import torch  # noqa: E402
 from transformers import AutoModel  # noqa: E402
 
 OUT = ROOT / "web/public/models"
-TOKENS = 224  # the input size whose model outputs tokens
+EXPORTS = {"112": (112, False), "224": (224, True), "112-tokens": (112, True)}  # file name: input size, outputs its tokens
 
 
 class Pooled(torch.nn.Module):
@@ -51,15 +54,15 @@ class Tokens(torch.nn.Module):
         return self.m(pixel_values=x).last_hidden_state
 
 
-def main(sizes=(112, 224)):
+def main(names=tuple(EXPORTS)):
     import onnxruntime as ort
 
     m = AutoModel.from_pretrained("facebook/dinov2-small").eval()
     OUT.mkdir(parents=True, exist_ok=True)
-    for size in sizes:
-        tokens = size == TOKENS
+    for key in names:
+        size, tokens = EXPORTS[key]
         w = (Tokens(m) if tokens else Pooled(m, size)).eval()
-        out = OUT / f"dinov2-small-{size}.onnx"
+        out = OUT / f"dinov2-small-{key}.onnx"
         name = "tokens" if tokens else "embedding"
         torch.onnx.export(w, (torch.randn(2, 3, size, size),), str(out), input_names=["pixel_values"],
                           output_names=[name], opset_version=17, dynamo=False,
@@ -70,4 +73,4 @@ def main(sizes=(112, 224)):
 
 
 if __name__ == "__main__":
-    main(tuple(int(s) for s in sys.argv[1:]) or (112, 224))
+    main(tuple(sys.argv[1:]) or tuple(EXPORTS))

@@ -23,9 +23,13 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
   (Options > examples: or each hit's best match).
 - **✓ / ✗ on a hit:** more / fewer like this. The query moves, the list re-ranks, and the tiles
   still to read are re-ordered. ✓ turns the hit green; undo under **Hits**.
-- **match:** brightens the parts of each hit that look most like the middle of your box and
-  dims the rest; what every box has (plain background) does not count. **why:** each hit's score broken down, and its pieces
+- **match:** brightens the parts of each hit that look most like the middle of your box (or the
+  parts you marked) and dims the rest; what every box has (plain background) does not count. **why:** each hit's score broken down, and its pieces
   coloured the way the model sees them.
+- **what matters:** after a click, mark the parts of your box that matter, on its 8 x 8 grid (the
+  pieces the model sees). The match then compares only those pieces, where they sit in the box,
+  and the search starts again (the first time, 88 MB more of the model). On labelled EM, a rough
+  brush over the object found a few more in the top 10, not in the top 25 (test 12).
 - **Heat:** how well every place compared matched, on the **Where it has looked** map (the
   whole dataset, the area searched so far outlined), and over the image if you tick **over the
   image** (in a volume, at the slice's depth).

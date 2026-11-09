@@ -4,6 +4,8 @@
 // centre-weighted mean token], each 384-d part L2-normalized; matching picks the parts. At 224 px
 // it outputs its raw tokens (n, 257, 384): the same 1152-d embedding is pooled from them here
 // ("detailed" matching), and `tokens` hands out the 16 x 16 token grid for the tile-token mode.
+// A brush (which parts of the box matter) adds a fourth part, the brushed tokens' weighted mean:
+// at 112 px from a second export that outputs its raw tokens (n, 65, 384), fetched only then.
 import { Onnx, type OnnxModel } from "../../../chunkmirage/web/src/onnx.ts";
 
 export const DIM = 1152;
@@ -29,10 +31,26 @@ export function prepare(p: Patch, out: Float32Array, offset: number, INPUT = 112
   }
 }
 
+/** The brush's grid over the box: the 112 px model's 8 x 8 tokens (row-major weights, 0-1). */
+export const BRUSH = 8;
+/** A brush's weights on a grid of g x g tokens (each cell of the brush's grid covers (g/8)^2). */
+function brushOn(brush: Float32Array, g: number): Float32Array {
+  const w = new Float32Array(g * g);
+  for (let y = 0; y < g; y++) for (let x = 0; x < g; x++) w[y * g + x] = brush[Math.floor((y * BRUSH) / g) * BRUSH + Math.floor((x * BRUSH) / g)];
+  return w;
+}
+/** A short key for a brush (cache keys). */
+export function brushKey(brush: Float32Array): string {
+  let h = 2166136261;
+  for (const v of brush) h = Math.imul(h ^ Math.round(v * 100), 16777619);
+  return (h >>> 0).toString(36);
+}
+
 /** The 112 model's [CLS | mean | centre-weighted] embedding, pooled from item `j` of a raw
- * token output (T = 1 + g*g tokens of D): the same pooling as export_model.py's `Pooled`. */
+ * token output (T = 1 + g*g tokens of D): the same pooling as export_model.py's `Pooled`; with
+ * a brush, a fourth part, the tokens weighted by it (none brushed: all alike). */
 const weights = new Map<number, Float32Array>();
-export function poolTokens(data: Float32Array, j: number, T: number, D: number): Float32Array {
+export function poolTokens(data: Float32Array, j: number, T: number, D: number, brush?: Float32Array | null): Float32Array {
   const g = Math.round(Math.sqrt(T - 1));
   let w = weights.get(g);
   if (!w) {
@@ -45,13 +63,16 @@ export function poolTokens(data: Float32Array, j: number, T: number, D: number):
     for (let i = 0; i < w.length; i++) w[i] /= sum;
     weights.set(g, w);
   }
-  const out = new Float32Array(3 * D), base = j * T * D;
+  const np = brush ? 4 : 3, out = new Float32Array(np * D), base = j * T * D;
+  let b = brush ? brushOn(brush, g) : null;
+  if (b && !b.some((v) => v > 0)) b = b.fill(1);
   for (let d = 0; d < D; d++) out[d] = data[base + d];
   for (let t = 1; t < T; t++) {
-    const o = base + t * D, wt = w[t - 1];
+    const o = base + t * D, wt = w[t - 1], wb = b ? b[t - 1] : 0;
     for (let d = 0; d < D; d++) { out[D + d] += data[o + d] / (T - 1); out[2 * D + d] += wt * data[o + d]; }
+    if (wb) for (let d = 0; d < D; d++) out[3 * D + d] += wb * data[o + d];
   }
-  for (let p = 0; p < 3; p++) unitPart(out, p * D, D);
+  for (let p = 0; p < np; p++) unitPart(out, p * D, D);
   return out;
 }
 function unitPart(v: Float32Array, o: number, n: number) {
@@ -64,6 +85,8 @@ function unitPart(v: Float32Array, o: number, n: number) {
 export class Embedder {
   onnx: Onnx;
   models: Record<number, OnnxModel> = {};
+  /** The 112 px model that outputs its tokens: for a brush (downloaded at the first one). */
+  brushModel: OnnxModel;
   /** Model input size: 112 (fast) or 224 (4x the compute, more detail; test 5: about +30% p@10). */
   input = 112;
   provider: string | null = null;
@@ -73,20 +96,23 @@ export class Embedder {
   private cache = new Map<string, Float32Array>();
 
   /** `modelUrl(size)` gives each input size's model file; bytes are fetched when first used. */
-  constructor(modelUrl: (size: number) => string, log?: (s: string) => void, fetchBytes?: (url: string) => Promise<ArrayBuffer>) {
+  constructor(modelUrl: (size: number | string) => string, log?: (s: string) => void, fetchBytes?: (url: string) => Promise<ArrayBuffer>) {
     this.onnx = new Onnx({ log });
     const get = fetchBytes ?? ((u: string) => fetch(u).then((r) => {
       if (!r.ok) throw new Error(`model ${u}: HTTP ${r.status}`);
       return r.arrayBuffer();
     }));
     for (const size of [112, 224]) this.models[size] = { key: modelUrl(size), bytes: () => get(modelUrl(size)) };
+    this.brushModel = { key: modelUrl("112-tokens"), bytes: () => get(modelUrl("112-tokens")) };
   }
   get model(): OnnxModel { return this.models[this.input]; }
 
-  /** Embeddings of patches; `keys` (optional) cache them for the session. */
-  async embed(patches: Patch[], keys?: string[]): Promise<Float32Array[]> {
-    const size = this.input;
-    keys = keys?.map((k) => `${k}|${size}`);
+  /** Embeddings of patches; `keys` (optional) cache them for the session. With a `brush` (which
+   * of the box's 8 x 8 parts matter, 0-1), a fourth part: the brushed tokens' weighted mean. */
+  async embed(patches: Patch[], keys?: string[], brush?: Float32Array | null): Promise<Float32Array[]> {
+    const size = this.input, bk = brush ? `|b${brushKey(brush)}` : "";
+    const model = brush && size === 112 ? this.brushModel : this.models[size];  // 224 px already gives its tokens
+    keys = keys?.map((k) => `${k}|${size}${bk}`);
     const out: (Float32Array | null)[] = patches.map((_, i) => (keys ? this.cache.get(keys[i]) ?? null : null));
     const todo = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
     for (let s = 0; s < todo.length; s += this.batch) {
@@ -97,13 +123,13 @@ export class Embedder {
       const x = new Float32Array(idx.length * 3 * size * size);
       idx.forEach((i, j) => prepare(patches[i], x, j * 3 * size * size, size));
       const t0 = performance.now();
-      const r = await this.onnx.run(this.models[size], x, [idx.length, 3, size, size]);
+      const r = await this.onnx.run(model, x, [idx.length, 3, size, size]);
       this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
       this.count += idx.length;
       this.provider = this.onnx.provider;
-      const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens (the 224 model): pool them here
+      const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens: pool them here
       idx.forEach((i, j) => {
-        const e = raw ? poolTokens(data, j, r.dims[1], r.dims[2]) : Float32Array.from(data.subarray(j * DIM, (j + 1) * DIM));
+        const e = raw ? poolTokens(data, j, r.dims[1], r.dims[2], brush) : Float32Array.from(data.subarray(j * DIM, (j + 1) * DIM));
         out[i] = e;
         if (keys) this.cache.set(keys[i], e);
       });
@@ -148,10 +174,12 @@ export function dot(a: Float32Array, b: Float32Array): number {
   return s;
 }
 
-/** Which parts of the embedding a match compares: the whole patch (CLS + mean of tokens) or the
- * object at its centre (CLS + centre-weighted tokens). */
-export type Focus = "whole" | "center";
-const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2] };
+/** Which parts of the embedding a match compares: the whole patch (CLS + mean of tokens), the
+ * object at its centre (CLS + centre-weighted tokens), or only what the brush marked (the
+ * brushed tokens' mean; embeddings made with a brush): with the CLS token as well it found no
+ * more on labelled EM, alone +0.04 p@10 (test 12). */
+export type Focus = "whole" | "center" | "brush";
+const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2], brush: [3] };
 
 /** Similarity of embedding `a` to query `q`: the mean over the chosen parts of their cosine,
  * after subtracting `mu` (the candidates' mean embedding: "adapt to the data") when given. */

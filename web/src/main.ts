@@ -6,6 +6,8 @@ import { scanInWorkers } from "./scanpool.ts";
 import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
 import type { Patch, TokenGrid } from "./embedder.ts";
 import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
+import { BrushPad } from "./brushpad.ts";
+import { BRUSH } from "./embedder.ts";
 import { GlobeViewer } from "./globeviewer.ts";
 import { NgViewer } from "./ngviewer.ts";
 import { OlViewer } from "./olviewer.ts";
@@ -774,9 +776,11 @@ function clearSearch() {
   $<HTMLCanvasElement>("qmap").width = 128;
   setAdding(false);
   $<HTMLButtonElement>("addex").disabled = true;
+  $<HTMLButtonElement>("brushbtn").disabled = true;
+  $("bpad").hidden = true;
   render();
 }
-$("clear").addEventListener("click", () => { clearSearch(); idle(); });
+$("clear").addEventListener("click", () => { brushW = null; clearSearch(); idle(); });
 $("stop").addEventListener("click", () => {  // pause, or carry on from where it paused
   if (!search) return;
   if (search.state.phase === "read") search.stop();
@@ -852,6 +856,7 @@ function queryAt(fx: number, fy: number, fz?: number, add = false) {
   const L = s.levels[W].shape;
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { $("status").textContent = "too close to the edge"; return; }
   countEvent(`search/${countAs || "unknown"}`);
+  brushW = null;  // marks belong to the box they were made on
   begin(c, W, P);
 }
 
@@ -867,20 +872,30 @@ setInterval(() => {  // channels changed in the viewer while a search runs: say 
   $("chnote").hidden = !on || mixKey(on.length ? on : m!.slice(0, 1)) === mixKey((src as OmeZarrSource).mixed());
 }, 1000);
 
+/** Which of the query box's 8 x 8 parts matter (the brush), or null: every part alike. */
+let brushW: Float32Array | null = null;
+let started: { c: Vec3; W: number; P: number; sketch?: Patch } | null = null;  // the search's start, to start it again with a brush
+
 /** A new search for the box at `c` (level W, side P), or for a drawing. */
 function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   const s = src!;
   clearSearch();
+  started = { c, W, P, sketch };
   if (!sketch) takeChannels();  // a drawing took them when the pad opened
   warm();
   $("hint").classList.add("gone");
   const region = regionFor(W, P, c);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorkers, topN: 60,
                                    match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
-                                   expand: $<HTMLSelectElement>("region").value === "auto",
+                                   expand: $<HTMLSelectElement>("region").value === "auto", brush: brushW ?? undefined,
                                    roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
   $<HTMLButtonElement>("clear").disabled = false;
   $<HTMLButtonElement>("addex").disabled = false;
+  const tok = $<HTMLSelectElement>("method").value === "tokens", bb = $<HTMLButtonElement>("brushbtn");
+  bb.disabled = tok;
+  bb.classList.toggle("on", !!brushW);
+  bb.textContent = brushW ? `what matters: ${brushW.reduce((n, v) => n + (v > 0 ? 1 : 0), 0)} parts` : "what matters";
+  if (tok) bb.title = "Not with Options > tiles + tokens";
   let queued = false;
   const me = search;
   search.on(() => {  // at most one panel update per frame, always with the latest state
@@ -936,6 +951,11 @@ function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: n
     ctx2.drawImage(one, ...cropTo(P, r.w, r.h), r.x, r.y, r.w - (r.x + r.w < S ? gap : 0), r.h - (r.y + r.h < S ? gap : 0));
   });
   cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
+  if (brushW && n === 1) {  // the parts that do not matter, dimmed
+    const c = S / BRUSH;
+    ctx2.fillStyle = "#000000a0";
+    brushW.forEach((v, i) => { if (!v) ctx2.fillRect((i % BRUSH) * c, Math.floor(i / BRUSH) * c, c, c); });
+  }
 }
 
 /** A duration: seconds, minutes, hours, days or years. */
@@ -1109,7 +1129,7 @@ const VARIANT: Record<string, string> = { "s-1": "at half size", "s+1": "at doub
 function whyText(s: Search, i: number): string {
   const e = s.explain(i);
   if (!e) return "";
-  const name = { look: "look", parts: "parts", centre: "centre", tokens: "tokens" };
+  const name = { look: "look", parts: "parts", centre: "centre", brushed: "marked", tokens: "tokens" };
   const bits = [e.parts.map((p) => `${name[p.name]} ${p.value.toFixed(2)}`).join(" · ")];
   if (e.variant !== "id") bits.push(VARIANT[e.variant] ?? `turned (${e.variant.slice(1)})`);
   if (e.example >= 0) bits.push(`closest: example ${e.example + 1}`);
@@ -1120,10 +1140,14 @@ function showWhyHelp() {
   $("whyhelp").hidden = !whyOn;
   document.body.classList.toggle("parts", whyOn && !matchOn);
   $("matchhelp").hidden = !matchOn;
+  const marked = !!search?.opt.brush;
+  $("matchhelp").textContent = `Bright: the parts of each hit that look most like ${marked ? "the parts you marked" : "the middle of your box"}; the dimmer, `
+    + `the less alike. What every box has (plain background, the usual texture) does not count. On your box: ${marked ? "the parts you marked" : "the middle part it looks for"}.`;
   if (!whyOn || !search) return;
   const m = search.opt.match, tok = search.opt.method === "tokens";
   $("whytext").innerHTML = `<b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (tok ? "of the window's average token. "
+       : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "its 8 x 8 pieces"}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
@@ -1228,12 +1252,14 @@ async function queryTokens(s: Search) {
   }
   const n = Math.hypot(...q) || 1;
   qtok = q.map((v) => v / n);
-  // the centre-weighted average piece (Gaussian, sigma a quarter of the grid, as the "centre" embedding)
-  const c = new Float32Array(D);
+  // the centre-weighted average piece (Gaussian, sigma a quarter of the grid, as the "centre"
+  // embedding), or the marked pieces' when the search has a brush
+  const c = new Float32Array(D), bw = s.opt.brush;
   for (const g of qgrids) {
     const m = new Float32Array(D), sg = g.g / 4, mid = (g.g - 1) / 2;
     for (let y = 0; y < g.g; y++) for (let x = 0; x < g.g; x++) {
-      const w = Math.exp(-((y - mid) ** 2 + (x - mid) ** 2) / (2 * sg * sg)), t = y * g.g + x;
+      const w = bw ? bw[Math.floor((y * BRUSH) / g.g) * BRUSH + Math.floor((x * BRUSH) / g.g)]
+                   : Math.exp(-((y - mid) ** 2 + (x - mid) ** 2) / (2 * sg * sg)), t = y * g.g + x;
       for (let d = 0; d < D; d++) m[d] += w * g.tokens[t * D + d];
     }
     const k = Math.hypot(...m) || 1;
@@ -1527,7 +1553,7 @@ function goTo(i: number) {
 
 // match options (test 5 compared them on labelled EM; see README "How matching works")
 function matchOptions(): MatchOptions {
-  return { focus: $<HTMLSelectElement>("focus").value as Focus, rotations: $<HTMLInputElement>("rot").checked,
+  return { focus: brushW ? "brush" : $<HTMLSelectElement>("focus").value as Focus, rotations: $<HTMLInputElement>("rot").checked,
            scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked,
            combine: $<HTMLSelectElement>("combine").value as "mean" | "any" };
 }
@@ -1661,8 +1687,32 @@ $("padgo").addEventListener("click", () => {
   const sk = pad.patch(src.channels, $<HTMLInputElement>("padtex").checked);
   $("pad").hidden = true;
   countEvent(`draw/${countAs || "unknown"}`);
+  brushW = null;
   begin(NOWHERE, padAt.W, padAt.P, sk);
 });
+
+// the brush: which parts of the query box matter
+const bpad = new BrushPad($<HTMLCanvasElement>("bpadcv"), () => { $<HTMLButtonElement>("bpadgo").disabled = !bpad.marked; });
+$("brushbtn").addEventListener("click", () => {
+  if (!search || !src) return;
+  const box = $("bpad");
+  if (!box.hidden) { box.hidden = true; return; }
+  bpad.load(search.examplePixels()[0], search.state.patch, src.channels, brushW);
+  $<HTMLButtonElement>("bpadgo").disabled = !bpad.marked;
+  $("pad").hidden = true;
+  box.hidden = false;
+});
+$("bpadx").addEventListener("click", () => { $("bpad").hidden = true; });
+$("bpadall").addEventListener("click", () => bpad.fill(1));
+$("bpadnone").addEventListener("click", () => bpad.fill(0));
+/** The search again from its start, with the brush as it is now. */
+function againWithBrush(w: Float32Array | null) {
+  brushW = w;
+  $("bpad").hidden = true;
+  if (started && src) begin(started.c, started.W, started.P, started.sketch);
+}
+$("bpadgo").addEventListener("click", () => againWithBrush(bpad.marked ? Float32Array.from(bpad.w) : null));
+$("bpadoff").addEventListener("click", () => againWithBrush(null));
 
 // for debugging from the console
 (window as any).coresample = { get src() { return src; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; },
