@@ -4,7 +4,9 @@
 // query string, which can hold the address of your own data (?url=...). Sent: the dataset id
 // (your own data: only its format), a title, whether it is an event, the screen width, and
 // the referring site's domain. https://www.goatcounter.com
-const CODE = "coresample";  // the site's GoatCounter code: https://coresample.goatcounter.com
+// David's GoatCounter site, shared with his other projects: every path here starts /coresample/
+const CODE = "davidackerman";  // https://davidackerman.goatcounter.com
+const APP = "coresample";
 const LIVE = "davidackerman.github.io";
 
 function send(path: string, title: string, event: boolean) {
@@ -17,7 +19,7 @@ function send(path: string, title: string, event: boolean) {
   new Image().src = url;
 }
 
-/** A page view of a dataset ("/mars-ctx", or "/custom/ome-zarr" for your own). */
-export function countOpen(what: string, title: string) { send(`/${what}`, title, false); }
-/** An event: a search ("search/mars-ctx") or a drawing searched ("draw/mars-ctx"). */
-export function countEvent(path: string) { send(path, path, true); }
+/** A page view of a dataset ("/coresample/mars-ctx", or "/coresample/custom/ome-zarr" for your own). */
+export function countOpen(what: string, title: string) { send(`/${APP}/${what}`, `${APP}: ${title}`, false); }
+/** An event: a search ("coresample/search/mars-ctx") or a drawing searched ("coresample/draw/mars-ctx"). */
+export function countEvent(path: string) { send(`${APP}/${path}`, `${APP}: ${path}`, true); }
