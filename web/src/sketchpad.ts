@@ -117,6 +117,10 @@ export class SketchPad {
    * data's own colours, softened (a 3 x 3 blur) and given the data's grain, as the data looks. */
   patch(channels: number, texture: boolean): Patch {
     const P = this.P, rgba = (texture ? this.m : this.g).getImageData(0, 0, P, P).data, d = new Float32Array(P * P * channels);
+    // grain: Gaussian noise (Box-Muller) at the data's level, the same in every channel (brightness
+    // grain, as a camera's; one draw per channel made colour speckle)
+    const grain = new Float32Array(P * P);
+    if (texture) for (let i = 0; i < P * P; i++) grain[i] = this.tones.noise * Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
     for (let c = 0; c < channels; c++) {
       let v = new Float32Array(P * P);
       for (let i = 0; i < P * P; i++) v[i] = channels === 1 ? lum(rgba, 4 * i) : rgba[4 * i + c];
@@ -130,9 +134,7 @@ export class SketchPad {
             const w = k[dy + 1] * k[dx + 1];
             s += w * v[yy * P + xx]; n += w;
           }
-          // grain: Gaussian noise (Box-Muller) at the data's level
-          const u = 1 - Math.random(), r = Math.random();
-          b[y * P + x] = s / n + this.tones.noise * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r);
+          b[y * P + x] = s / n + grain[y * P + x];
         }
         v = b;
       }
