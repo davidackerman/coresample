@@ -12,9 +12,11 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 
 - **Search:** pick a dataset (or paste your own, below), zoom until the thing is clear, click.
   The panel counts the quick pass's chunks as they arrive, then hits stream in, best first; it
-  keeps reading until it is done or you press **Pause**. With region on auto it works outward
-  from your click, nearest areas first, says how much the quick pass has covered and how long
-  all of it would take: the search level is the one on screen, so zoom out first to cover more.
+  keeps reading until it is done or you press **Pause**. With region on auto, on data too big
+  for one quick pass, the quick pass keeps spreading outward from your click, nearest areas
+  first, while the reads go to the best-scoring places of every area it has covered (not the
+  area around the click first). It says how much it has covered and how long all of it would
+  take: the search level is the one on screen, so zoom out first to cover more.
 - **More examples:** shift-click (or **+ example**) adds another; hits then match their mean
   (Options > examples: or each hit's best match).
 - **✓ / ✗ on a hit:** more / fewer like this. The query moves, the list re-ranks, and the tiles

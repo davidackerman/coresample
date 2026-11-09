@@ -239,7 +239,7 @@
           <span class="lbl">level</span>
           <select id="level" title="The resolution level the search runs at: auto = the level on screen"><option value="auto" selected>auto (as viewed)</option></select>
           <span class="lbl">region</span>
-          <select id="region" title="Where to search: auto = the largest area the quick first pass can cover around the click (the whole dataset when it fits), then the areas around it, nearest first, until the whole dataset is read or you pause">
+          <select id="region" title="Where to search: auto = the largest area the quick first pass can cover around the click (the whole dataset when it fits), then the quick pass spreads to the areas around it, nearest first, while the reads go to the best places of every area it has covered, until the whole dataset is read or you pause">
             <option value="auto" selected>auto (everywhere, nearest first)</option><option value="whole">whole dataset</option><option value="8">8x the view</option><option value="1">the view</option></select>
           <span class="lbl">method</span>
           <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
