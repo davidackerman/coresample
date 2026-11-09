@@ -94,6 +94,8 @@ export const DETAIL = 0.1;
  * holds a few, 3 KB each); tiles further down keep only their score. */
 const POOL_EMBS = 20000;
 /** A working-level tile as one number (each index below 2^20, z below 2^13). */
+/** How long the outward scanning rests after each area, in multiples of the time it took. */
+const SPREAD_REST = 4;
 const tileKey = (t: Vec3) => t[0] * 2 ** 40 + t[1] * 2 ** 20 + t[2];
 
 /** A candidate kept for ranking: its place, embedding, pixels and current score. */
@@ -457,9 +459,10 @@ export class Search {
     return false;
   }
 
-  /** With `expand`: keep scanning outward while the reads go on, one area at a time and resting
-   * as long as each took (the detail reads keep at least half the downloads), so they can go to
-   * the best places anywhere scanned instead of finishing the area around the click first. */
+  /** With `expand`: keep scanning outward while the reads go on, so they can go to the best
+   * places anywhere scanned instead of finishing the area around the click first. One area at a
+   * time, resting SPREAD_REST times as long as each took: the scans compete with the reads for
+   * the CPU and the network (hemibrain at 8 nm, 90 s: resting as long cost 25% of the tiles read). */
   private async spread() {
     if (!this.opt.expand || this.spreading) return;
     this.spreading = true;
@@ -467,7 +470,7 @@ export class Search {
       while (!this.stopFlag) {
         const t = performance.now();
         if (!(await this.scanOne())) break;
-        await new Promise((r) => setTimeout(r, Math.max(500, performance.now() - t)));
+        await new Promise((r) => setTimeout(r, Math.max(500, SPREAD_REST * (performance.now() - t))));
       }
     } catch { /* an area that fails: the reader's own expansion carries on */ }
     finally { this.spreading = false; }
