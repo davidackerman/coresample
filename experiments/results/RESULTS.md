@@ -482,6 +482,11 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
   gained nothing), the rough pass runs a round ahead in the background, and image decoding moved
   to workers (the main thread was 78% busy, a third of it decoding): 937 to 2,150 tiles read in
   detail and 10,248 to 22,976 looked over; the model is now busy 76% of the time.
+  HeLa (OpenOrganelle, on S3): S3 speaks HTTP/1.1, so a browser opens 6 connections per address
+  and the 16 reads queued behind them. Read through the bucket's 5 addresses (each chunk always
+  to the same one), 90 s, the same stand-in model: 1,554 tiles in detail in all 3 runs against
+  836-1,403 in 4 runs with one address, 30,836-32,420 looked over against 17,108-28,964, and
+  1.10 GB read against 0.67-0.99 GB. IDR has two addresses; Google Cloud and EOX speak HTTP/2.
 
 ## Kill rule
 

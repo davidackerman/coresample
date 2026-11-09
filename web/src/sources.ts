@@ -36,6 +36,25 @@ export function normalizeUrl(url: string): string {
   return url;
 }
 
+/** Other addresses of the same data. S3 and IDR speak HTTP/1.1, so a browser opens at most 6
+ * connections to one address; spread over several, more chunks download at once. Each is
+ * checked before use (a bucket outside us-east-1 fails the guessed ones). */
+export function mirrorsOf(url: string): string[] {
+  const idr = ["https://livingobjects.ebi.ac.uk/idr/", "https://uk1s3.embassy.ebi.ac.uk/idr/"];
+  for (const [a, b] of [idr, [idr[1], idr[0]]]) if (url.startsWith(a)) return [b + url.slice(a.length)];
+  return s3Mirrors(url);
+}
+function s3Mirrors(url: string): string[] {
+  const m = url.match(/^https:\/\/(?:([a-z0-9-]+)\.s3[.-]([a-z0-9-]+\.)?amazonaws\.com|s3[.-]([a-z0-9-]+\.)?amazonaws\.com\/([a-z0-9.-]+))(\/.*)?$/);
+  if (!m) return [];
+  const bucket = m[1] ?? m[4], reg = (m[2] ?? m[3] ?? "").replace(/\.$/, ""), key = m[5] ?? "";
+  const region = reg && reg !== "dualstack" ? reg : "us-east-1";
+  const all = [`https://${bucket}.s3.amazonaws.com${key}`, `https://${bucket}.s3.${region}.amazonaws.com${key}`,
+               `https://s3.amazonaws.com/${bucket}${key}`, `https://s3.${region}.amazonaws.com/${bucket}${key}`,
+               `https://${bucket}.s3.dualstack.${region}.amazonaws.com${key}`];
+  return [...new Set(all)].filter((u) => u !== url);
+}
+
 // ---------------------------------------------------------------------------------------
 // A small byte-bounded LRU, shared by the readers so display and search reuse fetches
 // ---------------------------------------------------------------------------------------
@@ -69,13 +88,33 @@ export class Lru<V> {
 // OME-Zarr
 // ---------------------------------------------------------------------------------------
 
-/** A fetch store that counts bytes and keeps recent chunks (display and search share them). */
+/** A fetch store that counts bytes and keeps recent chunks (display and search share them),
+ * reading through more than one address of the same data when it has them. */
 class CountingStore {
   bytes = 0;
-  private inner: zarr.FetchStore;
+  private inners: zarr.FetchStore[];
+  private first: { key: string; n: number } | null = null;  // a file read, to check other addresses with
   private cache = new Lru<Uint8Array | null>(768 << 20);
   private pending = new Map<string, Promise<Uint8Array | undefined>>();
-  constructor(url: string) { this.inner = new zarr.FetchStore(url); }
+  constructor(url: string) { this.inners = [new zarr.FetchStore(url)]; }
+  /** Addresses in use. */
+  get addresses() { return this.inners.length; }
+  /** Each key always to the same address (so the browser's cache works); retries to the first. */
+  private pick(key: string, attempt: number): zarr.FetchStore {
+    if (this.inners.length === 1 || attempt > 0) return this.inners[0];
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+    return this.inners[Math.abs(h) % this.inners.length];
+  }
+  /** Other addresses of the same data, each used only if it returns a file already read, whole. */
+  async addMirrors(urls: string[]) {
+    const f = this.first;
+    if (!f || !urls.length) return;
+    const ok = await Promise.all(urls.map(async (u) => {
+      try { const r = await fetch(u + f.key); return r.ok && (await r.arrayBuffer()).byteLength === f.n; } catch { return false; }
+    }));
+    urls.forEach((u, i) => { if (ok[i]) this.inners.push(new zarr.FetchStore(u)); });
+  }
   async get(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
     const hit = this.cache.get(key);
     if (hit !== undefined) return hit ?? undefined;
@@ -85,8 +124,8 @@ class CountingStore {
         let err: unknown;
         for (let attempt = 0; attempt < 4; attempt++) {  // transient network failures: retry
           try {
-            const v = await this.inner.get(key, opts);
-            if (v) this.bytes += v.byteLength;
+            const v = await this.pick(key, attempt).get(key, opts);
+            if (v) { this.bytes += v.byteLength; this.first ??= { key, n: v.byteLength }; }
             this.cache.set(key, v ?? null, v ? v.byteLength : 64);
             return v;
           } catch (e) {
@@ -127,7 +166,7 @@ export class OmeZarrSource implements Source {
   }
   get bytesRead() { return this.store.bytes; }
 
-  static async open(url: string, name?: string): Promise<OmeZarrSource> {
+  static async open(url: string, name?: string, { mirrors = true } = {}): Promise<OmeZarrSource> {
     const s = new OmeZarrSource(normalizeUrl(url), name);
     const root = zarr.root(s.store);
     const grp = await zarr.open(root, { kind: "group" });
@@ -157,6 +196,7 @@ export class OmeZarrSource implements Source {
       });
     }
     if (s.axes.z >= 0 && s.arrays[0].shape[s.axes.z] > 1) s.dims = 3;
+    if (mirrors) await s.store.addMirrors(mirrorsOf(s.url));
     if (s.axes.c >= 0 && s.arrays[0].shape[s.axes.c] >= 3) s.channels = 3;
     const dt = String(s.arrays[0].dtype);
     if (dt !== "uint8") {  // window from the coarsest level, then every read maps to 0-255

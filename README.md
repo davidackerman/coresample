@@ -64,7 +64,8 @@ Paste one under **Your own data**; the address bar then holds `?url=...` and the
 (`&v=x,y,z,scale`), so a copied link opens the same place. Other address options: `&globe=0`
 (flat map), `&rough=0` / `&rough=1` (rough pass off / forced on a CPU). The data must be a
 multiscale pyramid on a host that allows cross-origin reads (CORS), as public buckets, NASA
-Trek, ESA and IDR do.
+Trek, ESA and IDR do. S3 and IDR let a browser download only 6 files at once per address, so
+the page also reads through their other addresses for the same data.
 
 ## Run locally
 
