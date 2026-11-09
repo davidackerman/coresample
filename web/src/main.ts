@@ -503,13 +503,14 @@ dsBtn.addEventListener("click", () => { dsMenu.hidden = !dsMenu.hidden; if (!dsM
 document.addEventListener("pointerdown", (e) => { if (!dsMenu.hidden && !(e.target as HTMLElement).closest(".dpick")) dsMenu.hidden = true; });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dsMenu.hidden = true; });
 $("open").addEventListener("click", () => { dsMenu.hidden = true; openCustom($<HTMLInputElement>("custom").value); });
-$("ownbtn").addEventListener("click", () => {
-  dsMenu.hidden = !dsMenu.hidden;
-  if (dsMenu.hidden) return;
+/** The datasets menu, open at the box for your own data. */
+function openOwnBox() {
+  dsMenu.hidden = false;
   fillDatasets();
   dsMenu.querySelector(".own")!.scrollIntoView({ block: "nearest" });
   $("custom").focus();
-});
+}
+$("ownbtn").addEventListener("click", () => { if (dsMenu.hidden) openOwnBox(); else dsMenu.hidden = true; });
 $("pick").hidden = !canPick;
 if (canPick) $("pickhelp").textContent = "or drop one anywhere on the page";
 else $("pickhelp").textContent = "Or drop a folder anywhere on the page.";
@@ -610,7 +611,11 @@ async function openPreset(p: Preset) {
 }
 function idle() {
   $("phase").textContent = "Click on the image to search";
-  $("status").textContent = "It reads the most promising tiles first and keeps going until it has covered the region or you pause it.";
+  const own = document.createElement("button");
+  own.className = "link"; own.textContent = "paste a link";
+  own.addEventListener("click", openOwnBox);
+  $("status").replaceChildren("It reads the most promising tiles first and keeps going until it has covered the region or you pause it.\n"
+    + "Your own data: drop a folder on the page, or ", own, ".");
 }
 
 async function openCustom(text: string) {
