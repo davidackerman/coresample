@@ -22,8 +22,9 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
   coloured the way the model sees them.
 - **Heat:** how well every place compared matched, on the **Where it has looked** map and over
   the image (in a volume, at the slice's depth).
-- **draw:** sketch what to find. It finds bold shapes such as craters; on EM it finds nothing,
-  so add real examples there.
+- **draw:** sketch what to find, in the data's tones or any colour (**look like the data** turns
+  colours into the data's own by brightness: white is its brightest). It finds bold shapes such
+  as craters; on EM it finds nothing, so add real examples there.
 - **Viewers:** Neuroglancer for OME-Zarr and precomputed volumes (your clicks in blue, hits in
   yellow), OpenLayers for tile maps, a globe for Mars and the Moon (**map** switches to the
   flat map). The bottom right shows the coordinates under the cursor and takes coordinates
