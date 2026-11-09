@@ -10,8 +10,8 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 
 ## Using it
 
-- **Search:** pick a dataset (or open your own with **Your data**, or drop a folder on the page:
-  [Data](#data)), zoom until the thing is clear, click.
+- **Search:** pick a dataset (or open your own with **Your data**, or drop a folder or an image
+  on the page: [Data](#data)), zoom until the thing is clear, click.
   The panel has a bar for each stage (quick pass, model, detail: hover one for what it does),
   then hits stream in, best first; it
   keeps reading until it is done or you press **Pause**. With region on auto, on data too big
@@ -70,11 +70,12 @@ beat DINOv2-small on both targets (tests 5-9, [RESULTS.md](experiments/results/R
 | Zoomify | `https://host/.../ImageProperties.xml` |
 | a Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec) |
 | a folder on this computer | drop it on the page, or **Your data** > **Choose a folder** (Chrome, Edge): an OME-Zarr (or a folder with some inside: it opens the first), or a precomputed volume |
+| an image file on this computer | drop it on the page, or **Your data** > **Choose an image**: PNG, JPEG, WebP, GIF, BMP, AVIF, or TIFF (multi-page: z planes and channels as its OME-XML or ImageJ description says, else z planes), read whole into memory (up to 1.5 billion values; bigger, convert it to OME-Zarr) |
 
 Paste a link under **Your data**; the address bar then holds `?url=...` and the view
-(`&v=x,y,z,scale`), so a copied link opens the same place. A folder is read where it is (a
-service worker, `web/public/local-sw.js`, serves it to the page and Neuroglancer; nothing is
-uploaded), so there is no link to it. Other address options: `&globe=0`
+(`&v=x,y,z,scale`), so a copied link opens the same place. A folder or image is read where it is (a
+service worker, `web/public/local-sw.js`, serves it to the page and Neuroglancer, an image as an
+OME-Zarr made on the fly, `web/src/imagefile.ts`; nothing is uploaded), so there is no link to it. Other address options: `&globe=0`
 (flat map), `&rough=0` / `&rough=1` (rough pass off / forced on a CPU). The data must be a
 multiscale pyramid on a host that allows cross-origin reads (CORS), as public buckets, NASA
 Trek, ESA and IDR do. S3 and IDR let a browser download only 6 files at once per address, so

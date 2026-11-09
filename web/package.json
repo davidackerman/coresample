@@ -12,6 +12,7 @@
     "model": "cd .. && uv run python web/scripts/export_model.py"
   },
   "dependencies": {
+    "geotiff": "3.0.5",
     "ol": "10.10.0",
     "onnxruntime-web": "1.30.0",
     "zarrita": "0.7.5"
