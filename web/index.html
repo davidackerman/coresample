@@ -213,14 +213,17 @@
       <div class="own">
         <div class="lbl">Your own data</div>
         <div class="row"><input id="custom" placeholder="a link: OME-Zarr, precomputed://, map tiles, Zoomify, legacy:RA,Dec"><button id="open">Open</button></div>
-        <div class="row"><button id="pick" hidden>Choose a folder...</button><span class="help" id="pickhelp">or drop a folder anywhere on the page</span></div>
+        <div class="row"><button id="pick" hidden>Choose a folder...</button><button id="pickimg">Choose an image...</button><span class="help" id="pickhelp">or drop either anywhere on the page</span>
+          <input type="file" id="imgfile" hidden accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.tif,.tiff,image/*"></div>
         <ul class="help">
           <li><b>A link</b> to a host that allows reads from web pages (CORS): OME-Zarr v2/v3, 2-D or 3-D
             (<code>https://</code>, <code>s3://</code>, <code>gs://</code>); Neuroglancer <code>precomputed://gs://...</code>;
             map tiles <code>.../{z}/{x}/{y}.png</code> (add <code>#maxZoom=12</code>); Zoomify <code>.../ImageProperties.xml</code>;
             a Legacy Surveys field <code>legacy:245.43,37.996</code>. The address bar then holds a link to it.</li>
           <li><b>A folder on this computer:</b> an OME-Zarr (or a folder with some inside: it opens the first) or a
-            precomputed volume. It is read where it is, nothing is uploaded; there is no link to it.</li>
+            precomputed volume. <b>Or an image:</b> PNG, JPEG, WebP, or TIFF (multi-page: z planes and channels, as
+            its OME or ImageJ description says), read whole into memory. Either is read where it is, nothing is
+            uploaded; there is no link to it.</li>
         </ul>
       </div>
     </div>
@@ -338,7 +341,7 @@
     <div id="hits"><div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div></div>
   </aside>
 </main>
-<div id="drop" hidden><div><b>Drop a folder to search it</b><span>An OME-Zarr or a Neuroglancer precomputed volume. It is read where it is: nothing is uploaded.</span></div></div>
+<div id="drop" hidden><div><b>Drop a folder or an image to search it</b><span>An OME-Zarr or Neuroglancer precomputed folder, or a PNG, JPEG, WebP or TIFF. It is read where it is: nothing is uploaded.</span></div></div>
 <script type="module" src="./src/main.ts"></script>
 </body>
 </html>
