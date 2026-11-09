@@ -1446,7 +1446,8 @@ async function openPad() {
   const W = searchLevel(), P = Number(patchSel.value);
   padAt = { W, P };
   $("pad").hidden = false;
-  $("padhelp").textContent = `One box of ${patchSize()}, in this data's own ${src.channels === 3 ? "colours" : "greys"} (from the view).`;
+  $("padhelp").textContent = `One box of ${patchSize()}. Any colour works: "look like the data" turns it into this data's own `
+    + `${src.channels === 3 ? "colours" : "greys"} by brightness.`;
   pad.reset(P, { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 });
   try {  // the tones (greys or colours) and grain of what is on screen
     const side = Math.min(4 * P, 512), v = await viewPixels(W, side);
@@ -1456,12 +1457,24 @@ async function openPad() {
 }
 $("drawbtn").addEventListener("click", () => ($("pad").hidden ? openPad() : ($("pad").hidden = true)));
 $("padx").addEventListener("click", () => { $("pad").hidden = true; });
+function choosePen(t: Tone) {
+  pad.tone = t;
+  for (const b of $("padtone").querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("on", b.dataset.t === t);
+}
 $("padtone").addEventListener("click", (e) => {
   const t = (e.target as HTMLElement).closest("button")?.dataset.t as Tone | undefined;
-  if (!t) return;
-  pad.tone = t;
-  for (const b of $("padtone").querySelectorAll("button")) b.classList.toggle("on", b.dataset.t === t);
+  if (t) choosePen(t);
 });
+const padCol = $<HTMLInputElement>("padcol");
+function pickColour() {
+  const h = padCol.value;
+  pad.any = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+  choosePen("any");
+  showPens();
+}
+padCol.addEventListener("input", pickColour);
+padCol.addEventListener("click", pickColour);
+$("padfill").addEventListener("click", () => pad.fill());
 $("padsize").addEventListener("click", (e) => {
   const r = (e.target as HTMLElement).closest("button")?.dataset.r;
   if (!r) return;

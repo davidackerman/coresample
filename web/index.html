@@ -157,6 +157,8 @@
   .padrow { margin-top: 6px; gap: 6px; font-size: 12px; }
   .padrow .lbl { width: 34px; }
   .padrow label { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
+  .padrow .seg button { padding: 3px 8px; }
+  #padcol { width: 28px; height: 24px; padding: 0 2px; border: 1px solid var(--line2); border-radius: 6px; background: transparent; cursor: pointer; }
   button.primary { background: var(--acc); border-color: var(--acc); color: #06121f; font-weight: 600; }
   #layers { display: flex; flex-wrap: wrap; gap: 6px; }
   #layers label { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border: 1px solid var(--line2); border-radius: 12px; cursor: pointer; font-size: 12px; color: var(--dim); user-select: none; }
@@ -206,10 +208,12 @@
       <div class="help" id="padhelp">One box at the search level, in this data's own greys.</div>
       <canvas id="padcv" title="Draw here"></canvas>
       <div class="row padrow"><span class="lbl">pen</span>
-        <div class="seg" id="padtone"><button data-t="dark" class="on">dark</button><button data-t="mid">grey</button><button data-t="light">light</button></div>
+        <div class="seg" id="padtone"><button data-t="dark" class="on">dark</button><button data-t="mid">grey</button><button data-t="light">light</button><button data-t="any" title="Any colour: pick it on the right">colour</button></div>
+        <input type="color" id="padcol" value="#ffffff" title="The colour pen's colour"></div>
+      <div class="row padrow"><span class="lbl">size</span>
         <div class="seg" id="padsize"><button data-r="1">thin</button><button data-r="2" class="on">medium</button><button data-r="5">thick</button></div></div>
-      <div class="row padrow"><span class="lbl">start</span><button id="padblank">blank</button><button id="padview" title="The box at the centre of the view, to draw over">from the view centre</button></div>
-      <div class="row padrow"><label title="Soften the drawing and give it the data's grain before the model sees it"><input type="checkbox" id="padtex" checked> look like the data</label></div>
+      <div class="row padrow"><span class="lbl">start</span><button id="padblank">blank</button><button id="padview" title="The box at the centre of the view, to draw over">the view</button><button id="padfill" title="Fill the box with the pen, as a background to draw on">fill</button></div>
+      <div class="row padrow"><label title="Turn every colour into the data's own by brightness (black: its darkest, white: its brightest), soften the drawing and give it the data's grain before the model sees it"><input type="checkbox" id="padtex" checked> look like the data</label></div>
       <div class="row padrow"><button id="padgo" class="primary">Search for this</button></div>
     </div>
     <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
