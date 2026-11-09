@@ -52,14 +52,17 @@ export class OlViewer {
     // the server's broken zooms left out: OpenLayers draws the neighbouring zooms there
     const zooms = Array.from({ length: s.maxZoom + 1 }, (_, z) => z).filter((z) => z >= (s.minZoom ?? 0) && !s.skipZooms?.includes(z));
     const resolutions = zooms.map((z) => 2 ** (s.maxZoom - z));
-    const tileGrid = new TileGrid({ extent, origin: [0, 0], resolutions, tileSize: ts });
+    // tiles shown: the source's own, or its display tiles (same grid, another tile size)
+    const dsp = s.display, dts = dsp?.tileSize ?? ts, dz = Math.round(Math.log2(ts / dts));
+    const tileGrid = new TileGrid({ extent, origin: [0, 0], resolutions, tileSize: dts });
     const tiles = new TileLayer({
       source: new TileImage({
         projection, tileGrid, transition: 150, wrapX: false,
-        tileUrlFunction: (c) => (c ? s.url(zooms[c[0]], c[1], c[2]) : undefined),
-        // tiles come through the source's own cached fetch, so viewing and searching share
-        // every download (and its retries and rate limit)
-        tileLoadFunction: (tile, _url) => {
+        tileUrlFunction: (c) => (!c ? undefined : dsp ? dsp.url(zooms[c[0]] + dz, c[1], c[2]) : s.url(zooms[c[0]], c[1], c[2])),
+        // display tiles load as plain images (no CORS needed to show them); the source's own
+        // come through its cached fetch, so viewing and searching share every download (and its
+        // retries and rate limit)
+        ...(dsp ? {} : { tileLoadFunction: (tile: import("ol/Tile").default, _url: string) => {
           const [zi, x, y] = tile.getTileCoord(), z = zooms[zi];
           const img = (tile as ImageTile).getImage() as HTMLImageElement;
           src.blob(z, x, y).then((b) => {
@@ -71,7 +74,7 @@ export class OlViewer {
             img.src = u;
             setTimeout(() => URL.revokeObjectURL(u), 120_000);
           });
-        },
+        } }),
         attributions: src.attribution,
       }),
     });

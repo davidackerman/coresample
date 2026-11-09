@@ -83,7 +83,7 @@ export const PRESETS: Preset[] = [
     count: SKY_W * SKY_W,
     open: async () => legacySky("ls-dr10"),
     view: { ...skyAt(285.1504, 59.1669), scale: 2 },  // NGC 6750
-    note: "Start: NGC 6750. Each tile is drawn by the survey's server as you go (slower than map tiles); zoomed far out, tiles line up only roughly.",
+    note: "Start: NGC 6750. You browse the survey's own map tiles; a search reads cutouts its server draws on request, two at a time (1-28 s each), so it is slow.",
   },
   {
     id: "legacy-ngc6129", label: "Sky: DESI Legacy Surveys near NGC 6129", detail: "0.26\u2033/px, 1.2\u00b0 field", kind: "astronomy", count: 16384 * 16384,
