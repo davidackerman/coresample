@@ -47,7 +47,11 @@
   .dsrow .sz small { color: var(--dim); }
   .bar-size { height: 3px; background: var(--line); border-radius: 2px; margin-top: 3px; grid-column: 1; }
   .bar-size i { display: block; height: 100%; background: var(--faint); border-radius: 2px; }
-  .own { border-top: 1px solid var(--line); padding: 10px 12px; }
+  .own { padding: 10px 12px; }
+  .ownfoot { border-top: 1px solid var(--line); padding: 8px 12px; }
+  .ownfoot button.link { font-size: 12px; }
+  /* the datasets button shows the list, "+ Your data" only the box for your own */
+  .menu[data-mode="own"] .menu-head, .menu[data-mode="own"] #dslist, .menu[data-mode="own"] .ownfoot, .menu[data-mode="list"] .own { display: none; }
   .own .row { display: flex; gap: 6px; margin: 6px 0; }
   .own input { flex: 1; min-width: 0; }
   .help { color: var(--faint); font-size: 11.5px; line-height: 1.5; }
@@ -199,12 +203,13 @@
   <div class="dpick">
     <button id="dsbtn" class="ds" aria-haspopup="listbox"><span id="dsname">datasets</span><span id="dssize" class="chip"></span><span class="caret"></span></button>
     <button id="ownbtn" title="Search your own data: a link, or a folder on this computer (or drop one on the page)">+ Your data</button>
-    <div id="dsmenu" class="menu" hidden>
+    <div id="dsmenu" class="menu" data-mode="list" hidden>
       <div class="menu-head">
         <span class="lbl">Datasets</span>
         <div class="seg" id="sort" title="Sort the list"><button data-k="size">size</button><button data-k="kind">type</button><button data-k="name">name</button></div>
       </div>
       <div id="dslist" role="listbox"></div>
+      <div class="ownfoot"><button id="ownlink" class="link">+ your own data: a link, or a folder on this computer</button></div>
       <div class="own">
         <div class="lbl">Your own data</div>
         <div class="row"><input id="custom" placeholder="a link: OME-Zarr, precomputed://, map tiles, Zoomify, legacy:RA,Dec"><button id="open">Open</button></div>
