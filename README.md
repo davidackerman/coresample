@@ -32,6 +32,10 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 - **draw:** sketch what to find, in the data's tones or any colour (**look like the data** turns
   colours into the data's own by brightness, white its brightest, and adds its grain). It finds bold shapes such
   as craters; on EM it finds nothing, so add real examples there.
+- **Channels:** an image with several channels (fluorescence, say) opens as one Neuroglancer
+  layer per channel, each with its colour and range in the layer's controls (from its metadata,
+  else the first three on, in red, green and blue). The search sees what the viewer shows when you
+  click: turn channels on or off, recolour or restretch them, and click again.
 - **Viewers:** Neuroglancer for OME-Zarr and precomputed volumes (your clicks in blue, hits in
   yellow), OpenLayers for tile maps, a globe for Mars and the Moon (**map** switches to the
   flat map). The bottom right shows the coordinates under the cursor and takes coordinates

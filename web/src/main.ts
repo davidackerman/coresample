@@ -832,10 +832,23 @@ function queryAt(fx: number, fy: number, fz?: number, add = false) {
   begin(c, W, P);
 }
 
+/** The search sees a multi-channel image's channels as the viewer shows them (which are on,
+ * their colours and ranges), as they are when a search starts or the pad opens. */
+function takeChannels() {
+  if (src instanceof OmeZarrSource && src.chans.length) src.setMix(ngv?.channelMix() ?? null);
+}
+const mixKey = (m: { index: number; color: number[]; range: number[] }[]) => JSON.stringify(m.map((c) => [c.index, c.color, c.range]));
+setInterval(() => {  // channels changed in the viewer while a search runs: say a new one is needed
+  const m = search && src instanceof OmeZarrSource && src.chans.length ? ngv?.channelMix() : null;
+  const on = m?.filter((c) => c.visible);
+  $("chnote").hidden = !on || mixKey(on.length ? on : m!.slice(0, 1)) === mixKey((src as OmeZarrSource).mixed());
+}, 1000);
+
 /** A new search for the box at `c` (level W, side P), or for a drawing. */
 function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   const s = src!;
   clearSearch();
+  if (!sketch) takeChannels();  // a drawing took them when the pad opened
   warm();
   $("hint").classList.add("gone");
   const region = regionFor(W, P, c);
@@ -1581,6 +1594,7 @@ async function openPad() {
   if (!src) return;
   const W = searchLevel(), P = Number(patchSel.value);
   padAt = { W, P };
+  if (!search) takeChannels();
   $("pad").hidden = false;
   $("padhelp").textContent = `One box of ${patchSize()}. Any colour works: "look like the data" turns it into this data's own `
     + `${src.channels === 3 ? "colours" : "greys"} by brightness and adds its grain; untick it to search the drawing as drawn.`;

@@ -155,10 +155,34 @@ type ByteRange = { offset: number; length: number } | { suffixLength: number };
 
 interface OmeAxis { name: string; type?: string }
 
+/** A channel of a multi-channel image as the viewer shows it and the search reads it: its
+ * colour (red, green, blue, 0-1), the values shown black to full colour, and whether it is on. */
+export interface Channel { index: number; label: string; color: [number, number, number]; range: [number, number]; visible: boolean }
+/** Colours for channels the metadata gives none: ImageJ's composite order (3 channels: RGB). */
+const CHANNEL_COLOURS: [number, number, number][] = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1], [0, 1, 1], [1, 0, 1], [1, 1, 0]];
+/** The most channels offered, one viewer layer each. */
+const MAX_CHANNELS = 16;
+
 export class OmeZarrSource implements Source {
   name: string;
   dims: 2 | 3 = 3;
-  channels: 1 | 3 = 1;
+  /** The channels of an image with more than one (else none), as it opens: from its metadata
+   * (omero), else the first three on, in ImageJ's colours, each stretched over its own values. */
+  chans: Channel[] = [];
+  private mix: Channel[] | null = null;  // as the viewer shows them when the search started (setMix)
+  /** 3: colour (two or more channels mixed), 1: grey (one channel, or no channel axis). */
+  get channels(): 1 | 3 { return this.chans.length && this.mixed().length > 1 ? 3 : 1; }
+  /** The channels the search reads: those on (none on: the first). */
+  mixed(): Channel[] {
+    const on = (this.mix ?? this.chans).filter((c) => c.visible);
+    return on.length ? on : this.chans.slice(0, 1);
+  }
+  /** The channels as the viewer shows them now (null: as they opened). Only between searches:
+   * a search reads one way throughout. */
+  setMix(m: Channel[] | null) {
+    const n = this.axes.c >= 0 ? this.arrays[0].shape[this.axes.c] : 1;
+    this.mix = m && m.map((c) => ({ ...c, index: Math.min(n - 1, Math.max(0, c.index)) }));
+  }
   levels: Level[] = [];
   unit = "";
   attribution?: string;
@@ -210,9 +234,10 @@ export class OmeZarrSource implements Source {
     }
     if (s.axes.z >= 0 && s.arrays[0].shape[s.axes.z] > 1) s.dims = 3;
     if (mirrors) await s.store.addMirrors(mirrorsOf(s.url));
-    if (s.axes.c >= 0 && s.arrays[0].shape[s.axes.c] >= 3) s.channels = 3;
+    const nc = s.axes.c >= 0 ? s.arrays[0].shape[s.axes.c] : 1;
     const dt = String(s.arrays[0].dtype);
-    if (dt !== "uint8") {  // window from the coarsest level, then every read maps to 0-255
+    if (nc > 1) await s.openChannels(Math.min(nc, MAX_CHANNELS), attrs.omero?.channels ?? [], dt);
+    else if (dt !== "uint8") {  // window from the coarsest level, then every read maps to 0-255
       const L = s.levels.length - 1, sh = s.levels[L].shape;
       s.window = [0, 1];
       const r = await s.readRaw(L, [0, 0, 0], sh);
@@ -251,44 +276,87 @@ export class OmeZarrSource implements Source {
     return out;
   }
 
-  private async readRaw(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
+  /** Each channel's colour, range and on/off from the metadata; a range not given (data that is
+   * not 8-bit), from the channel's own values at the coarsest level. */
+  private async openChannels(n: number, omero: any[], dt: string) {
+    const hex = (h: unknown): [number, number, number] | null => {
+      const m = /^#?([0-9a-f]{6})$/i.exec(String(h ?? ""));
+      if (!m) return null;
+      const v = parseInt(m[1], 16);
+      return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+    };
+    const need: number[] = [];
+    this.chans = Array.from({ length: n }, (_, k) => {
+      const o = omero[k] ?? {}, w = o.window ?? {};
+      const given = Number.isFinite(w.start) && Number.isFinite(w.end) && w.end > w.start;
+      if (!given && dt !== "uint8") need.push(k);
+      return { index: k, label: String(o.label ?? k), color: hex(o.color) ?? CHANNEL_COLOURS[k % CHANNEL_COLOURS.length],
+               range: given ? [w.start, w.end] : [0, 255], visible: typeof o.active === "boolean" ? o.active : k < 3 };
+    });
+    if (!need.length) return;
+    const L = this.levels.length - 1, r = await this.readRaw(L, [0, 0, 0], this.levels[L].shape, need);
+    need.forEach((k, j) => {
+      const v: number[] = [];
+      for (let i = j; i < r.data.length; i += need.length) if (r.data[i] !== 0) v.push(r.data[i]);
+      const a = Float64Array.from(v).sort();
+      this.chans[k].range = a.length && a[a.length - 1] > a[0] ? [a[Math.floor(a.length * 0.005)], a[Math.floor(a.length * 0.995)]] : [0, 1];
+    });
+  }
+
+  /** Raw values, channels `cs` interleaved (an image with no channel axis: its one). */
+  private async readRaw(level: number, lo: Vec3, hi: Vec3, cs: number[] = [0]): Promise<Region> {
     const arr = this.arrays[level];
     const lv = this.levels[level];
-    const out = new Float32Array((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]) * this.channels);
+    const ax = this.axes, chs = ax.c >= 0 ? cs : [0], C = chs.length;
+    const out = new Float32Array((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]) * C);
     const a = lo.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
     const b = hi.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
     const shape: Vec3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    if (a.some((v, i) => b[i] <= v)) return { data: out, shape, channels: this.channels };
-    const sel: (number | zarr.Slice | null)[] = new Array(this.axes.n).fill(0);
-    const ax = this.axes;
-    if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0]) : 0;
-    sel[ax.y] = zarr.slice(a[1], b[1]);
-    sel[ax.x] = zarr.slice(a[2], b[2]);
-    if (ax.c >= 0) sel[ax.c] = this.channels === 3 ? zarr.slice(0, 3) : 0;
-    const res = await zarr.get(arr, sel as any);
-    const data = res.data as ArrayLike<number>;
-    // result axes are the non-integer selections in array order
-    const kept = sel.map((s, i) => (typeof s === "number" ? -1 : i)).filter((i) => i >= 0);
-    const strideOf = (axis: number) => (axis < 0 || !kept.includes(axis) ? 0 : res.stride[kept.indexOf(axis)]);
-    const sz = strideOf(ax.z), sy = strideOf(ax.y), sx = strideOf(ax.x), sc = this.channels === 3 ? strideOf(ax.c) : 0;
-    const C = this.channels;
-    for (let z = a[0]; z < b[0]; z++)
-      for (let y = a[1]; y < b[1]; y++)
-        for (let x = a[2]; x < b[2]; x++) {
-          const src = (z - a[0]) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
-          const dst = (((z - lo[0]) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C;
-          for (let c = 0; c < C; c++) out[dst + c] = Number(data[src + c * sc]);
-        }
+    if (a.some((v, i) => b[i] <= v)) return { data: out, shape, channels: C };
+    await Promise.all(chs.map(async (ch, k) => {
+      const sel: (number | zarr.Slice | null)[] = new Array(ax.n).fill(0);
+      if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0]) : 0;
+      sel[ax.y] = zarr.slice(a[1], b[1]);
+      sel[ax.x] = zarr.slice(a[2], b[2]);
+      if (ax.c >= 0) sel[ax.c] = ch;
+      const res = await zarr.get(arr, sel as any);
+      const data = res.data as ArrayLike<number>;
+      // result axes are the non-integer selections in array order
+      const kept = sel.map((s, i) => (typeof s === "number" ? -1 : i)).filter((i) => i >= 0);
+      const strideOf = (axis: number) => (axis < 0 || !kept.includes(axis) ? 0 : res.stride[kept.indexOf(axis)]);
+      const sz = strideOf(ax.z), sy = strideOf(ax.y), sx = strideOf(ax.x);
+      for (let z = a[0]; z < b[0]; z++)
+        for (let y = a[1]; y < b[1]; y++)
+          for (let x = a[2]; x < b[2]; x++) {
+            const src = (z - a[0]) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
+            out[((((z - lo[0]) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C) + k] = Number(data[src]);
+          }
+    }));
     return { data: out, shape, channels: C };
   }
 
+  /** 0-255: one channel in grey, or the channels on, each in its colour over its range, added. */
   async read(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
-    const r = await this.readRaw(level, lo, hi);
-    if (this.window) {
-      const [w0, w1] = this.window, k = 255 / Math.max(w1 - w0, 1e-9);
-      for (let i = 0; i < r.data.length; i++) r.data[i] = Math.min(255, Math.max(0, (r.data[i] - w0) * k));
+    if (!this.chans.length) {
+      const r = await this.readRaw(level, lo, hi);
+      if (this.window) {
+        const [w0, w1] = this.window, k = 255 / Math.max(w1 - w0, 1e-9);
+        for (let i = 0; i < r.data.length; i++) r.data[i] = Math.min(255, Math.max(0, (r.data[i] - w0) * k));
+      }
+      return r;
     }
-    return r;
+    const mix = this.mixed(), M = mix.length, r = await this.readRaw(level, lo, hi, mix.map((c) => c.index));
+    const n = r.data.length / M, C = M > 1 ? 3 : 1, out = new Float32Array(n * C);
+    // a range set high to low (the viewer's inverted stretch) reads inverted too
+    const lo0 = mix.map((c) => c.range[0]), k = mix.map((c) => { const d = c.range[1] - c.range[0]; return 255 / (Math.abs(d) < 1e-9 ? 1e-9 : d); });
+    for (let i = 0; i < n; i++)
+      for (let m = 0; m < M; m++) {
+        const v = Math.min(255, Math.max(0, (r.data[i * M + m] - lo0[m]) * k[m]));
+        if (C === 1) out[i] = v;
+        else for (let j = 0; j < 3; j++) out[i * 3 + j] += mix[m].color[j] * v;
+      }
+    if (C === 3) for (let i = 0; i < out.length; i++) if (out[i] > 255) out[i] = 255;
+    return { data: out, shape: r.shape, channels: C };
   }
 
   link(level: number, center: Vec3): string | null {
