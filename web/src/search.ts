@@ -17,7 +17,7 @@ interface Mark { id: number; e: Float32Array }
  * query variant that matched best. */
 export interface Explain {
   score: number;
-  parts: { name: "look" | "parts" | "centre" | "tokens"; value: number }[];
+  parts: { name: "look" | "parts" | "centre" | "brushed" | "tokens"; value: number }[];
   variant: string;   // "id", a rotation "r1".."r7", a scale "s-1"/"s+1"
   example: number;   // with "match any": the example (0-based) that matched best, else -1
   feedback: number;  // what the good/bad marks added to the score
@@ -53,6 +53,7 @@ export interface Options {
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   sketch?: Patch;             // a drawing (P x P at the working level) to search for instead of a place
+  brush?: Float32Array;       // which of the box's 8 x 8 parts matter (0-1): the query and every patch read get a brushed part
   expand?: boolean;           // once the region is read, go on to the areas around it, nearest first, until the whole level is read
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims; norm?: ScanNorm }>;
 }
@@ -129,7 +130,7 @@ function unitParts(q: Float32Array): Float32Array {
 
 /** How candidates are compared with the query (test 5 measured each on labelled EM). */
 export interface MatchOptions {
-  focus: Focus;        // "whole" patch or the "center" object
+  focus: Focus;        // "whole" patch, the "center" object, or the parts the "brush" marked
   rotations: boolean;  // also the query rotated/flipped 8 ways, best match counts
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
@@ -588,7 +589,7 @@ export class Search {
       }
       if (this.queueDirty) { this.queue.sort((x, y) => y.pri - x.pri); this.queueDirty = false; }
       const batch = this.queue.splice(0, B);
-      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`));
+      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`), this.opt.brush);
       const fresh: number[] = [];
       batch.forEach((q, k) => {
         this.sum ??= new Float64Array(e[k].length);
@@ -978,7 +979,7 @@ export class Search {
       }
     }
     const keyed = (vs: Float32Array[]) => new Map(vs.map((v, i) => [keys[i], v]));
-    if (!this.tokenMode) return keyed(await this.emb.embed(patches));
+    if (!this.tokenMode) return keyed(await this.emb.embed(patches, undefined, this.opt.brush));
     // token mode: each variant's crop through the model, its central window of tokens averaged
     return keyed((await this.emb.tokens(patches)).map(({ tokens, g, D }) => {
       const v = new Float32Array(D), o = (g - WIN) / 2;
@@ -1089,7 +1090,8 @@ export class Search {
     let best = 0, bs = -Infinity;
     this.qvars.forEach((q, j) => { const v = similarity(it.e, q, m.focus, mu); if (v > bs) { bs = v; best = j; } });
     const q = this.qvars[best], tok = it.e.length === PART;
-    const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]] : [["look", 0], ["parts", 1]];
+    const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]]
+      : m.focus === "brush" ? [["look", 0], ["brushed", 3]] : [["look", 0], ["parts", 1]];
     const part = (p: number) => { const o = p * PART, sl = (a: Float32Array) => a.subarray(o, o + PART); return similarity(sl(it.e), sl(q), "whole", mu && sl(mu)); };
     let s0 = -Infinity;
     for (const q0 of this.q0vars) s0 = Math.max(s0, similarity(it.e, q0, m.focus, mu));
