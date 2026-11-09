@@ -54,6 +54,9 @@
   .own ul.help { margin: 6px 0 0; padding-left: 16px; } .own ul.help li + li { margin-top: 4px; } .own .help b { color: var(--dim); font-weight: 500; }
   .own .row .help { align-self: center; }
   .dpick { display: flex; gap: 6px; }
+  #ownbtn { color: var(--acc); border-color: var(--acc); }
+  #ownbtn:hover { background: #5ab0ff1f; }
+  #status button.link { font-size: inherit; }
   #drop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #0e1116cc; }
   #drop[hidden] { display: none; }
   #drop::before { content: ""; position: absolute; inset: 10px; border: 2px dashed var(--acc); border-radius: 12px; pointer-events: none; }
@@ -193,7 +196,7 @@
   <div class="brand"><b>coresample</b><span>find regions like this one, no precomputation</span></div>
   <div class="dpick">
     <button id="dsbtn" class="ds" aria-haspopup="listbox"><span id="dsname">datasets</span><span id="dssize" class="chip"></span><span class="caret"></span></button>
-    <button id="ownbtn" title="Open your own data: a link, or a folder on this computer (or drop one on the page)">Your data</button>
+    <button id="ownbtn" title="Search your own data: a link, or a folder on this computer (or drop one on the page)">+ Your data</button>
     <div id="dsmenu" class="menu" hidden>
       <div class="menu-head">
         <span class="lbl">Datasets</span>
