@@ -130,7 +130,7 @@ function unitParts(q: Float32Array): Float32Array {
 
 /** How candidates are compared with the query (test 5 measured each on labelled EM). */
 export interface MatchOptions {
-  focus: Focus;        // "whole" patch, the "center" object, or the parts the "brush" marked
+  focus: Focus;        // "whole" patch, the "center" object, or only the parts the "brush" marked
   rotations: boolean;  // also the query rotated/flipped 8 ways, best match counts
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
@@ -1091,7 +1091,7 @@ export class Search {
     this.qvars.forEach((q, j) => { const v = similarity(it.e, q, m.focus, mu); if (v > bs) { bs = v; best = j; } });
     const q = this.qvars[best], tok = it.e.length === PART;
     const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]]
-      : m.focus === "brush" ? [["look", 0], ["brushed", 3]] : [["look", 0], ["parts", 1]];
+      : m.focus === "brush" ? [["brushed", 3]] : [["look", 0], ["parts", 1]];
     const part = (p: number) => { const o = p * PART, sl = (a: Float32Array) => a.subarray(o, o + PART); return similarity(sl(it.e), sl(q), "whole", mu && sl(mu)); };
     let s0 = -Infinity;
     for (const q0 of this.q0vars) s0 = Math.max(s0, similarity(it.e, q0, m.focus, mu));

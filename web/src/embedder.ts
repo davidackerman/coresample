@@ -175,10 +175,11 @@ export function dot(a: Float32Array, b: Float32Array): number {
 }
 
 /** Which parts of the embedding a match compares: the whole patch (CLS + mean of tokens), the
- * object at its centre (CLS + centre-weighted tokens), or what the brush marked (CLS + brushed
- * tokens; embeddings made with a brush). */
+ * object at its centre (CLS + centre-weighted tokens), or only what the brush marked (the
+ * brushed tokens' mean; embeddings made with a brush): with the CLS token as well it found no
+ * more on labelled EM, alone +0.04 p@10 (test 12). */
 export type Focus = "whole" | "center" | "brush";
-const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2], brush: [0, 3] };
+const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2], brush: [3] };
 
 /** Similarity of embedding `a` to query `q`: the mean over the chosen parts of their cosine,
  * after subtracting `mu` (the candidates' mean embedding: "adapt to the data") when given. */

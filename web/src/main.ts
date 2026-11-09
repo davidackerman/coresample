@@ -1147,8 +1147,9 @@ function showWhyHelp() {
   const m = search.opt.match, tok = search.opt.method === "tokens";
   $("whytext").innerHTML = `<b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (tok ? "of the window's average token. "
-       : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : m?.focus === "brush" ? "marked" : "parts"}</b> `
-         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : m?.focus === "brush" ? "the pieces you marked as mattering, in the same places" : "its 8 x 8 pieces"}). `)
+       : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
+       : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
+         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "its 8 x 8 pieces"}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
     + (emb.input === 224 ? "" : "(224 px model: 88 MB the first time.)");
 }

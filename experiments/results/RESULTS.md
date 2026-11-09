@@ -437,6 +437,35 @@ vesicles): mito are all over the cytoplasm, vesicles cluster. Deciding that per 
 are no substitute for the rough pass. For the page this pays where the model is the limit (a
 slow GPU); on hemibrain the downloads still were. One labelled dataset.
 
+## Test 12: saying which part of the box matters (follow-up)
+
+The page's brush (**what matters**) marks parts of the query box on the 112 px model's 8 x 8
+token grid: the marked parts count, the rest does not. Here the brush is the query object's own
+label in its box (the instance under the click), at token resolution: exact (each token's share
+inside it) or rough (the tokens over a quarter inside, grown by one token, as a quick stroke would
+be). Test 5's candidates and 30 queries per target, differences paired against the default
+(`test12_brush.py`):
+
+| comparison | mito p@10 / p@25 | vesicles | mito, whole volume | p@10, all 90 queries |
+|---|---|---|---|---|
+| default: look + parts (CLS + mean token) | 0.48 / 0.46 | 0.81 / 0.80 | 0.44 / 0.43 | |
+| look + centre (Options > object at the centre) | -0.01 / -0.01 | -0.01 / +0.01 | +0.03 / +0.01 | +0.004 +/- 0.010 |
+| look + marked, exact | -0.00 / +0.02 | -0.02 / -0.03 | +0.01 / +0.03 | -0.003 +/- 0.014 |
+| look + marked, rough | -0.01 / -0.00 | +0.00 / +0.00 | +0.04 / +0.02 | +0.008 +/- 0.009 |
+| marked alone, exact | +0.02 / +0.03 | -0.04 / -0.02 | +0.03 / +0.01 | +0.001 +/- 0.018 |
+| **marked alone, rough** | +0.03 / +0.00 | +0.01 / +0.01 | +0.07 / +0.01 | **+0.040 +/- 0.011** |
+| look + marked anywhere in the box (max-sim), rough | +0.00 / -0.01 | -0.02 / -0.01 | +0.02 / +0.02 | +0.001 +/- 0.011 |
+
+**A rough brush, compared on its own, found 0.04 more in the top 10 (3.6 standard errors over
+the 90 queries; +0.07 on the whole volume) and nothing more in the top 25.** With the box's
+overall look (the CLS token) as well, the brush found no more. The exact outline did no better
+than the rough one: a stroke that takes in the object's edge and a little around it matches
+better than the object alone, and on vesicles (a few tokens each) the exact outline lost.
+Letting the marked parts sit anywhere in the candidate (max-sim) gained nothing. The page
+compares the marked parts alone, where they sit in the box; the brush is a person's say in what
+counts, it moves the first page a little, and the model stays the limit. One labelled dataset,
+and an oracle brush (the object's own label).
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
@@ -541,5 +570,5 @@ From the repository root, `uv run python experiments/test1_chunksize.py`, then `
 volume with `--targets mito --region full --suffix _full --methods hist+tex --sweep k methods
 --method-sweep all --coarsest 4`, then `test3_combined.py` and `test3_combined.py --targets
 mito --region full --suffix _full`, and `report.py`. Raw numbers: `test1.json`,
-`test2_*.json`, `test3_*.json`, `summary.json`. Tests 4-10 give their commands at the top of
+`test2_*.json`, `test3_*.json`, `summary.json`. Tests 4-12 give their commands at the top of
 each script.

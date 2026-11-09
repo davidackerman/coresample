@@ -255,7 +255,7 @@
     </div>
     <div id="bpad" hidden>
       <div class="padhead"><b>What matters in your box</b><button id="bpadx" title="Close">&#10005;</button></div>
-      <div class="help">Drag over the parts that matter; a drag that starts on a marked part unmarks. The match then compares those parts, and the box's overall look, not the rest. The search starts again.</div>
+      <div class="help">Drag over the parts that matter; a drag that starts on a marked part unmarks. The match then compares only those parts, where they sit in the box. The search starts again.</div>
       <canvas id="bpadcv" title="Drag to mark the parts that matter"></canvas>
       <div class="row padrow"><button id="bpadall">mark all</button><button id="bpadnone">clear</button></div>
       <div class="row padrow"><button id="bpadgo" class="primary">Search with this</button><button id="bpadoff" title="Every part of the box alike again">without marks</button></div>
@@ -324,7 +324,7 @@
       <div class="row actions">
         <div class="row"><button id="stop" disabled>Pause</button><button id="clear" disabled>Clear</button>
           <button id="addex" disabled title="Add another example of the same thing: press, then click it on the image (or shift-click any time). The query becomes the mean of the examples.">+ example</button>
-          <button id="brushbtn" disabled title="Mark which parts of your box matter: the match then compares those parts (and the box's overall look), not the rest">what matters</button></div>
+          <button id="brushbtn" disabled title="Mark which parts of your box matter: the match then compares only those parts">what matters</button></div>
         <a id="link" target="_blank" style="display:none">open hit in its viewer &#8599;</a>
       </div>
     </div>
