@@ -1,6 +1,7 @@
-// Searching outward, in Node on real jrc_hela-2 data: a small first area, `expand` on; read
-// until three areas have been scanned, then check every tile was read once and the reading
-// went past the first area (with the rough pass: its picks there). usage: node --experimental-strip-types test/e2e_expand.ts [rough|norough]
+// Searching outward, in Node on real jrc_hela-2 data: a small first area, `expand` on; the quick
+// pass spreads outward while reading, so stop once three areas are scanned and a tile past the
+// first has been read (the best-scoring tiles of every area scanned come first), then check
+// every tile was read once. usage: node --experimental-strip-types test/e2e_expand.ts [rough|norough]
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { Embedder } from "../src/embedder.ts";
@@ -19,8 +20,7 @@ const outsideFirst = (t: Vec3) => [0, 1, 2].some((a) => (t[a] + 1) * ch[a] <= re
 let last = 0;
 s.on((st) => {
   if (st.areas !== last) { console.log(`areas ${st.areas}: tiles ${st.tilesRead}/${st.tilesTotal} of ${st.levelTiles}, area x ${s.regionBox[0][2]}-${s.regionBox[1][2]}`); last = st.areas; }
-  // without the rough pass every tile is read; with it only the best tenth of those it looked over
-  if (st.areas >= 3 && st.phase === "read" && (st.rough ? s.readTiles().some(outsideFirst) : st.tilesRead >= st.tilesTotal - 2)) s.stop();
+  if (st.areas >= 3 && st.phase === "read" && s.readTiles().some(outsideFirst)) s.stop();
 });
 await s.start();
 const read = s.readTiles().map((t) => t.join(","));

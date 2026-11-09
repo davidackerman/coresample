@@ -13,12 +13,12 @@ self.onmessage = (e: MessageEvent) => {
       const maps = scanBlock(vol, sd, slab, dims, w, m, prep);
       post({ id, maps }, maps.map((a) => a.buffer));
     } else if (kind === "merge") {
-      const { parts, dims, w, m, prep } = e.data;
-      const r = scanMerge(parts, dims, w, m, prep);
-      post({ id, score: r.score, dims: r.dims }, [r.score.buffer]);
+      const { parts, dims, w, m, prep, norm } = e.data;
+      const r = scanMerge(parts, dims, w, m, prep, norm);
+      post({ id, score: r.score, dims: r.dims, norm: r.norm }, [r.score.buffer]);
     } else {
       const r = scan(e.data.inp);
-      post({ id, score: r.score, dims: r.dims }, [r.score.buffer]);
+      post({ id, score: r.score, dims: r.dims, norm: r.norm }, [r.score.buffer]);
     }
   } catch (err) {
     post({ id, error: String(err) });

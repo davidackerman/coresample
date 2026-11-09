@@ -3,7 +3,7 @@
 // scanSlabs, each with the filters' border), each worker scores its slab's windows, and one of
 // them joins the slabs. In one worker the scan was the largest single part of the wait for the
 // first hit (4.5-5.7 s on a 4-million-voxel coarse level, RTX 2080 Ti workstation).
-import { scanSlabs, slabVolume, type Dims, type ScanInput, type ScanPrep } from "./scan.ts";
+import { scanSlabs, slabVolume, type Dims, type ScanInput, type ScanNorm, type ScanPrep } from "./scan.ts";
 
 type Reply = { id: number; error?: string; [k: string]: unknown };
 let pool: Worker[] | null = null, ids = 0;
@@ -34,23 +34,24 @@ function call(w: Worker, msg: object, transfer: Transferable[] = []): Promise<Re
 
 /** Scores of every window of the coarse volume against the query (scan.ts's `scan`), computed
  * in slabs across the worker pool. */
-export async function scanInWorkers(inp: ScanInput): Promise<{ score: Float32Array; dims: Dims }> {
+export async function scanInWorkers(inp: ScanInput): Promise<{ score: Float32Array; dims: Dims; norm: ScanNorm }> {
   const ws = workers(), { vol, dims, window: w, margin: m } = inp;
   const slabs = scanSlabs(dims, w, m, ws.length);
   if (slabs.length === 1) {  // too thin to cut: the whole scan in one worker
     const v = Float32Array.from(vol), q = Float32Array.from(inp.query);
     const r = await call(ws[0], { kind: "scan", inp: { ...inp, vol: v, query: q } }, [v.buffer, q.buffer]);
-    return { score: r.score as Float32Array, dims: r.dims as Dims };
+    return { score: r.score as Float32Array, dims: r.dims as Dims, norm: r.norm as ScanNorm };
   }
-  // the histogram's bins come from the whole region, so they are found first (a copy of the volume)
-  const prep = (await call(ws[0], { kind: "prep", inp })).prep as ScanPrep;
+  // the histogram's bins come from the whole region, so they are found first (a copy of the
+  // volume), unless an earlier area's scale is given
+  const prep = inp.norm?.prep ?? ((await call(ws[0], { kind: "prep", inp })).prep as ScanPrep);
   const parts = await Promise.all(slabs.map(async (s, i) => {
     const sv = slabVolume(vol, dims, s);
     const r = await call(ws[i % ws.length], { kind: "block", vol: sv.vol, sd: sv.dims, slab: s, dims, w, m, prep }, [sv.vol.buffer]);
     return r.maps as Float32Array[];
   }));
-  const r = await call(ws[0], { kind: "merge", parts, dims, w, m, prep }, parts.flat().map((a) => a.buffer));
-  return { score: r.score as Float32Array, dims: r.dims as Dims };
+  const r = await call(ws[0], { kind: "merge", parts, dims, w, m, prep, norm: inp.norm }, parts.flat().map((a) => a.buffer));
+  return { score: r.score as Float32Array, dims: r.dims as Dims, norm: r.norm as ScanNorm };
 }
 
 // started with the page, as the one scan worker was, so the first search does not wait for them

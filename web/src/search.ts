@@ -7,7 +7,7 @@
 // examples can join the query at any time (it becomes their mean), and every place compared
 // leaves its score in a compact list for the similarity heat map.
 import { GRID, PART, similarity, type Embedder, type Focus, type Patch, type TokenGrid } from "./embedder.ts";
-import { scan as scanSync, type Dims, type ScanInput } from "./scan.ts";
+import { scan as scanSync, type Dims, type ScanInput, type ScanNorm } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
 export interface Hit { center: Vec3; score: number; index: number }
@@ -54,7 +54,7 @@ export interface Options {
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   sketch?: Patch;             // a drawing (P x P at the working level) to search for instead of a place
   expand?: boolean;           // once the region is read, go on to the areas around it, nearest first, until the whole level is read
-  scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims }>;
+  scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims; norm?: ScanNorm }>;
 }
 
 const MARGIN = 4;
@@ -176,9 +176,12 @@ export class Search {
   private nextId = 0;
   private embedded = 0;              // patches embedded so far (kept or not)
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
+  private orderS: number[] = [];    // their cheap scores (the part not taken yet stays sorted by them)
   private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
   skipped = 0;  // patches not embedded: no data or blank
-  private scans: { score: Float32Array; dims: Dims; clo: Vec3; f: number; w: Dims; lo: Vec3; hi: Vec3 }[] = [];
+  private scans: { score: Float32Array | null; dims: Dims; clo: Vec3; f: number; w: Dims; lo: Vec3; hi: Vec3 }[] = [];
+  private tileS = new Map<number, number>();  // each ranked tile's cheap score (its best window)
+  private norm: ScanNorm | null = null;        // the first area's score scale, for the areas after it
   private qscan: { C: number; f: number; w: Dims; m: Dims; query: Float32Array; qdims: Dims } | null = null;
   private allTiles = new Set<number>();  // every tile ranked so far (tileKey)
   private area: [Vec3, Vec3];            // the areas scanned so far (their bounding box)
@@ -328,7 +331,7 @@ export class Search {
       const ts = performance.now(), n0 = this.src.chunksRead, need = this.chunksIn(C, this.region);
       if (n0 !== undefined) this.emit({ scanRead: 0, scanChunks: need });
       const tick = setInterval(() => this.emit(n0 === undefined ? {} : { scanRead: Math.min(need, this.src.chunksRead! - n0) }), 500);
-      try { this.order = await this.scanRegion(this.region); } finally { clearInterval(tick); }
+      try { ({ tiles: this.order, scores: this.orderS } = await this.scanRegion(this.region)); } finally { clearInterval(tick); }
       this.emit({ scanSeconds: (performance.now() - ts) / 1000, scanRead: need, scanChunks: need });
       await this.setupRough();
       this.setReady();
@@ -352,15 +355,19 @@ export class Search {
 
   /** The cheap scan of one area (working-level voxels [lo, hi)) at the coarse level, and the
    * working level's tiles in it not ranked before, ranked by their best window. */
-  private async scanRegion([rlo, rhi]: [Vec3, Vec3]): Promise<Vec3[]> {
+  private async scanRegion([rlo, rhi]: [Vec3, Vec3]): Promise<{ tiles: Vec3[]; scores: number[] }> {
     const q = this.qscan!, { C, f, w, m } = q, d3 = this.src.dims === 3, W = this.opt.working;
     const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
     const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
     const vol = await this.src.read(C, [clo[0] - m[0], clo[1] - m[1], clo[2] - m[2]], [chi[0] + m[0], chi[1] + m[1], chi[2] + m[2]]);
     if (this.state.phase === "scan") this.emit({ scanRead: this.state.scanChunks, message: `the quick pass: level ${C} read, comparing every place in it with the query` });
-    const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: Float32Array.from(q.query), qdims: q.qdims, window: w, margin: m };
+    const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: Float32Array.from(q.query), qdims: q.qdims, window: w, margin: m,
+                             norm: this.norm ?? undefined };
     const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
-    this.scans.push({ score: res.score, dims: res.dims, clo, f, w, lo: rlo, hi: rhi });
+    this.norm ??= res.norm ?? null;
+    // the first area keeps every window's score (each patch's priority); the areas after it, so
+    // memory stays small however far the search spreads, only each tile's best (priorAt)
+    this.scans.push({ score: this.scans.length ? null : res.score, dims: res.dims, clo, f, w, lo: rlo, hi: rhi });
     const Ls = this.src.levels[W].shape, cov = (rhi[0] - rlo[0]) * (rhi[1] - rlo[1]) * (rhi[2] - rlo[2]) / (Ls[0] * Ls[1] * Ls[2]);
     this.emit({ scanned: Math.min(1, this.state.scanned + cov) });  // areas do not overlap
     const ch = this.src.levels[W].chunk;
@@ -378,50 +385,94 @@ export class Search {
           const v = res.score[i];
           if (!(prior.get(key)! >= v)) prior.set(key, v);
         }
-    const tiles = [...prior.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => {
+    const best = [...prior.entries()].sort((a, b) => b[1] - a[1]);
+    const tiles = best.map(([k, v]) => {
       this.allTiles.add(k);
+      this.tileS.set(k, v);
       return [Math.floor(k / 2 ** 40), Math.floor(k / 2 ** 20) % 2 ** 20, k % 2 ** 20] as Vec3;
     });
-    return tiles;
+    return { tiles, scores: best.map(([, v]) => v) };
   }
 
-  /** With `expand`: the next area around the ones read (rings of areas the size of the first,
-   * each ring nearest first), scanned and its tiles added to the reading order. False when the
-   * whole level has been covered. */
-  private async expandOnce(): Promise<boolean> {
-    if (!this.opt.expand || this.stopFlag) return false;
+  /** With `expand`: the next area around the first (rings of areas its size, each ring nearest
+   * first), or null when the whole level has been covered. */
+  private nextArea(): [Vec3, Vec3] | null {
     const shape = this.src.levels[this.opt.working].shape, [rlo, rhi] = this.region;
     const B = [0, 1, 2].map((a) => rhi[a] - rlo[a]);
     // rings far enough to cover the level along every axis the region does not span
     const maxRing = Math.max(...[0, 1, 2].map((a) => Math.ceil(Math.max(rlo[a], shape[a] - rhi[a]) / Math.max(1, B[a]))));
-    for (;;) {
-      while (!this.ringQ.length) {
-        if (++this.ring > maxRing) return false;
-        const R = this.ring, span = [0, 1, 2].map((a) => (B[a] >= shape[a] ? 0 : R)), out: [Vec3, Vec3][] = [];
-        for (let dz = -span[0]; dz <= span[0]; dz++) for (let dy = -span[1]; dy <= span[1]; dy++) for (let dx = -span[2]; dx <= span[2]; dx++) {
-          if (Math.max(Math.abs(dz), Math.abs(dy), Math.abs(dx)) !== R) continue;
-          const d = [dz, dy, dx];
-          const lo = [0, 1, 2].map((a) => Math.max(0, rlo[a] + d[a] * B[a])) as Vec3;
-          const hi = [0, 1, 2].map((a) => Math.min(shape[a], rhi[a] + d[a] * B[a])) as Vec3;
-          if (lo.some((v, a) => hi[a] <= v)) continue;
-          out.push([lo, hi]);
-        }
-        const q = this.query.every(Number.isFinite) ? this.query : [(rlo[0] + rhi[0]) / 2, (rlo[1] + rhi[1]) / 2, (rlo[2] + rhi[2]) / 2];
-        const dist = ([lo, hi]: [Vec3, Vec3]) => Math.hypot(...[0, 1, 2].map((a) => (lo[a] + hi[a]) / 2 - q[a]));
-        this.ringQ = out.sort((a, b) => dist(a) - dist(b));
+    while (!this.ringQ.length) {
+      if (++this.ring > maxRing) return null;
+      const R = this.ring, span = [0, 1, 2].map((a) => (B[a] >= shape[a] ? 0 : R)), out: [Vec3, Vec3][] = [];
+      for (let dz = -span[0]; dz <= span[0]; dz++) for (let dy = -span[1]; dy <= span[1]; dy++) for (let dx = -span[2]; dx <= span[2]; dx++) {
+        if (Math.max(Math.abs(dz), Math.abs(dy), Math.abs(dx)) !== R) continue;
+        const d = [dz, dy, dx];
+        const lo = [0, 1, 2].map((a) => Math.max(0, rlo[a] + d[a] * B[a])) as Vec3;
+        const hi = [0, 1, 2].map((a) => Math.min(shape[a], rhi[a] + d[a] * B[a])) as Vec3;
+        if (lo.some((v, a) => hi[a] <= v)) continue;
+        out.push([lo, hi]);
       }
-      const b = this.ringQ.shift()!;
-      const tiles = await this.scanRegion(b);
-      this.area = [[0, 1, 2].map((a) => Math.min(this.area[0][a], b[0][a])) as Vec3, [0, 1, 2].map((a) => Math.max(this.area[1][a], b[1][a])) as Vec3];
-      this.emit({ areas: this.state.areas + 1 });
-      if (tiles.length) {
-        this.order.push(...tiles);
-        this.dry = false;
-        this.emit({ tilesTotal: this.order.length });
-        return true;
-      }
+      const q = this.query.every(Number.isFinite) ? this.query : [(rlo[0] + rhi[0]) / 2, (rlo[1] + rhi[1]) / 2, (rlo[2] + rhi[2]) / 2];
+      const dist = ([lo, hi]: [Vec3, Vec3]) => Math.hypot(...[0, 1, 2].map((a) => (lo[a] + hi[a]) / 2 - q[a]));
+      this.ringQ = out.sort((a, b) => dist(a) - dist(b));
     }
+    return this.ringQ.shift()!;
   }
+
+  /** Scan the next area and merge its tiles into the order; false when no area is left. One
+   * scan at a time (the reader and the spreading share it). */
+  private scanOne(): Promise<boolean> {
+    return (this.scanBusy ??= (async () => {
+      const b = this.nextArea();
+      if (!b) return false;
+      const { tiles, scores } = await this.scanRegion(b);
+      this.area = [[0, 1, 2].map((a) => Math.min(this.area[0][a], b[0][a])) as Vec3, [0, 1, 2].map((a) => Math.max(this.area[1][a], b[1][a])) as Vec3];
+      if (tiles.length) { this.mergeOrder(tiles, scores); this.dry = false; }
+      this.emit({ areas: this.state.areas + 1, tilesTotal: this.order.length });
+      return true;
+    })().finally(() => (this.scanBusy = null)));
+  }
+  private scanBusy: Promise<boolean> | null = null;
+
+  /** A new area's tiles into the part of the order not taken yet, by cheap score: every area is
+   * scored on the first one's scale, so the reads go to the best places anywhere scanned so far. */
+  private mergeOrder(tiles: Vec3[], scores: number[]) {
+    const h = this.untakenFrom(), ot = this.order.splice(h), os = this.orderS.splice(h);
+    let i = 0, j = 0;
+    while (i < ot.length || j < tiles.length)
+      if (j >= tiles.length || (i < ot.length && os[i] >= scores[j])) { this.order.push(ot[i]); this.orderS.push(os[i++]); }
+      else { this.order.push(tiles[j]); this.orderS.push(scores[j++]); }
+  }
+  /** Where the order's untaken part starts: tiles not read yet (with the rough pass: not looked at yet). */
+  private untakenFrom(): number { return this.rough ? this.rough.cursor : this.next; }
+
+  /** With `expand`, when the reader has run out: scan areas until one adds tiles. False when the
+   * whole level has been covered. */
+  private async expandOnce(): Promise<boolean> {
+    if (!this.opt.expand) return false;
+    while (!this.stopFlag) {
+      if (this.untakenFrom() < this.order.length) { this.dry = false; return true; }  // the spreading added some
+      if (!(await this.scanOne())) return this.untakenFrom() < this.order.length;
+    }
+    return false;
+  }
+
+  /** With `expand`: keep scanning outward while the reads go on, one area at a time and resting
+   * as long as each took (the detail reads keep at least half the downloads), so they can go to
+   * the best places anywhere scanned instead of finishing the area around the click first. */
+  private async spread() {
+    if (!this.opt.expand || this.spreading) return;
+    this.spreading = true;
+    try {
+      while (!this.stopFlag) {
+        const t = performance.now();
+        if (!(await this.scanOne())) break;
+        await new Promise((r) => setTimeout(r, Math.max(500, performance.now() - t)));
+      }
+    } catch { /* an area that fails: the reader's own expansion carries on */ }
+    finally { this.spreading = false; }
+  }
+  private spreading = false;
 
   /** Cheap-scan score at a working-level position (the window centred nearest it, in the scan
    * of the area it is in). */
@@ -432,6 +483,10 @@ export class Search {
       if ([0, 1, 2].every((a) => c[a] >= b.lo[a] && c[a] < b.hi[a])) { sc = b; break; }
     }
     if (!sc) return 0;
+    if (!sc.score) {  // an area after the first: its tile's best
+      const ch = this.src.levels[this.opt.working].chunk;
+      return this.tileS.get(tileKey([Math.floor(c[0] / ch[0]), Math.floor(c[1] / ch[1]), Math.floor(c[2] / ch[2])])) ?? 0;
+    }
     const idx = [0, 1, 2].map((a) => {
       const v = Math.floor(c[a] / sc.f) - sc.clo[a] - Math.floor(sc.w[a] / 2);
       return Math.max(0, Math.min(sc.dims[a] - 1, v));
@@ -501,6 +556,7 @@ export class Search {
     this.stopFlag = false;
     this.dry = false;
     this.emit({ phase: "read", tilesBudget: Math.min(budget, this.order.length), message: "reading tiles, best-ranked first" });
+    void this.spread();
     const W = this.opt.working, P = this.opt.patch, gpu = this.emb.provider === "webgpu";
     const limit = () => Math.min(budget, this.order.length);
     while (!this.stopFlag) {

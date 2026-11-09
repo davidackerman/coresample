@@ -142,12 +142,15 @@ export function histMap(a: Float32Array, d: Dims, w: Dims, qcdf: Float32Array, e
   return { data: emd!, dims };
 }
 
-function zscore(a: Float32Array): Float32Array {
+function meanSd(a: Float32Array): [number, number] {
   let m = 0, v = 0;
   for (let i = 0; i < a.length; i++) m += a[i];
   m /= a.length;
   for (let i = 0; i < a.length; i++) v += (a[i] - m) ** 2;
-  const s = Math.sqrt(v / a.length) + 1e-9, out = new Float32Array(a.length);
+  return [m, Math.sqrt(v / a.length) + 1e-9];
+}
+function zscore(a: Float32Array, [m, s]: [number, number]): Float32Array {
+  const out = new Float32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = (a[i] - m) / s;
   return out;
 }
@@ -157,7 +160,14 @@ export interface ScanInput {
   query: Float32Array; qdims: Dims;  // the query window with `margin` voxels of context
   window: Dims;
   margin: Dims;
+  norm?: ScanNorm;  // score on an earlier scan's scale (other areas of the same search)
 }
+
+/** The scale a scan's scores are on: its histogram bins and query statistics, its texture
+ * spreads, and the means and spreads of its two distances. A scan given another's scores on
+ * that scan's scale, so the areas of one search compare (each standardized alone, every area's
+ * best would look as good as any other's). */
+export interface ScanNorm { prep: ScanPrep; spread: number[]; zt: [number, number]; zh: [number, number] }
 
 /** What the scan needs from the whole volume before its windows are scored: the 16 histogram
  * bins (from percentiles of the region itself), the query's cumulative histogram and its four
@@ -172,6 +182,7 @@ export function scanDims(dims: Dims, w: Dims, m: Dims): Dims {
 }
 
 export function scanPrep(inp: ScanInput): ScanPrep {
+  if (inp.norm) return inp.norm.prep;
   const { vol, dims, query, qdims, window: w, margin: m } = inp;
   // statistics of the region itself (not its margin, which is zero past the array's edge),
   // as search.py takes them from the inner volume
@@ -261,7 +272,7 @@ export function scanBlock(vol: Float32Array, sd: Dims, s: ScanSlab, dims: Dims, 
 
 /** The slabs' maps joined (in slab order) and scored: each texture distance scaled by its spread
  * over the windows, then the mean z-score of -EMD and -texture distance. */
-export function scanMerge(parts: Float32Array[][], dims: Dims, w: Dims, m: Dims, prep: ScanPrep): { score: Float32Array; dims: Dims } {
+export function scanMerge(parts: Float32Array[][], dims: Dims, w: Dims, m: Dims, prep: ScanPrep, norm?: ScanNorm): { score: Float32Array; dims: Dims; norm: ScanNorm } {
   const od = scanDims(dims, w, m), n = od[0] * od[1] * od[2];
   const maps = [0, 1, 2, 3, 4].map(() => new Float32Array(n));
   let at = 0;
@@ -273,7 +284,7 @@ export function scanMerge(parts: Float32Array[][], dims: Dims, w: Dims, m: Dims,
   // per-feature spread over the windows inside the region (search.py: texture_stats(inner).std());
   // none fit when the region is smaller than a window on some axis
   const inside = [0, 1, 2].every((a) => dims[a] - 2 * m[a] >= w[a]);
-  const spread = maps.slice(0, 4).map((mp) => {
+  const spread = norm?.spread ?? maps.slice(0, 4).map((mp) => {
     if (!inside) return 1e-9;
     let mu = 0, v = 0;
     for (let i = 0; i < n; i++) mu += mp[i];
@@ -287,20 +298,21 @@ export function scanMerge(parts: Float32Array[][], dims: Dims, w: Dims, m: Dims,
     for (let f = 0; f < 4; f++) s += ((maps[f][i] - qstats[f]) / spread[f]) ** 2;
     t[i] = -Math.sqrt(s);
   }
-  const zt = zscore(t), zh = zscore(maps[4]), score = new Float32Array(n);
+  const st = norm?.zt ?? meanSd(t), sh = norm?.zh ?? meanSd(maps[4]);
+  const zt = zscore(t, st), zh = zscore(maps[4], sh), score = new Float32Array(n);
   for (let k = 0; k < n; k++) score[k] = (zt[k] + zh[k]) / 2;
-  return { score, dims: od };
+  return { score, dims: od, norm: norm ?? { prep, spread, zt: st, zh: sh } };
 }
 
 /** Combined score (mean z-score of -EMD and -texture distance) of every window whose corner
  * lies in the region (the volume minus its margin); index i of the result is the window
  * whose corner is at margin + i. In one piece; the page runs the same steps on slabs in
  * several workers (scanpool.ts). */
-export function scan(inp: ScanInput): { score: Float32Array; dims: Dims } {
+export function scan(inp: ScanInput): { score: Float32Array; dims: Dims; norm: ScanNorm } {
   const { vol, dims, window: w, margin: m } = inp, prep = scanPrep(inp);
   const parts = scanSlabs(dims, w, m, 1).map((s) => {
     const sv = slabVolume(vol, dims, s);
     return scanBlock(sv.vol, sv.dims, s, dims, w, m, prep);
   });
-  return scanMerge(parts, dims, w, m, prep);
+  return scanMerge(parts, dims, w, m, prep, inp.norm);
 }
