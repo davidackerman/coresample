@@ -848,6 +848,14 @@ function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: n
 }
 
 /** Whether the first search area is already the whole level (nothing to search outward). */
+/** "; all of it in ~N at this pace" while searching outward (and a hint to zoom out if that is long). */
+function finishIn(st: State, total: number, done: number): string {
+  if (st.phase !== "read" || st.seconds < 10 || !done || done >= total) return "";
+  const t = ((total - done) * st.seconds) / done;
+  const d = t < 90 ? `${Math.round(t)} s` : t < 5400 ? `${Math.round(t / 60)} min` : t < 129600 ? `${Math.round(t / 3600)} hours`
+          : t < 6.3e7 ? `${Math.round(t / 86400)} days` : `${Math.round(t / 3.15e7)} years`;
+  return `; all of it in ~${d} at this pace` + (t > 3600 ? " (zoom out before clicking to search for bigger things, faster)" : "");
+}
 function firstIsWhole(s: Search): boolean {
   const [lo, hi] = s.opt.region!, L = src!.levels[s.state.working].shape;
   return lo.every((v) => v === 0) && hi[1] >= L[1] && hi[2] >= L[2] && (src!.dims !== 3 || hi[0] >= L[0]);
@@ -894,7 +902,8 @@ function panel(st: State) {
       : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
                 + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
       : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,
-    expand && st.tilesTotal && !firstIsWhole(s) ? `outward from the query: ${num(st.areas)} area${st.areas > 1 ? "s" : ""} of ${fmtArea(s)} so far, nearest first` : "",
+    expand && st.tilesTotal && !firstIsWhole(s) ? `outward from the query: ${num(st.areas)} area${st.areas > 1 ? "s" : ""} of ${fmtArea(s)} so far, nearest first`
+      + finishIn(st, total, rough ? st.looked : st.tilesRead) : "",
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
     st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `picked by the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
@@ -1208,13 +1217,48 @@ function drawQueryMap() {
 // (x-z), with the tiles read, the hits, the query and the view
 // ---------------------------------------------------------------------------------------
 const whereCv = $<HTMLCanvasElement>("where");
+/** What the map spans: searching outward, the whole dataset (the area searched so far outlined);
+ * else the search region. */
+function whereFrame(s: Search): [Vec3, Vec3] {
+  if (!s.opt.expand) return s.regionBox;
+  const L = src!.levels[s.state.working].shape;
+  return [[0, 0, 0], [L[0], L[1], L[2]]];
+}
+/** A small picture of a 2-D dataset (its finest level at most 512 px across, if one is at most
+ * 1024) to lay under the map; null until it has loaded. */
+let backdrop: { src: Source; level: number; cv: HTMLCanvasElement | null } | null = null;
+function whereBackdrop(): { level: number; cv: HTMLCanvasElement } | null {
+  if (!src || src.dims === 3) return null;
+  if (backdrop?.src === src) return backdrop.cv ? { level: backdrop.level, cv: backdrop.cv } : null;
+  const s0 = src, n = s0.levels.length;
+  let L = n - 1;
+  while (L > 0 && Math.max(s0.levels[L - 1].shape[1], s0.levels[L - 1].shape[2]) <= 512) L--;
+  const sh = s0.levels[L].shape;
+  backdrop = { src: s0, level: L, cv: null };
+  if (Math.max(sh[1], sh[2]) > 1024) return null;  // e.g. the sky, whose coarsest level is 8192 px
+  s0.read(L, [0, 0, 0], [1, sh[1], sh[2]]).then((r) => {
+    if (backdrop?.src !== s0) return;
+    const cv = document.createElement("canvas"), img = new ImageData(sh[2], sh[1]), C = r.channels;
+    cv.width = sh[2]; cv.height = sh[1];
+    for (let i = 0; i < sh[1] * sh[2]; i++) {
+      for (let c = 0; c < 3; c++) { const v = r.data[i * C + (C === 3 ? c : 0)]; img.data[4 * i + c] = v === v ? v : 0; }
+      img.data[4 * i + 3] = 255;
+    }
+    cv.getContext("2d")!.putImageData(img, 0, 0);
+    backdrop.cv = cv;
+    scheduleWhere();
+  }).catch(() => {});
+  return null;
+}
 let wherePanels: { a: number; b: number; x0: number; y0: number; sa: number; sb: number; w: number; h: number }[] = [];
 function drawWhere(st: State) {
   if (!search || !src || !st.tilesTotal) { $("wheresec").hidden = true; return; }
   $("wheresec").hidden = false;
   $("heatimg").hidden = !olv && !ngv;  // the heat over the image: 2-D maps, and Neuroglancer's slice
   const dpr = window.devicePixelRatio || 1, W = st.working, f = 2 ** W, ch = src.levels[W].chunk, d3 = src.dims === 3;
-  const [rlo, rhi] = search.regionBox, ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
+  const [rlo, rhi] = whereFrame(search), ext = [rhi[0] - rlo[0], rhi[1] - rlo[1], rhi[2] - rlo[2]];
+  const [alo, ahi] = search.regionBox, outlined = !!search.opt.expand && !firstIsWhole(search), bd = whereBackdrop();
+  $("lsearched").hidden = !outlined;
   // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
   // one scale across, y stretched to a readable height if the volume is thin in y
   const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
@@ -1240,6 +1284,12 @@ function drawWhere(st: State) {
     g.fillStyle = "#0b0e12"; g.fillRect(p.x0, p.y0, p.w, p.h);
     g.strokeStyle = "#313946"; g.lineWidth = dpr; g.strokeRect(p.x0, p.y0, p.w, p.h);
     g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();  // everything inside the region's outline
+    const Lw = src!.levels[W].shape;
+    if (bd && p.a === 2 && ext[2] / 2 ** (bd.level - W) >= 24) {  // the dataset, dimmed, if not too coarse for the frame
+      g.globalAlpha = 0.45; g.imageSmoothingEnabled = true;
+      g.drawImage(bd.cv, X(0), Y(0), Lw[2] * p.sa, Lw[1] * p.sb);
+      g.globalAlpha = 1;
+    }
     g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
     for (const t of tiles) g.fillRect(X(t[p.a] * ch[p.a]), Y(t[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
     g.globalAlpha = 1;
@@ -1255,6 +1305,13 @@ function drawWhere(st: State) {
     });
     g.strokeStyle = "#5ab0ff"; g.lineWidth = 2 * dpr;
     for (const q of search!.exampleCenters()) if (q.every(Number.isFinite)) { g.beginPath(); g.arc(X(q[p.a]), Y(q[p.b]), 4.5 * dpr, 0, 7); g.stroke(); }
+    if (outlined) {  // the area searched so far, at least a few pixels so it shows on a big map
+      const cx = (X(alo[p.a]) + X(ahi[p.a])) / 2, cy = (Y(alo[p.b]) + Y(ahi[p.b])) / 2;
+      const w = Math.max(10 * dpr, (ahi[p.a] - alo[p.a]) * p.sa), hh = Math.max(10 * dpr, (ahi[p.b] - alo[p.b]) * p.sb);
+      g.strokeStyle = "#7ee0a0"; g.lineWidth = 1.5 * dpr; g.setLineDash([3 * dpr, 2 * dpr]);
+      g.strokeRect(cx - w / 2, cy - hh / 2, w, hh);
+      g.setLineDash([]);
+    }
     g.restore();
   });
 }
@@ -1280,11 +1337,11 @@ function heatImages(st: State): HTMLCanvasElement[] | null {
       heatTimer = window.setTimeout(() => { heatTimer = 0; scheduleWhere(); }, 1000 - (now - c.at));
     return c.imgs;
   }
-  const [lo, hi] = heatRange(h, top), [rlo, rhi] = s.regionBox, P = st.patch, f = 2 ** st.working;
+  const [lo, hi] = heatRange(h, top), [rlo, rhi] = s.regionBox, [flo] = whereFrame(s), P = st.patch, f = 2 ** st.working;
   const foot = src!.dims === 3 || s.opt.method === "tokens" ? P / 2 : P;  // the spacing of the places compared
   const imgs = wherePanels.map((p, k) => {
     const w = Math.max(1, Math.round(p.w)), ht = Math.max(1, Math.round(p.h));
-    return heatCanvas(heatGrid(h, w, ht, p.a, p.b, rlo, p.sa, p.sb, foot), w, ht, lo, hi, c?.imgs[k]);
+    return heatCanvas(heatGrid(h, w, ht, p.a, p.b, flo, p.sa, p.sb, foot), w, ht, lo, hi, c?.imgs[k]);
   });
   if (olv) {  // over the image: one cell per place, coarser if the region is huge
     if (!onImg) olv.setHeat(null);
@@ -1325,7 +1382,7 @@ whereCv.addEventListener("click", (e) => {  // go to the place clicked, keeping 
   const px = (e.clientX - r.left) * dpr, py = (e.clientY - r.top) * dpr, f = 2 ** search.state.working;
   const p = wherePanels.find((q) => px >= q.x0 && px <= q.x0 + q.w && py >= q.y0 && py <= q.y0 + q.h);
   if (!p) return;
-  const [rlo] = search.regionBox, va = rlo[p.a] + (px - p.x0) / p.sa, vb = rlo[p.b] + (py - p.y0) / p.sb;
+  const [rlo] = whereFrame(search), va = rlo[p.a] + (px - p.x0) / p.sa, vb = rlo[p.b] + (py - p.y0) / p.sb;
   const v = currentView()!, cur = { x: (v.x0 + v.x1) / 2, z: v.z };
   // from above: x and y; from the side: z and y (x stays)
   const fx = p.a === 2 ? va * f : cur.x, fy = vb * f, fz = p.a === 0 ? va * f : cur.z, scale = zoomScale();
@@ -1447,7 +1504,7 @@ async function openPad() {
   padAt = { W, P };
   $("pad").hidden = false;
   $("padhelp").textContent = `One box of ${patchSize()}. Any colour works: "look like the data" turns it into this data's own `
-    + `${src.channels === 3 ? "colours" : "greys"} by brightness.`;
+    + `${src.channels === 3 ? "colours" : "greys"} by brightness and adds its grain; untick it to search the drawing as drawn.`;
   pad.reset(P, { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 });
   try {  // the tones (greys or colours) and grain of what is on screen
     const side = Math.min(4 * P, 512), v = await viewPixels(W, side);

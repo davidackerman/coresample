@@ -142,6 +142,7 @@
   .legend .lq { border: 2px solid var(--acc); width: 6px; height: 6px; } .legend .lh { background: var(--acc2); }
   .legend .lr { background: #5ab0ff66; border-radius: 2px; } .legend .lv { border: 1px solid #fff; border-radius: 1px; }
   .legend .lg { width: 34px; height: 7px; border-radius: 2px; }
+  .legend .ls { border: 1px dashed #7ee0a0; border-radius: 1px; }
   .heatrow { gap: 6px 8px; margin-top: 6px; font-size: 11.5px; }
   .heatrow input[type=range] { width: 70px; accent-color: #d55181; }
   .heatrow label { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
@@ -286,7 +287,7 @@
     <div class="sec" id="wheresec" hidden>
       <div class="title">Where it has looked</div>
       <canvas id="where" title="Click to go there"></canvas>
-      <div class="legend"><span><i class="lq"></i>query</span><span><i class="lh"></i>hits</span><span><i class="lr"></i>read (darker: more of that column)</span><span><i class="lv"></i>view</span>
+      <div class="legend"><span><i class="lq"></i>query</span><span><i class="lh"></i>hits</span><span><i class="lr"></i>read (darker: more of that column)</span><span><i class="lv"></i>view</span><span id="lsearched" hidden><i class="ls"></i>searched so far</span>
         <span title="How well each place compared matched (scored when read; the best few thousand are re-scored after feedback)"><i id="heatgrad" class="lg"></i>match <span id="heatlo"></span>&ndash;<span id="heathi"></span></span></div>
       <div class="row heatrow">
         <span class="lbl">heat: best</span>
