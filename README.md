@@ -11,7 +11,8 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 ## Using it
 
 - **Search:** pick a dataset (or paste your own, below), zoom until the thing is clear, click.
-  The panel counts the quick pass's chunks as they arrive, then hits stream in, best first; it
+  The panel has a bar for each stage (quick pass, model, detail: hover one for what it does),
+  then hits stream in, best first; it
   keeps reading until it is done or you press **Pause**. With region on auto, on data too big
   for one quick pass, the quick pass keeps spreading outward from your click, nearest areas
   first, while the reads go to the best-scoring places of every area it has covered (not the

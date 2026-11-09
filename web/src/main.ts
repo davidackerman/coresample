@@ -669,7 +669,7 @@ function clearSearch() {
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = true; stopBtn.textContent = "Pause";
   $<HTMLButtonElement>("clear").disabled = true;
-  ($("bar").firstElementChild as HTMLElement).style.width = "0";
+  $("stages").replaceChildren();
   $("qcanvas").classList.add("none");
   $<HTMLCanvasElement>("qcanvas").getContext("2d")?.clearRect(0, 0, 999, 999);
   $("link").style.display = "none";
@@ -833,15 +833,16 @@ function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: n
   cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
 }
 
-/** Whether the first search area is already the whole level (nothing to search outward). */
-/** "; all of it in ~N at this pace" while searching outward (and a hint to zoom out if that is long). */
+/** A duration: seconds, minutes, hours, days or years. */
+const dur = (t: number) => (t < 90 ? `${Math.round(t)} s` : t < 5400 ? `${Math.round(t / 60)} min` : t < 129600 ? `${Math.round(t / 3600)} hours`
+                            : t < 6.3e7 ? `${Math.round(t / 86400)} days` : `${Math.round(t / 3.15e7)} years`);
+/** "~N for all of it" at this pace while searching outward (and a hint to zoom out if that is long). */
 function finishIn(st: State, total: number, done: number): string {
   if (st.phase !== "read" || st.seconds < 10 || !done || done >= total) return "";
   const t = ((total - done) * st.seconds) / done;
-  const d = t < 90 ? `${Math.round(t)} s` : t < 5400 ? `${Math.round(t / 60)} min` : t < 129600 ? `${Math.round(t / 3600)} hours`
-          : t < 6.3e7 ? `${Math.round(t / 86400)} days` : `${Math.round(t / 3.15e7)} years`;
-  return `; all of it in ~${d} at this pace` + (t > 3600 ? " (zoom out before clicking to search for bigger things, faster)" : "");
+  return `~${dur(t)} for all of it` + (t > 3600 ? " (zoom out: faster)" : "");
 }
+/** Whether the first search area is already the whole level (nothing to search outward). */
 function firstIsWhole(s: Search): boolean {
   const [lo, hi] = s.opt.region!, L = src!.levels[s.state.working].shape;
   return lo.every((v) => v === 0) && hi[1] >= L[1] && hi[2] >= L[2] && (src!.dims !== 3 || hi[0] >= L[0]);
@@ -854,9 +855,24 @@ function fmtArea(s: Search): string {
 }
 const fmt = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} KB`);
 
-const PHASE: Record<State["phase"], string> = { query: "Reading the query", scan: "Quick pass over a coarse level", read: "Searching",
+const PHASE: Record<State["phase"], string> = { query: "Reading the query", scan: "Quick pass", read: "Searching",
                                                 paused: "Paused", done: "Done", error: "Something went wrong" };
 const num = (v: number) => v.toLocaleString("en-US");
+/** A count in few characters: 4,800 as 4.8k, 216,161,406 as 216M. */
+const abbr = (v: number) => (v < 1e4 ? num(v) : v < 1e6 ? `${+(v / 1e3).toPrecision(3)}k` : v < 1e9 ? `${+(v / 1e6).toPrecision(3)}M` : `${+(v / 1e9).toPrecision(3)}G`);
+/** The stage rows under the query: a name, a bar of how much it has covered, the share, a tooltip. */
+function stages(rows: [string, number, string][]) {
+  const box = $("stages");
+  while (box.children.length > rows.length) box.lastElementChild!.remove();
+  rows.forEach(([name, f, tip], k) => {
+    let el = box.children[k] as HTMLElement | undefined;
+    if (!el) { el = document.createElement("div"); el.className = "stage"; el.innerHTML = "<span></span><i><b></b></i><span></span>"; box.appendChild(el); }
+    el.title = tip;
+    el.children[0].textContent = name;
+    (el.children[1].firstElementChild as HTMLElement).style.width = f > 0 ? `max(2px, ${(100 * Math.min(1, f)).toFixed(2)}%)` : "0";
+    el.children[2].textContent = `${pctOf(f)}%`;
+  });
+}
 /** A share as a percentage, with as many decimals as a small one needs. */
 const pctOf = (f: number) => (f >= 0.1 ? (100 * f).toFixed(0) : f >= 0.01 ? (100 * f).toFixed(1) : f >= 0.0001 || f === 0 ? (100 * f).toFixed(2) : "<0.01");
 
@@ -869,43 +885,46 @@ function panel(st: State) {
     $("qcanvas").classList.remove("none");
     qDrawn = `${st.examples}`;
   }
-  // with the rough pass, the tiles it has looked over; else the tiles read, discounted by the
-  // patches still waiting to be compared; searching outward, of the whole level, else of the area
-  const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal, rough = st.rough && st.looked;
-  const scanFrac = st.scanChunks ? st.scanRead / st.scanChunks : 0;  // the quick pass's read, while it runs
-  const frac = st.phase === "scan" ? scanFrac : !total ? 0 : rough ? st.looked / total : (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued));
-  const pct = pctOf(frac);
-  const [rlo, rhi] = s.regionBox, Ls = src.levels[st.working].shape;
+  // each stage's share of the data (searching outward: of the whole level, else of the area);
+  // the tiles read are discounted by the patches still waiting to be compared
+  const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal, W = st.working;
+  const [rlo, rhi] = s.regionBox, Ls = src.levels[W].shape;
   const whole = expand || (rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]));
   const what = whole ? (src.dims === 3 ? "the volume" : "the image") : "the search area";
-  $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} ${rough ? "looked over" : "read"}`
-                         : st.phase === "done" ? (st.ruledOut ? `Done: all of ${what} looked over` : `Done: every tile of ${what} read`)
-                         : st.phase === "scan" ? `Quick pass over level ${st.coarse}` + (st.scanChunks ? `: ${(100 * scanFrac).toFixed(0)}%` : "")
-                         : st.phase === "error" ? PHASE.error : PHASE[st.phase];
-  $("phase").title = (rough ? `How much of ${what} the model has looked over at level ${st.rough!.level}; the most promising `
-                              + `${100 * DETAIL}% of that is read at full detail (level ${st.working}) and compared. `
-                            : `How much of ${what} has been read at full detail (level ${st.working}) and compared, best-looking parts first; `)
-                   + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
-  const lines = st.phase === "error" ? [st.message] : [
-    st.phase === "query" && modelNote ? `waiting for the model (${modelNote.replace(/ the model:?/, "")})` + (modelNote.startsWith("downloading") ? ": only the first time, then the browser keeps it" : "")
-      : !st.tilesTotal ? st.message + (st.phase === "scan" && st.scanChunks ? `: ${num(st.scanRead)} of ${num(st.scanChunks)} ${src instanceof TileSource ? "images" : "chunks"} read` : "")
-                        + (st.phase === "scan" && src instanceof TileSource && src.waiting ? `${st.scanChunks ? "," : ":"} waiting for ${num(src.waiting)} images from the server` : "")
-      : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
-                + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
-      : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,
-    expand && st.tilesTotal && !firstIsWhole(s) ? `outward from the query: ${num(st.areas)} area${st.areas > 1 ? "s" : ""} of ${fmtArea(s)} so far, nearest first`
-      + finishIn(st, total, rough ? st.looked : st.tilesRead) : "",
-    `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
-    `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
-    st.coarse >= 0 && st.phase !== "scan" ? `level ${st.working}, ` + (st.rough ? `picked by the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
-                                                         : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)`
-      + (expand && st.scanned < 1 ? `, which has covered ${pctOf(st.scanned)}% of ${src.dims === 3 ? "the volume" : "the image"} so far` : "") : "",
-    st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " (a drawing and places)" : ""} (shift-click adds more): hits match ${combineText()}`
-      : s.opt.sketch ? "searching for your drawing; shift-click adds a real example"
-      : `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}; shift-click adds another example`,
-  ];
+  const scanning = st.phase === "scan", unit = src instanceof TileSource ? "images" : "chunks";
+  const tok = s.opt.method === "tokens", items = tok ? "windows" : "patches", outward = expand && !firstIsWhole(s);
+  $("phase").textContent = st.phase === "done" ? (st.ruledOut ? "Done: the model's picks read" : "Done: every tile read") : PHASE[st.phase];
+  const rows: [string, number, string][] = [];
+  if (st.coarse >= 0) rows.push(["quick pass", scanning ? (st.scanChunks ? st.scanRead / st.scanChunks : 0) : expand ? st.scanned : 1,
+    `Cheap statistics (brightness and texture) at level ${st.coarse}, ${2 ** (st.coarse - W)}x coarser, rank where to look first. `
+    + (scanning ? (st.scanChunks ? `${num(st.scanRead)} of the ${num(st.scanChunks)} ${unit} it needs read.` : "")
+       : `It took ${st.scanSeconds.toFixed(1)} s` + (outward ? ` and has covered ${pctOf(st.scanned)}% of ${what}: ${num(st.areas)} areas of ${fmtArea(s)} `
+         + "so far, nearest first, more while the search goes on; the reads go to the best places of all of them." : "."))]);
+  if (!scanning && st.tilesTotal) {
+    if (st.rough) rows.push(["model", total ? st.looked / total : 0,
+      `${modelName()} looks over the quick pass's best places at level ${st.rough.level}, ${2 ** (st.rough.level - W)}x coarser: `
+      + `${num(st.rough.places)} places in ${num(st.looked)} of ${num(total)} tiles. The best ${100 * DETAIL}% of them are read in detail.`]);
+    rows.push(["detail", total ? (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued)) : 0,
+      `Read at level ${W} (the level on screen) and compared by ${modelName()}${tok ? ", windows of its tokens" : ""}: `
+      + `${num(st.patches)} ${items} in ${num(st.tilesRead)} of ${num(total)} tiles.`]);
+  }
+  stages(st.phase === "query" || st.phase === "error" ? [] : rows);
+  const waiting = scanning && src instanceof TileSource ? src.waiting : 0;
+  const lines = st.phase === "error" ? [st.message]
+    : st.phase === "query" ? [modelNote ? `waiting for the model (${modelNote.replace(/ the model:?/, "")})` + (modelNote.startsWith("downloading") ? ": only the first time" : "") : st.message]
+    : scanning ? [(st.scanChunks && st.scanRead >= st.scanChunks ? `comparing every place at level ${st.coarse} with the query`
+                   : `reading level ${st.coarse}` + (st.scanChunks ? `: ${num(st.scanRead)} of ${num(st.scanChunks)} ${unit}` : ""))
+                  + (waiting ? `, ${num(waiting)} waiting` : ""),
+                  `${fmt(st.bytes)} in ${dur(st.seconds)}`]
+    : [`${abbr(st.patches)} ${items} in ${abbr(st.tilesRead)} tiles` + (st.phase === "done" && st.ruledOut ? `, ${abbr(st.ruledOut)} ruled out` : ""),
+       `${fmt(st.bytes)} in ${dur(st.seconds)}` + (st.firstHitSeconds ? `, first hits ${st.firstHitSeconds.toFixed(1)} s` : ""),
+       outward ? finishIn(st, total, st.rough && st.looked ? st.looked : st.tilesRead) : ""];
+  lines.push(st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " with the drawing" : ""}: hits match ${combineText()}`
+             : s.opt.sketch ? "your drawing" : "");
   $("status").textContent = lines.filter(Boolean).join("\n");
-  ($("bar").firstElementChild as HTMLElement).style.width = `${(100 * frac).toFixed(2)}%`;
+  $("status").title = outward ? "Searching outward from the query at the level on screen. Zooming out before clicking searches a coarser level: faster, for bigger things." : "";
+  if (st.examples === 1 && !s.opt.sketch)
+    $("qcanvas").title = `the query, at ${coordText(s.query[2] * 2 ** W, s.query[1] * 2 ** W, s.query[0] * 2 ** W)} (shift-click on the image adds another example)`;
   const stopBtn = $<HTMLButtonElement>("stop");
   const rest = st.phase === "done" && st.ruledOut > 0;  // the tiles the model ruled out can still be read
   stopBtn.disabled = !(st.phase === "read" || st.phase === "paused" || rest);
@@ -950,7 +969,7 @@ function panel(st: State) {
     el.classList.toggle("good", s.markOf(h.index) === "good");
     el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
-    el.querySelector(".z")!.textContent = d.text + (src?.dims === 3 ? `, z ${num(h.center[0] * 2 ** st.working)}` : "");
+    el.querySelector(".z")!.textContent = [d.text, src?.dims === 3 ? `z ${num(h.center[0] * 2 ** st.working)}` : ""].filter(Boolean).join(", ");
     if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
@@ -998,13 +1017,12 @@ function showWhyHelp() {
   $("matchhelp").hidden = !matchOn;
   if (!whyOn || !search) return;
   const m = search.opt.match, tok = search.opt.method === "tokens";
-  $("whytext").innerHTML = `Scored by <b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
+  $("whytext").innerHTML = `<b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (tok ? "of the window's average token. "
-       : `the mean of <b>look</b> (the model's summary of the whole box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
-         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "the average of its 8 x 8 pieces"}). `)
-    + (matchOn ? "" : "Colours: how the model sees each piece; pieces it sees alike have the same colour, in the query and in every hit, so a hit's colours show which of its parts match which parts of the query. ")
-    + (emb.input === 224 ? "" : "(From the 224 px model: 88 MB the first time.) ")
-    + "Cheap statistics only choose what is read first.";
+       : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
+         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "its 8 x 8 pieces"}). `)
+    + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
+    + (emb.input === 224 ? "" : "(224 px model: 88 MB the first time.)");
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
