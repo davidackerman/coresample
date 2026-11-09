@@ -12,6 +12,7 @@ import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
+import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, type Folder } from "./local.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -502,6 +503,21 @@ dsBtn.addEventListener("click", () => { dsMenu.hidden = !dsMenu.hidden; if (!dsM
 document.addEventListener("pointerdown", (e) => { if (!dsMenu.hidden && !(e.target as HTMLElement).closest(".dpick")) dsMenu.hidden = true; });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dsMenu.hidden = true; });
 $("open").addEventListener("click", () => { dsMenu.hidden = true; openCustom($<HTMLInputElement>("custom").value); });
+$("ownbtn").addEventListener("click", () => {
+  dsMenu.hidden = !dsMenu.hidden;
+  if (dsMenu.hidden) return;
+  fillDatasets();
+  dsMenu.querySelector(".own")!.scrollIntoView({ block: "nearest" });
+  $("custom").focus();
+});
+$("pick").hidden = !canPick;
+if (canPick) $("pickhelp").textContent = "or drop one anywhere on the page";
+else $("pickhelp").textContent = "Or drop a folder anywhere on the page.";
+$("pick").addEventListener("click", async () => {
+  dsMenu.hidden = true;
+  try { const f = await pickFolder(); if (f) await openLocal(f); }
+  catch (e) { $("phase").textContent = "Could not open the folder"; $("status").textContent = (e as Error).message; }
+});
 $("custom").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") $("open").click(); });
 
 let ngAvailable: Promise<boolean> | null = null;
@@ -546,6 +562,8 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
       pointer: (fx, fy, fz) => showCursor(fx, fy, fz),
     }, p?.layers ?? []);
     hover.parentElement!.appendChild(hover);  // the hover canvas above the viewer's frame
+    const frame = ngv.iframe;
+    frame.addEventListener("load", () => { if (frame.contentWindow) watchDrags(frame.contentWindow); }, { once: true });
     $("zbar").style.display = "none";  // Neuroglancer moves through z itself
   }
   if (tiled) {
@@ -620,14 +638,8 @@ async function openCustom(text: string) {
       try { s = await OmeZarrSource.open(text); }
       catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
     }
-    const L0 = s.levels[0].shape;
-    await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
-    const u = new URL(location.href);  // a link that opens this data again
-    u.searchParams.delete("d"); u.searchParams.set("url", text);
-    history.replaceState(null, "", u);
-    idle();
     const fmt = m ? "legacy" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
-    countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
+    await showOwn(s, text, fmt);
   } catch (e) {
     const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
@@ -636,6 +648,58 @@ async function openCustom(text: string) {
   } finally {
     openBtn.disabled = false; openBtn.textContent = "Open";
   }
+}
+
+/** Your own data, opened: shown at its middle, the address bar a link to it (`link`; none for a
+ * folder on this computer), counted as its format. */
+async function showOwn(s: Source, link: string | null, fmt: string) {
+  const L0 = s.levels[0].shape;
+  await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+  const u = new URL(location.href);
+  u.searchParams.delete("d");
+  if (link) u.searchParams.set("url", link); else u.searchParams.delete("url");
+  history.replaceState(null, "", u);
+  idle();
+  countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
+}
+
+/** A folder on this computer: the image in it (the folder itself, or the first inside). */
+async function openLocal(f: Folder) {
+  $("phase").textContent = `Opening ${f.name}`;
+  $("status").textContent = "Looking for an image in the folder";
+  try {
+    const found = await findImages(f), ok = found.filter((x) => x.kind !== "n5");
+    if (!ok.length) throw new Error(found.length ? `${f.name} holds N5, which is not read here: OME-Zarr or Neuroglancer precomputed.`
+                                                 : `no OME-Zarr image or precomputed volume in ${f.name}.`);
+    const { path, kind } = ok[0], base = await serveFolder(f), url = path ? `${base}/${path}` : base;
+    const name = path ? `${f.name}/${path}` : f.name;
+    const s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false });
+    await showOwn(s, null, `local-${kind}`);
+    if (ok.length > 1) $("status").textContent = `Opened ${name}. Also in the folder: ${ok.slice(1).map((x) => x.path).join(", ")} (drop one of those to open it).`;
+  } catch (e) {
+    $("phase").textContent = "Could not open the folder";
+    $("status").textContent = (e as Error).message || String(e);
+  }
+}
+
+// a folder dropped anywhere on the page (or on the viewer's frame, which has its own document)
+const dropEl = $("drop");
+const withFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes("Files");
+function watchDrags(w: Window) {
+  w.addEventListener("dragenter", (e) => { if (withFiles(e)) { e.preventDefault(); dropEl.hidden = false; } }, true);
+  w.addEventListener("dragover", (e) => { if (withFiles(e)) e.preventDefault(); }, true);
+  w.addEventListener("drop", (e) => { if (withFiles(e)) { e.preventDefault(); e.stopPropagation(); dropped(e); } }, true);
+}
+watchDrags(window);
+dropEl.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer!.dropEffect = "copy"; });
+dropEl.addEventListener("dragleave", (e) => { if (e.target === dropEl) dropEl.hidden = true; });
+function dropped(e: DragEvent) {
+  dropEl.hidden = true;
+  const items = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === "file");
+  const entry = items[0]?.webkitGetAsEntry?.();  // only during the event
+  if (entry?.isDirectory) { void openLocal(entryFolder(entry as FileSystemDirectoryEntry)); return; }
+  $("phase").textContent = "Drop a folder";
+  $("status").textContent = `${entry?.name ?? "That"} is a file: drop the folder of an OME-Zarr image (.zarr) or a precomputed volume. Single image files are not read yet.`;
 }
 
 /** The extra layers (segmentations...) as toggles; they show in Neuroglancer. */
@@ -1559,7 +1623,8 @@ $("padgo").addEventListener("click", () => {
 });
 
 // for debugging from the console
-(window as any).coresample = { get src() { return src; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; } };
+(window as any).coresample = { get src() { return src; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; },
+  local: { open: openLocal, handleFolder, entryFolder } };
 
 // start
 const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");

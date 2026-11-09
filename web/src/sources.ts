@@ -119,20 +119,25 @@ class CountingStore {
     urls.forEach((u, i) => { if (ok[i]) this.inners.push(new zarr.FetchStore(u)); });
   }
   async get(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
-    try { return await this.getOnce(key, opts); } finally { this.chunks++; }
+    try { return await this.getOnce(key, key, (s) => s.get(key, opts), true); } finally { this.chunks++; }
   }
-  private async getOnce(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
-    const hit = this.cache.get(key);
+  /** Part of a file: a chunk in a shard (zarr v3), or the shard's index (its end, not counted as a chunk). */
+  async getRange(key: zarr.AbsolutePath, range: ByteRange, opts?: RequestInit): Promise<Uint8Array | undefined> {
+    const suffix = "suffixLength" in range, k = `${key}#${suffix ? `-${range.suffixLength}` : `${range.offset}+${range.length}`}`;
+    try { return await this.getOnce(k, key, (s) => s.getRange(key, range, opts), false); } finally { if (!suffix) this.chunks++; }
+  }
+  private async getOnce(k: string, key: string, read: (s: zarr.FetchStore) => Promise<Uint8Array | undefined>, whole: boolean): Promise<Uint8Array | undefined> {
+    const hit = this.cache.get(k);
     if (hit !== undefined) return hit ?? undefined;
-    let p = this.pending.get(key);
+    let p = this.pending.get(k);
     if (!p) {
       p = (async () => {
         let err: unknown;
         for (let attempt = 0; attempt < 4; attempt++) {  // transient network failures: retry
           try {
-            const v = await this.pick(key, attempt).get(key, opts);
-            if (v) { this.bytes += v.byteLength; this.first ??= { key, n: v.byteLength }; }
-            this.cache.set(key, v ?? null, v ? v.byteLength : 64);
+            const v = await read(this.pick(key, attempt));
+            if (v) { this.bytes += v.byteLength; if (whole) this.first ??= { key, n: v.byteLength }; }
+            this.cache.set(k, v ?? null, v ? v.byteLength : 64);
             return v;
           } catch (e) {
             err = e;
@@ -140,12 +145,13 @@ class CountingStore {
           }
         }
         throw err;
-      })().finally(() => this.pending.delete(key));
-      this.pending.set(key, p);
+      })().finally(() => this.pending.delete(k));
+      this.pending.set(k, p);
     }
     return p;
   }
 }
+type ByteRange = { offset: number; length: number } | { suffixLength: number };
 
 interface OmeAxis { name: string; type?: string }
 
@@ -286,6 +292,7 @@ export class OmeZarrSource implements Source {
   }
 
   link(level: number, center: Vec3): string | null {
+    if (this.url.startsWith(location.origin + "/")) return null;  // a folder on this computer (src/local.ts)
     const s0 = this.levels[0].scale, f = 2 ** level;
     const pos = [center[0] * (this.dims === 3 ? f : 1) + 0.5, center[1] * f + 0.5, center[2] * f + 0.5];
     const unit = this.unit.startsWith("micro") ? 1e-6 : this.unit.startsWith("nano") || this.unit === "" ? 1e-9 : 1;
