@@ -36,6 +36,8 @@ export interface State {
   examples: number;  // examples the query is made of (shift-click adds one)
   areas: number;     // areas scanned so far (with `expand`, the first and those around it)
   levelTiles: number;  // tiles in the whole working level
+  scanRead: number; scanChunks: number;  // the first quick pass: chunks of the coarse level read, of all it needs
+  scanned: number;   // share of the working level the quick pass has covered (the areas scanned)
 }
 
 export interface Options {
@@ -206,7 +208,7 @@ export class Search {
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
                    tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
                    scanSeconds: 0, firstHitSeconds: null, rough: null, looked: 0, ruledOut: 0, examples: 1, areas: 1,
-                   levelTiles: L.shape.reduce((n, v, a) => n * Math.ceil(v / L.chunk[a]), 1) };
+                   levelTiles: L.shape.reduce((n, v, a) => n * Math.ceil(v / L.chunk[a]), 1), scanRead: 0, scanChunks: 0, scanned: 0 };
     this.ready = new Promise((r) => (this.setReady = r));
   }
   private ready: Promise<void>;
@@ -312,7 +314,7 @@ export class Search {
       const C = this.chooseCoarse(), f = 2 ** (C - W);
       const sw = Math.max(2, Math.round(P / f));
       const w: Dims = [d3 ? sw : 1, sw, sw], m: Dims = [d3 ? MARGIN : 0, MARGIN, MARGIN];
-      this.emit({ phase: "scan", coarse: C, message: `scanning level ${C} with cheap scores` });
+      this.emit({ phase: "scan", coarse: C, message: `the quick pass: level ${C}, ${2 ** (C - W)}x coarser, cheap scores` });
       let qr: Region;
       if (sk) qr = sketchWindow(sk, w, m);  // the drawing shrunk to the coarse level, its median around it
       else {
@@ -322,9 +324,12 @@ export class Search {
       }
       this.qscan = { C, f, w, m, query: fillMissing(luminance(qr)), qdims: qr.shape };
       // 2. the region scanned, its tiles ranked
-      const ts = performance.now(), tick = setInterval(() => this.emit({}), 1000);  // time and bytes keep counting on a slow server
+      // time, bytes and chunks keep counting on a slow server
+      const ts = performance.now(), n0 = this.src.chunksRead, need = this.chunksIn(C, this.region);
+      if (n0 !== undefined) this.emit({ scanRead: 0, scanChunks: need });
+      const tick = setInterval(() => this.emit(n0 === undefined ? {} : { scanRead: Math.min(need, this.src.chunksRead! - n0) }), 500);
       try { this.order = await this.scanRegion(this.region); } finally { clearInterval(tick); }
-      this.emit({ scanSeconds: (performance.now() - ts) / 1000 });
+      this.emit({ scanSeconds: (performance.now() - ts) / 1000, scanRead: need, scanChunks: need });
       await this.setupRough();
       this.setReady();
       this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
@@ -335,6 +340,16 @@ export class Search {
     }
   }
 
+  /** Chunks of coarse level C (with the scan's margin) under an area of the working level. */
+  private chunksIn(C: number, [rlo, rhi]: [Vec3, Vec3]): number {
+    const { f, m } = this.qscan!, L = this.src.levels[C], d3 = this.src.dims === 3;
+    return [0, 1, 2].reduce((n, a) => {
+      if (a === 0 && !d3) return n;
+      const lo = Math.max(0, Math.floor(rlo[a] / f) - m[a]), hi = Math.min(L.shape[a], Math.ceil(rhi[a] / f) + m[a]);
+      return n * Math.max(1, Math.floor((hi - 1) / L.chunk[a]) - Math.floor(lo / L.chunk[a]) + 1);
+    }, 1);
+  }
+
   /** The cheap scan of one area (working-level voxels [lo, hi)) at the coarse level, and the
    * working level's tiles in it not ranked before, ranked by their best window. */
   private async scanRegion([rlo, rhi]: [Vec3, Vec3]): Promise<Vec3[]> {
@@ -342,9 +357,12 @@ export class Search {
     const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
     const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
     const vol = await this.src.read(C, [clo[0] - m[0], clo[1] - m[1], clo[2] - m[2]], [chi[0] + m[0], chi[1] + m[1], chi[2] + m[2]]);
+    if (this.state.phase === "scan") this.emit({ scanRead: this.state.scanChunks, message: `the quick pass: level ${C} read, comparing every place in it with the query` });
     const inp: ScanInput = { vol: fillMissing(luminance(vol)), dims: vol.shape, query: Float32Array.from(q.query), qdims: q.qdims, window: w, margin: m };
     const res = this.opt.scanFn ? await this.opt.scanFn(inp) : scanSync(inp);
     this.scans.push({ score: res.score, dims: res.dims, clo, f, w, lo: rlo, hi: rhi });
+    const Ls = this.src.levels[W].shape, cov = (rhi[0] - rlo[0]) * (rhi[1] - rlo[1]) * (rhi[2] - rlo[2]) / (Ls[0] * Ls[1] * Ls[2]);
+    this.emit({ scanned: Math.min(1, this.state.scanned + cov) });  // areas do not overlap
     const ch = this.src.levels[W].chunk;
     const prior = new Map<number, number>();
     const od = res.dims;

@@ -857,6 +857,8 @@ const fmt = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3
 const PHASE: Record<State["phase"], string> = { query: "Reading the query", scan: "Quick pass over a coarse level", read: "Searching",
                                                 paused: "Paused", done: "Done", error: "Something went wrong" };
 const num = (v: number) => v.toLocaleString("en-US");
+/** A share as a percentage, with as many decimals as a small one needs. */
+const pctOf = (f: number) => (f >= 0.1 ? (100 * f).toFixed(0) : f >= 0.01 ? (100 * f).toFixed(1) : f >= 0.0001 || f === 0 ? (100 * f).toFixed(2) : "<0.01");
 
 function panel(st: State) {
   if (!search || !src) return;
@@ -870,13 +872,15 @@ function panel(st: State) {
   // with the rough pass, the tiles it has looked over; else the tiles read, discounted by the
   // patches still waiting to be compared; searching outward, of the whole level, else of the area
   const expand = !!s.opt.expand, total = expand ? st.levelTiles : st.tilesTotal, rough = st.rough && st.looked;
-  const frac = !total ? 0 : rough ? st.looked / total : (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued));
-  const pct = frac >= 0.1 ? (100 * frac).toFixed(0) : frac >= 0.01 ? (100 * frac).toFixed(1) : frac >= 0.0001 || frac === 0 ? (100 * frac).toFixed(2) : "<0.01";
+  const scanFrac = st.scanChunks ? st.scanRead / st.scanChunks : 0;  // the quick pass's read, while it runs
+  const frac = st.phase === "scan" ? scanFrac : !total ? 0 : rough ? st.looked / total : (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued));
+  const pct = pctOf(frac);
   const [rlo, rhi] = s.regionBox, Ls = src.levels[st.working].shape;
   const whole = expand || (rlo.every((v) => v === 0) && rhi[1] >= Ls[1] && rhi[2] >= Ls[2] && (src.dims !== 3 || rhi[0] >= Ls[0]));
   const what = whole ? (src.dims === 3 ? "the volume" : "the image") : "the search area";
   $("phase").textContent = st.phase === "read" || st.phase === "paused" ? `${PHASE[st.phase]}: ${pct}% of ${what} ${rough ? "looked over" : "read"}`
                          : st.phase === "done" ? (st.ruledOut ? `Done: all of ${what} looked over` : `Done: every tile of ${what} read`)
+                         : st.phase === "scan" ? `Quick pass over level ${st.coarse}` + (st.scanChunks ? `: ${(100 * scanFrac).toFixed(0)}%` : "")
                          : st.phase === "error" ? PHASE.error : PHASE[st.phase];
   $("phase").title = (rough ? `How much of ${what} the model has looked over at level ${st.rough!.level}; the most promising `
                               + `${100 * DETAIL}% of that is read at full detail (level ${st.working}) and compared. `
@@ -884,7 +888,8 @@ function panel(st: State) {
                    + "the map below shows where. The area is set under Options \u25b8 region (auto: the whole dataset when the quick first pass can cover it).";
   const lines = st.phase === "error" ? [st.message] : [
     st.phase === "query" && modelNote ? `waiting for the model (${modelNote.replace(/ the model:?/, "")})` + (modelNote.startsWith("downloading") ? ": only the first time, then the browser keeps it" : "")
-      : !st.tilesTotal ? st.message + (st.phase === "scan" && src instanceof TileSource && src.waiting ? `: waiting for ${num(src.waiting)} images from the server` : "")
+      : !st.tilesTotal ? st.message + (st.phase === "scan" && st.scanChunks ? `: ${num(st.scanRead)} of ${num(st.scanChunks)} ${src instanceof TileSource ? "images" : "chunks"} read` : "")
+                        + (st.phase === "scan" && src instanceof TileSource && src.waiting ? `${st.scanChunks ? "," : ":"} waiting for ${num(src.waiting)} images from the server` : "")
       : rough ? `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of the `
                 + `${num(st.looked)} tiles the model looked over (of ${num(total)})` + (st.phase === "done" && st.ruledOut ? `; ${num(st.ruledOut)} ruled out` : "")
       : `${num(st.patches)} ${s.opt.method === "tokens" ? "windows" : "patches"} compared in ${num(st.tilesRead)} of ${num(total)} tiles`,
@@ -892,8 +897,9 @@ function panel(st: State) {
       + finishIn(st, total, rough ? st.looked : st.tilesRead) : "",
     `${fmt(st.bytes)} read in ${st.seconds.toFixed(0)} s` + (st.firstHitSeconds ? `, first hits after ${st.firstHitSeconds.toFixed(1)} s` : ""),
     `scored by ${modelName()}${s.opt.method === "tokens" ? ", windows of its tokens" : ""}`,
-    st.coarse >= 0 ? `level ${st.working}, ` + (st.rough ? `picked by the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
-                                                         : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)` : "",
+    st.coarse >= 0 && st.phase !== "scan" ? `level ${st.working}, ` + (st.rough ? `picked by the model at level ${st.rough.level} (${num(st.rough.places)} places), after `
+                                                         : "ranked by ") + `a quick pass over level ${st.coarse} (${st.scanSeconds.toFixed(1)} s)`
+      + (expand && st.scanned < 1 ? `, which has covered ${pctOf(st.scanned)}% of ${src.dims === 3 ? "the volume" : "the image"} so far` : "") : "",
     st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " (a drawing and places)" : ""} (shift-click adds more): hits match ${combineText()}`
       : s.opt.sketch ? "searching for your drawing; shift-click adds a real example"
       : `query at ${coordText(s.query[2] * 2 ** st.working, s.query[1] * 2 ** st.working, s.query[0] * 2 ** st.working)}; shift-click adds another example`,
