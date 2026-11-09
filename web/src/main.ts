@@ -499,18 +499,25 @@ sortSeg.addEventListener("click", (e) => {
   try { localStorage.setItem("coresample-sort", k); } catch { /* no storage here */ }
   fillDatasets();
 });
-dsBtn.addEventListener("click", () => { dsMenu.hidden = !dsMenu.hidden; if (!dsMenu.hidden) fillDatasets(); });
+/** The menu as the dataset list (under the datasets button) or as the box for your own data
+ * (under "+ Your data"); its button again closes it. */
+function showMenu(mode: "list" | "own") {
+  if (!dsMenu.hidden && dsMenu.dataset.mode === mode) { dsMenu.hidden = true; return; }
+  dsMenu.dataset.mode = mode;
+  dsMenu.hidden = false;
+  const own = $("ownbtn"), room = window.innerWidth - 8 - dsMenu.offsetWidth - dsMenu.parentElement!.getBoundingClientRect().left;
+  dsMenu.style.left = mode === "own" ? `${Math.max(0, Math.min(own.offsetLeft, room))}px` : "0";
+  if (mode === "list") fillDatasets();
+  else requestAnimationFrame(() => $("custom").focus());  // after the click that opened it settles
+}
+dsBtn.addEventListener("click", () => showMenu("list"));
 document.addEventListener("pointerdown", (e) => { if (!dsMenu.hidden && !(e.target as HTMLElement).closest(".dpick")) dsMenu.hidden = true; });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dsMenu.hidden = true; });
 $("open").addEventListener("click", () => { dsMenu.hidden = true; openCustom($<HTMLInputElement>("custom").value); });
-/** The datasets menu, open at the box for your own data. */
-function openOwnBox() {
-  dsMenu.hidden = false;
-  fillDatasets();
-  dsMenu.querySelector(".own")!.scrollIntoView({ block: "nearest" });
-  $("custom").focus();
-}
-$("ownbtn").addEventListener("click", () => { if (dsMenu.hidden) openOwnBox(); else dsMenu.hidden = true; });
+/** The box for your own data, open. */
+function openOwnBox() { dsMenu.hidden = true; showMenu("own"); }
+$("ownbtn").addEventListener("click", () => showMenu("own"));
+$("ownlink").addEventListener("click", openOwnBox);
 $("pick").hidden = !canPick;
 if (canPick) $("pickhelp").textContent = "or drop one anywhere on the page";
 else $("pickhelp").textContent = "Or drop a folder anywhere on the page.";
