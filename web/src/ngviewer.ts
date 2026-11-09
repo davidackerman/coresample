@@ -4,7 +4,7 @@
 // the frame's `viewer`: clicks and zoom are read from it, hits are a local annotation layer, and
 // the hover box is drawn on a transparent canvas over the frame.
 import type { Layer } from "./datasets.ts";
-import type { Vec3 } from "./sources.ts";
+import type { Channel, Vec3 } from "./sources.ts";
 import type { Heat } from "./search.ts";
 import { heatCanvas, heatGrid } from "./heat.ts";
 
@@ -20,13 +20,41 @@ export interface NgSource {
   ngOffset?: Vec3;  // z, y, x: where voxel 0 is in Neuroglancer's coordinates
   ngDisplay?(): string[];  // the axes to show, when the viewer's default (its first three) would be wrong
   channels?: 1 | 3;       // 3: a colour image, shown as red, green and blue layers added together
+  chans?: Channel[];      // the channels of a multi-channel image: one layer each, its colour and range in its controls
   ngRange?: [number, number] | null;  // the values shown black to white (data that is not 8-bit), as the search sees them
 }
 
-/** The data's image layer; a colour image as three (red, green, blue), one per position along
- * its channel axis, added together: the viewer shows one channel of an image at a time, and an
- * RGB shader over all three would need them in one chunk, which IDR's images do not have. */
+/** Each channel's layer name: its label (a bare number as "channel 3"), made unique. */
+export function channelNames(chans: Channel[]): string[] {
+  const seen = new Set<string>();
+  return chans.map((c) => {
+    let n = /^\d+$/.test(c.label) ? `channel ${c.label}` : c.label;
+    if (seen.has(n)) n = `${n} (${c.index})`;
+    seen.add(n);
+    return n;
+  });
+}
+const hexOf = (c: [number, number, number]) => "#" + c.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+function rgbOf(h: unknown): [number, number, number] | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(h ?? ""));
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+}
+
+/** The data's image layers. A multi-channel image: one layer per channel, added together, each
+ * with a colour and a range in its controls (the search reads them back: channelMix). Else one
+ * layer; a colour image with no channel list (precomputed) as red, green and blue layers. */
 function imageLayers(src: NgSource): Json[] {
+  if (src.chans?.length) {
+    const names = channelNames(src.chans);
+    // the controls' defaults are the channel's own, so a control left alone reads back as it opened
+    return src.chans.map((c, k) => ({
+      type: "image", name: names[k], source: src.ngSource, localPosition: [c.index], blend: "additive", opacity: 1, visible: c.visible,
+      shader: `#uicontrol vec3 color color(default="${hexOf(c.color)}")\n#uicontrol invlerp normalized(range=[${c.range[0]}, ${c.range[1]}])\n`
+            + "void main() { emitRGB(color * normalized()); }",
+    }));
+  }
   // the viewer's default stretch is the data type's whole range: 16-bit EM with values in a
   // narrow band (IDR's organoid: 1,500-6,000 of 65,535) would look black
   const range = src.ngRange ? { shaderControls: { normalized: { range: src.ngRange } } } : {};
@@ -160,6 +188,23 @@ export class NgViewer {
       const p = this.mousePosition(e.clientX, e.clientY);
       if (p) { this.mouse = null; this.drawHover(); this.on.click(p[0], p[1], p[2], e.shiftKey); }  // shift: another example
     }, true);
+  }
+
+  /** The channels as the viewer shows them now: each on or off (a layer removed: off), its
+   * colour and range from its controls, and the channel it shows; null before the viewer is up
+   * or for an image without channels. A shader rewritten by hand keeps only what it still has. */
+  channelMix(): Channel[] | null {
+    const chans = this.src.chans;
+    if (!chans?.length || !this.viewer) return null;
+    const layers = (this.json().layers ?? []) as Json[], names = channelNames(chans);
+    return chans.map((c, k) => {
+      const l = layers.find((x) => x.name === names[k]);
+      if (!l) return { ...c, visible: false };
+      const sc = l.shaderControls ?? {}, r = sc.normalized?.range, lp = l.localPosition?.[0];
+      return { ...c, visible: l.visible !== false && !l.archived, color: rgbOf(sc.color) ?? c.color,
+               range: Array.isArray(r) && r.length === 2 && r.every(Number.isFinite) && r[1] !== r[0] ? [r[0], r[1]] : c.range,
+               index: Number.isFinite(lp) ? Math.floor(lp) : c.index };
+    });
   }
 
   /** Show or hide one of the extra layers. */
