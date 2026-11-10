@@ -163,9 +163,10 @@ export class Embedder {
   use(id: string) { this.spec = MODELS.find((m) => m.id === id) ?? MODELS[0]; }
 
   /** Embeddings of patches; `keys` (optional) cache them for the session. With a `brush` (which
-   * of the box's 8 x 8 parts matter, 0-1), a fourth part: the brushed tokens' weighted mean. */
-  async embed(patches: Patch[], keys?: string[], brush?: Float32Array | null): Promise<Float32Array[]> {
-    const sp = this.spec, size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size, bk = brush ? `|b${brushKey(brush)}` : "";
+   * of the box's 8 x 8 parts matter, 0-1), a fourth part: the brushed tokens' weighted mean.
+   * `sp`: the model (a search keeps the one it began with; the page's choice is for the next). */
+  async embed(patches: Patch[], keys?: string[], brush?: Float32Array | null, sp: ModelSpec = this.spec): Promise<Float32Array[]> {
+    const size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size, bk = brush ? `|b${brushKey(brush)}` : "";
     const model = this.file(brush && sp.brushFile ? sp.brushFile : sp.file);  // the others output their tokens already
     keys = keys?.map((k) => `${k}|${sp.id}${bk}`);
     const out: (Float32Array | null)[] = patches.map((_, i) => (keys ? this.cache.get(keys[i]) ?? null : null));
@@ -195,9 +196,9 @@ export class Embedder {
   }
   /** Each crop's grid of unit-length patch tokens: DINOv2-small's 16 x 16 at 224 px (the
    * tile-token mode, whatever the model), or with `own` the model in use's when it has its own
-   * (MorphEm's, PE-Core-T's 7 x 7 at 112 px: the why / match maps). */
-  async tokens(crops: Patch[], own = false): Promise<TokenGrid[]> {
-    const sp = own && this.spec.ownTokens ? this.spec : TOKENS_MODEL, size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size;
+   * (MorphEm's, PE-Core-T's 7 x 7 at 112 px: the why / match maps); `model`, as embed's. */
+  async tokens(crops: Patch[], own = false, model: ModelSpec = this.spec): Promise<TokenGrid[]> {
+    const sp = own && model.ownTokens ? model : TOKENS_MODEL, size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size;
     const out: TokenGrid[] = [];
     for (let s = 0; s < crops.length;) {
       await new Promise((r) => setTimeout(r, 0));

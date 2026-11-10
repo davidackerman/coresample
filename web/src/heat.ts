@@ -5,13 +5,17 @@
 import type { Heat } from "./search.ts";
 import type { Vec3 } from "./sources.ts";
 
-/** One hue (magenta), dark for the lowest score shown and light for the best: its own
- * sequential scale, apart from the page's blue (query, tiles read) and yellow (hits). */
-const STOPS: [number, number, number, number][] = [[0, 0x4a, 0x15, 0x30], [0.5, 0xd5, 0x51, 0x81], [1, 0xfb, 0xd3, 0xe3]];
+/** Viridis (matplotlib's, at nine stops): purple for the lowest score shown, through teal and
+ * green, to yellow for the best; perceptually even and readable with colour blindness. */
+const STOPS: [number, number, number, number][] = [
+  [0, 0x44, 0x01, 0x54], [0.125, 0x47, 0x2d, 0x7b], [0.25, 0x3b, 0x52, 0x8b], [0.375, 0x2c, 0x72, 0x8e], [0.5, 0x21, 0x91, 0x8c],
+  [0.625, 0x28, 0xae, 0x80], [0.75, 0x5e, 0xc9, 0x62], [0.875, 0xad, 0xdc, 0x30], [1, 0xfd, 0xe7, 0x25]];
 const LUT = (() => {
   const t = new Uint8ClampedArray(256 * 3);
-  for (let i = 0; i < 256; i++) {
-    const v = i / 255, k = v < STOPS[1][0] ? 0 : 1, [a, b] = [STOPS[k], STOPS[k + 1]], f = (v - a[0]) / (b[0] - a[0]);
+  for (let i = 0, k = 0; i < 256; i++) {
+    const v = i / 255;
+    while (k < STOPS.length - 2 && v > STOPS[k + 1][0]) k++;
+    const [a, b] = [STOPS[k], STOPS[k + 1]], f = (v - a[0]) / (b[0] - a[0]);
     for (let c = 0; c < 3; c++) t[3 * i + c] = a[c + 1] + f * (b[c + 1] - a[c + 1]);
   }
   return t;

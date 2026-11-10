@@ -141,7 +141,7 @@ function showRate(rate: number, how: string) {
 /** While searching, the speed over the last few seconds of model work. */
 let rateAt = { n: 0, s: 0, t: 0 };
 function liveRate() {
-  if (modelNote || !emb.provider) return;
+  if (modelNote || !emb.provider || (search && search.spec !== emb.spec)) return;  // the chip names the next search's model
   const now = performance.now(), dn = emb.count - rateAt.n, ds = emb.seconds - rateAt.s;
   if (now - rateAt.t < 2000 || dn < 64 || ds <= 0) return;
   showRate(dn / ds, "while searching");
@@ -756,6 +756,7 @@ function fillLayers(layers: Layer[]) {
 function clearSearch() {
   search?.stop();
   search = null;
+  $("again").hidden = true;
   hitEls = [];
   $("marks").hidden = true;
   $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div>';
@@ -1112,7 +1113,9 @@ function panel(st: State) {
 // "parts" term of the score, in finer detail)
 // ---------------------------------------------------------------------------------------
 // the tiles + tokens method runs DINOv2-small at 224 px whatever the model chosen: its maps too
-const modelName = () => (search?.opt.method === "tokens" ? MODELS.find((m) => m.id === "224")!.label : emb.spec.label);
+// the search's own model (the one it began with), else the one chosen for the next search
+const specNow = () => search?.spec ?? emb.spec;
+const modelName = () => (search?.opt.method === "tokens" ? MODELS.find((m) => m.id === "224")!.label : specNow().label);
 let whyOn = false;
 /** match: a spotlight on each hit where it matches what was clicked (the rest dimmed), and on
  * the query, the part being matched. Each piece (16 x 16 per box, 224 px model) is scored by
@@ -1152,9 +1155,9 @@ function showWhyHelp() {
     + (tok ? "of the window's average token. "
        : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
-         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${emb.spec.grid} x ${emb.spec.grid} pieces`}). `)
+         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${specNow().grid} x ${specNow().grid} pieces`}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
-    + (emb.input === 224 || emb.spec.ownTokens ? "" : "(The colours: the 224 px model, 88 MB the first time.)");
+    + (specNow().input === 224 || specNow().ownTokens ? "" : "(The colours: the 224 px model, 88 MB the first time.)");
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
@@ -1245,7 +1248,7 @@ function paintMap(cv: HTMLCanvasElement, g: number, px: (t: number) => [number, 
 /** The query's tokens (each example's) from the 224 px model (or the model's own), and their average token. */
 async function queryTokens(s: Search) {
   const P = s.state.patch, C = src!.channels;
-  qgrids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })), s.opt.method !== "tokens");
+  qgrids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })), s.opt.method !== "tokens", s.spec);
   const D = qgrids[0].D, q = new Float32Array(D);
   for (const g of qgrids) {
     const m = new Float32Array(D);
@@ -1276,7 +1279,7 @@ async function queryTokens(s: Search) {
 async function fillMaps() {
   const s = search;
   if (!s || filling) return;
-  const key = `${s.state.examples}|${s.state.patch}|${emb.spec.id}|${s.opt.method}`;
+  const key = `${s.state.examples}|${s.state.patch}|${s.spec.id}|${s.opt.method}`;
   if (mapFor !== s || mapKey !== key) { maps.clear(); toks.clear(); mapFor = s; mapKey = key; qgrids = null; qtok = null; qcen = null; qmaps = []; pca = null; }
   filling = true;
   try {
@@ -1286,7 +1289,7 @@ async function fillMaps() {
       const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !toks.has(i)).slice(0, 8);
       if (!todo.length) return;
       const P = s.state.patch, C = src!.channels;
-      const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })), s.opt.method !== "tokens");
+      const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })), s.opt.method !== "tokens", s.spec);
       grids.forEach((g, k) => toks.set(todo[k], g.tokens));
       if (!pca) { pca = fitPca([...qgrids!.map((g) => g.tokens), ...toks.values()], grids[0].D); drawQueryMap(); }
       matchMaps();
@@ -1443,9 +1446,9 @@ function drawWhere(st: State) {
       if (p.a === 0) { g.beginPath(); g.moveTo(X(view.z / f), Y(view.y0 / f)); g.lineTo(X(view.z / f), Y(view.y1 / f)); g.stroke(); }
       else g.strokeRect(X(view.x0 / f), Y(view.y0 / f), ((view.x1 - view.x0) / f) * p.sa, ((view.y1 - view.y0) / f) * p.sb);
     }
+    g.fillStyle = "#ffd24a"; g.strokeStyle = "#0b0e12"; g.lineWidth = 1.5 * dpr;  // dark ring: they show on the heat's yellow end
     st.hits.slice(0, 30).forEach((hh, i) => {
-      g.fillStyle = "#ffd24a";
-      g.beginPath(); g.arc(X(hh.center[p.a]), Y(hh.center[p.b]), (i < 3 ? 3.2 : 2.2) * dpr, 0, 7); g.fill();
+      g.beginPath(); g.arc(X(hh.center[p.a]), Y(hh.center[p.b]), (i < 3 ? 3.2 : 2.2) * dpr, 0, 7); g.stroke(); g.fill();
     });
     g.strokeStyle = "#5ab0ff"; g.lineWidth = 2 * dpr;
     for (const q of search!.exampleCenters()) if (q.every(Number.isFinite)) { g.beginPath(); g.arc(X(q[p.a]), Y(q[p.b]), 4.5 * dpr, 0, 7); g.stroke(); }
@@ -1573,14 +1576,25 @@ $("hitsort").addEventListener("click", (e) => {
 });
 /** The same query again (same place or drawing, level and box), as a new search. */
 function again() { if (search) begin(search.query, search.state.working, search.state.patch, search.opt.sketch); }
-$("method").addEventListener("change", again);  // candidates are embedded differently: search again
+/** Another model or method is for the next search: the one running keeps what it began with
+ * (its embeddings never mix), and this asks whether to search again with the new choice now. */
+function offerAgain() {
+  const s = search, meth = $<HTMLSelectElement>("method");
+  const what = !s ? [] : [...(s.spec !== emb.spec ? [emb.spec.name] : []),
+                          ...(s.opt.method !== meth.value ? [meth.selectedOptions[0]?.text ?? meth.value] : [])];
+  $("again").hidden = !what.length;
+  $("againwhat").textContent = what.join(", ");
+}
+$("againyes").addEventListener("click", () => { $("again").hidden = true; again(); });
+$("againno").addEventListener("click", () => { $("again").hidden = true; });
+$("method").addEventListener("change", offerAgain);
 $("detail").innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
 $("detail").addEventListener("change", async () => {
   const det = $<HTMLSelectElement>("detail");
   emb.use(det.value);
   $<HTMLInputElement>("adapt").checked = !!emb.spec.adapt;  // PE-Core-T: see MODELS
+  offerAgain();
   await warmUp();
-  again();  // embeddings differ: search again
 });
 
 // the marks' undo
