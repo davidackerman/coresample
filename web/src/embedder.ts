@@ -32,6 +32,8 @@ export interface ModelSpec extends Prep {
   file: string;        // models/<file>.onnx
   brushFile?: string;  // a tokens export for a brush, when `file` outputs the pooled embedding
   ownTokens?: boolean; // why / match maps from its own tokens (else DINOv2's 16 x 16 at 224 px)
+  adapt?: boolean;     // "adapt to data" on when chosen: its CLS token is nearly the same for
+                       // every patch (cosine 0.999), so raw scores all sit near 1 (test 6: no fewer found)
   mb: number;          // its download, the first time
 }
 export const MODELS: ModelSpec[] = [
@@ -41,7 +43,7 @@ export const MODELS: ModelSpec[] = [
   { id: "morphem", name: "MorphEm", label: "MorphEm: grey, for EM (112 px)", input: 112, grid: 7, file: "morphem-112-tokens",
     grey: true, norm: "standardize", ownTokens: true, mb: 86 },
   { id: "pecore-t", name: "PE-Core-T", label: "PE-Core-T: fastest on a CPU (112 px)", input: 112, grid: 7, file: "pecore-t16-112-tokens",
-    norm: "half", ownTokens: true, mb: 23 },
+    norm: "half", ownTokens: true, adapt: true, mb: 23 },
 ];
 
 /** Bilinear resize of a square patch to INPUT x INPUT, normalized as the model takes it, written
