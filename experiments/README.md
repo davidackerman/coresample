@@ -16,7 +16,7 @@ are used only to choose queries and grade hits; the search code never sees them.
 | [3](test3_combined.py) | Read the coarse scan's top chunks whole and embed everything in them? | Matches brute force on the top hits at about 2.5% of the bytes |
 | [4](test4_feedback.py) | Do good/bad marks improve the hits? | A little, not consistently |
 | [5](test5_matching.py) | Which embedding pool, input size and similarity? | None moves precision by more than 0.02; the default stays |
-| [6](test6_models.py) | Would another model find more? | None beats DINOv2-small on both targets |
+| [6](test6_models.py) | Would another model find more? | None of the general ones; MorphEm (fluorescence, one channel) does: +0.06 p@10, +0.04 p@25 |
 | [7](test7_template.py) | Match by tile tokens (the Mars CTX explorer's way)? | Pooled tokens match the default at far fewer model runs |
 | [8](test8_levels.py) | What should decide which tiles are read first? | The model two levels up (the page's rough pass) |
 | [9](test9_examples.py) | Do several examples find more? | Yes where the class looks alike (vesicles +0.11 with 8) |
