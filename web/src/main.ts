@@ -1,6 +1,6 @@
 // coresample's page: a pan/zoom viewer over any multiscale source, click to search, hits stream
 // into the side panel. Raw data only; nothing is precomputed.
-import { PRESETS, type Layer, type Preset } from "./datasets.ts";
+import { DEFAULT_PRESET, PRESETS, type Layer, type Preset } from "./datasets.ts";
 import { Embedder, MODELS, type Focus } from "./embedder.ts";
 import { scanInWorkers } from "./scanpool.ts";
 import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
@@ -1724,6 +1724,6 @@ $("bpadoff").addEventListener("click", () => againWithBrush(null));
 const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");
 if (own) { $<HTMLInputElement>("custom").value = own; openCustom(own); }
 else {
-  const first = PRESETS.find((p) => p.id === want) ?? PRESETS[0];
+  const first = PRESETS.find((p) => p.id === want) ?? PRESETS.find((p) => p.id === DEFAULT_PRESET) ?? PRESETS[0];
   openPreset(first);
 }
