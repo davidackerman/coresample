@@ -15,6 +15,8 @@ In short (details and numbers below):
 9. **Several examples** help where the class looks alike (vesicles +0.11 with 8 averaged).
 10. **Drawings** find nothing on EM.
 11. **Surroundings 4x the box** rule out three quarters of the regions at no loss, halving the model's work (not the downloads).
+12. **A rough brush** over what matters finds 0.04 more in the top 10, nothing in the top 25.
+13. **Mars craters:** MorphEm finds more than DINOv2-small on the plains and as many on the highlands; PE-Core-T fewer; adapt to data helps every model there.
 
 Dataset: `jrc_hela-2` (OpenOrganelle), EM `recon-1/em/fibsem-uint8`, 6368 x 1600 x 12000
 voxels at 5.24 x 4 x 4 nm, six 2x levels (s0 chunks 128^3, s1-s5 chunks 64^3, zstd 6),
@@ -311,8 +313,9 @@ register tokens (meant to remove the artifact tokens that can skew a mean of tok
 "parts" score) is the same size and cost but clearly worse on mito (-0.10 at p@25, 23 of 30
 queries worse): at 112 px the plain model's mean token is not hurt by artifacts here. The page
 keeps DINOv2-small.
-One grey EM dataset: on colour data (Earth, Mars), where there are no labels here to grade
-with, the image-text models and DINOv3 may rank differently.
+One grey EM dataset: on colour data (Earth), where there are no labels here to grade with, the
+image-text models and DINOv3 may rank differently (test 13 grades the page's models on grey
+Mars imagery).
 
 **Follow-up: candidates for a model option in the page.** Small encoders with weights a page
 may host, exported to ONNX and timed in the page's runtime (ONNX Runtime Web, WebAssembly, one
@@ -338,7 +341,7 @@ on both targets. Also exported and timed, not graded (no labels here for their d
 RGB, ODC-BY, 111 MB, 0.9x), the pathology ViT-S/16s of kaiko and Lunit (non-commercial, 87 MB,
 1.4x), MobileCLIP2-S0 (research-only, 44 MB, 1.6x) and SigLIP2-base (Apache-2.0, 371 MB, 2.6x
 slower at 112 px, 28x at 224). One labelled dataset: before MorphEm is anyone's default, a
-second labelled EM volume should agree.
+second labelled EM volume should agree (Mars craters, test 13, agree at p@10).
 
 **Follow-up: adapt to data (`--adapt`, `--tag _adapt`).** In the page, PE-Core-T scored every
 hit about 0.99: its CLS token ("look") is nearly the same for every patch (cosine 0.999-1.000
@@ -509,6 +512,60 @@ compares the marked parts alone, where they sit in the box; the brush is a perso
 counts, it moves the first page a little, and the model stays the limit. One labelled dataset,
 and an oracle brush (the object's own label).
 
+## Test 13: the page's models on Mars craters (follow-up)
+
+Test 6 chose the models on one EM volume; this grades them on the page's Mars CTX mosaic (Murray
+Lab, 5.05 m/px, read from Esri's tile cache as the page reads it), with the Robbins & Hynek (2012)
+crater catalogue from USGS Astrogeology as the labels (`test13_craters.py`). Two terrains, old
+densely cratered highlands (Terra Sabaea, 25 E 5 S) and younger ridged plains (Lunae Planum,
+63 W 8 N), each a 4096 px square at two levels: 4 (a 64 px box is 5.2 km) and 6 (20.7 km). As
+test 6: the candidates are every box at half-box steps (16,129), each model embeds all of them
+once, and 30 queries per target are boxes centred on catalogued craters filling 30-70% of the
+box. A hit is right when its box holds the centre of another such crater; chance is the share
+of candidates that do. The band (1.6 km and up) is above the catalogue's 1 km completeness, so
+no right crater is missing; a hit on a crater just outside the band counts as wrong, for every
+model alike. The models as the page runs them (112 px, look + parts); differences paired per
+query against DINOv2-small (per target, standard errors 0.02-0.06):
+
+| target (craters in the band) | chance | DINOv2-small p@10 / p@25 | PE-Core-T | MorphEm | texture (no learning) |
+|---|---|---|---|---|---|
+| highlands, level 4 (122) | 0.03 | 0.44 / 0.38 | -0.25 / -0.22 | -0.06 / -0.07 | -0.33 / -0.29 |
+| plains, level 4 (109) | 0.03 | 0.63 / 0.60 | -0.17 / -0.18 | +0.12 / +0.08 | -0.23 / -0.24 |
+| highlands, level 6 (407) | 0.09 | 0.09 / 0.09 | +0.01 / +0.01 | +0.01 / +0.01 | -0.04 / -0.02 |
+| plains, level 6 (238) | 0.06 | 0.44 / 0.44 | -0.22 / -0.25 | +0.14 / +0.08 | -0.25 / -0.24 |
+| **all 120 queries** | | | -0.155 +/- 0.025 / -0.158 +/- 0.021 | **+0.054 +/- 0.023** / +0.023 +/- 0.019 | -0.214 +/- 0.023 / -0.196 +/- 0.020 |
+
+(Strict, the crater's centre within a quarter box of the hit's: MorphEm +0.063 +/- 0.022 /
++0.045 +/- 0.015. CPU time per target: DINOv2-small 70-115 s, PE-Core-T 32 s, MorphEm 55 s,
+texture 36 min.)
+
+**MorphEm finds more craters than DINOv2-small on the plains and about as many on the
+highlands; PE-Core-T finds fewer everywhere.** Over all 120 queries MorphEm is ahead by 0.054 in
+the top 10 (2.3 standard errors; 63 queries better, 32 worse), as on EM (+0.057, test 6), and by
+0.02 in the top 25. Its gain is on the plains, fresh bowls on smooth ground (+0.12 and +0.14);
+on the level-4 highlands it is 0.06 behind (1 standard error). PE-Core-T is 0.16 behind (6
+standard errors; 0.06 on EM). The texture descriptor falls furthest, so learned features earn
+their place here too. On the level-6 highlands no model beats chance: many of the band's craters there
+are worn flat ([picture](test13_sabaea6_check_centre.jpg): yellow, the band; blue,
+the rest; [plains](test13_lunae4_check_centre.jpg)), craters of every size crowd the region
+(7,358 catalogued), and the mosaic's brightness seams and gaps show at that scale.
+
+**Adapt to data (`--adapt`, `--tag _adapt`) helps every model on Mars**, though on EM it
+changed nothing (test 6). Adapted minus raw, all 120 queries:
+
+| model | p@10 | p@25 |
+|---|---|---|
+| DINOv2-small | +0.057 +/- 0.011 | +0.058 +/- 0.008 |
+| PE-Core-T | +0.021 +/- 0.015 | +0.044 +/- 0.011 |
+| MorphEm | +0.025 +/- 0.012 | +0.041 +/- 0.010 |
+
+DINOv2-small gains on all four targets: subtracting the candidates' mean takes out what every
+box of the terrain shares, leaving the crater. With both adapted, MorphEm's lead shrinks to
++0.023 +/- 0.024 / +0.007 +/- 0.020. The page's defaults stay (DINOv2-small; adapt to data off,
+except with PE-Core-T): two labelled datasets now lean towards MorphEm, and Mars makes adapt to
+data a candidate default for maps, both to be confirmed on a second labelled set of each kind.
+Two regions, one catalogue, greyscale imagery only.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
@@ -613,5 +670,5 @@ From the repository root, `uv run python experiments/test1_chunksize.py`, then `
 volume with `--targets mito --region full --suffix _full --methods hist+tex --sweep k methods
 --method-sweep all --coarsest 4`, then `test3_combined.py` and `test3_combined.py --targets
 mito --region full --suffix _full`, and `report.py`. Raw numbers: `test1.json`,
-`test2_*.json`, `test3_*.json`, `summary.json`. Tests 4-12 give their commands at the top of
+`test2_*.json`, `test3_*.json`, `summary.json`. Tests 4-13 give their commands at the top of
 each script.

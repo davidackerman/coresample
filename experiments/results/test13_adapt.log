@@ -1,0 +1,16 @@
+[sabaea4] level 4, 392 craters, 122 in the band (1.6-3.6 km), 16129 candidates (3.0% hold one: chance), 30 queries
+[sabaea4] dinov2-small    p@10 0.51+/-0.06  p@25 0.45+/-0.05  strict p@10 0.24  (46s)
+[sabaea4] pecore-t16-tok  p@10 0.22+/-0.04  p@25 0.21+/-0.03  strict p@10 0.07  (5s)
+[sabaea4] morphem-tok     p@10 0.45+/-0.06  p@25 0.40+/-0.05  strict p@10 0.26  (4s)
+[lunae4] level 4, 322 craters, 109 in the band (1.6-3.6 km), 16129 candidates (2.6% hold one: chance), 30 queries
+[lunae4] dinov2-small    p@10 0.71+/-0.05  p@25 0.68+/-0.04  strict p@10 0.38  (5s)
+[lunae4] pecore-t16-tok  p@10 0.54+/-0.06  p@25 0.53+/-0.05  strict p@10 0.22  (4s)
+[lunae4] morphem-tok     p@10 0.78+/-0.05  p@25 0.75+/-0.05  strict p@10 0.47  (5s)
+[sabaea6] level 6, 7358 craters, 407 in the band (6.2-14.5 km), 16129 candidates (9.4% hold one: chance), 30 queries
+[sabaea6] dinov2-small    p@10 0.12+/-0.03  p@25 0.12+/-0.02  strict p@10 0.04  (4s)
+[sabaea6] pecore-t16-tok  p@10 0.08+/-0.02  p@25 0.09+/-0.01  strict p@10 0.02  (4s)
+[sabaea6] morphem-tok     p@10 0.07+/-0.01  p@25 0.09+/-0.01  strict p@10 0.02  (4s)
+[lunae6] level 6, 6590 craters, 238 in the band (6.2-14.5 km), 16129 candidates (5.6% hold one: chance), 30 queries
+[lunae6] dinov2-small    p@10 0.48+/-0.06  p@25 0.50+/-0.04  strict p@10 0.31  (4s)
+[lunae6] pecore-t16-tok  p@10 0.21+/-0.02  p@25 0.23+/-0.02  strict p@10 0.09  (4s)
+[lunae6] morphem-tok     p@10 0.60+/-0.06  p@25 0.54+/-0.06  strict p@10 0.38  (4s)
