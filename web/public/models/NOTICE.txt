@@ -1,0 +1,28 @@
+The models coresample's page runs (https://github.com/davidackerman/coresample)
+
+Each file here is a published model converted to ONNX by web/scripts/export_model.py. The
+models are their authors' work, under their own licences (not coresample's BSD-3-Clause).
+
+dinov2-small-112.onnx, dinov2-small-224.onnx, dinov2-small-112-tokens.onnx
+  DINOv2 ViT-S/14: https://huggingface.co/facebook/dinov2-small
+  (https://github.com/facebookresearch/dinov2)
+  Copyright (c) Meta Platforms, Inc. and affiliates. Apache License 2.0: LICENSE-Apache-2.0.txt
+  Changed: converted to ONNX at fixed input sizes (112 and 224 px); dinov2-small-112 also pools
+  its outputs into three unit-length 384-d parts (class token, mean and centre-weighted mean of
+  the patch tokens).
+
+pecore-t16-112-tokens.onnx
+  Perception Encoder PE-Core-T16-384: https://huggingface.co/facebook/PE-Core-T16-384
+  (https://github.com/facebookresearch/perception_models), loaded through timm
+  (https://huggingface.co/timm/vit_pe_core_tiny_patch16_384.fb, Apache License 2.0)
+  Copyright (c) Meta Platforms, Inc. and affiliates. Apache License 2.0: LICENSE-Apache-2.0.txt
+  Changed: converted to ONNX at 112 px input (timm resizes its position embeddings to the 7 x 7
+  grid); outputs the last layer's tokens, each 192-d token followed by 192 zeros (384-d).
+
+morphem-112-tokens.onnx
+  MorphEm ViT-S/16: https://huggingface.co/CaicedoLab/MorphEm
+  (https://github.com/CaicedoLab/CHAMMI-75), by Vidit Agrawal, John Peters and Juan Caicedo
+  Copyright (c) 2025 CaicedoLab. MIT License: LICENSE-MIT-MorphEm.txt
+  Changed: loaded into timm's ViT-S/16 with one input channel, the DINO training head left out,
+  position embeddings resized to the 7 x 7 grid of a 112 px input; converted to ONNX; outputs the
+  last layer's tokens.
