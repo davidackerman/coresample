@@ -11,7 +11,7 @@ import { OmeZarrSource, type Vec3 } from "../src/sources.ts";
 const url = "s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8";
 const before = Number(process.argv[2] ?? 6), after = Number(process.argv[3] ?? 4);
 const src = await OmeZarrSource.open(url, "jrc_hela-2 EM");
-const emb = new Embedder((size) => new URL(`../public/models/dinov2-small-${size}.onnx`, import.meta.url).pathname, undefined,
+const emb = new Embedder((file) => new URL(`../public/models/${file}.onnx`, import.meta.url).pathname, undefined,
                          async (path) => readFileSync(path).buffer as ArrayBuffer);
 const s = new Search(src, emb, [666, 139, 2244], { working: 2, patch: 64, roughPass: false, maxCoarseVoxels: 16e6 });
 let limit = before;
