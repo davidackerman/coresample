@@ -121,27 +121,34 @@ export class OlViewer {
       on.click(e.coordinate[0], -e.coordinate[1], !!(e.originalEvent as MouseEvent).shiftKey);
     });
     this.onHover = on.hover;
-    this.map.on("pointermove", (e) => {
-      if (e.dragging) return;
-      this.lastPixel = e.pixel;
-      this.refreshHover();
-      on.pointer?.(e.coordinate[0], -e.coordinate[1]);
-    });
+    this.onPointer = on.pointer;
+    // while dragging too: the box stays under the pointer, not where the drag began
+    this.map.on("pointermove", (e) => { this.lastPixel = e.pixel; this.refreshHover(); });
     this.map.on("moveend", () => on.moved());  // panned as well as zoomed
     target.addEventListener("pointerleave", () => { this.lastPixel = null; this.refreshHover(); });
     // zooming changes the search level (and so the box) without the pointer moving
     this.view.on("change:resolution", () => { this.refreshHover(); on.moved(); });
-    this.view.on("change:center", () => this.refreshHover());
+    this.view.on("change:center", () => this.refreshHover());  // panning (and its glide after release)
   }
 
   private lastPixel: number[] | null = null;
   private onHover: () => { side: number; text: string } | null = () => null;
-  /** The dashed box under the last pointer position, at the current search level's size. */
+  private onPointer?: (fx: number, fy: number) => void;
+  /** The map coordinate at a pixel from the view as it is now (the map's own conversion uses the
+   *  last frame drawn, a step behind while the view moves). */
+  private at(px: number[]) {
+    const v = this.view, size = this.map.getSize(), c = v.getCenter(), r = v.getResolution();
+    if (!size || !c || r === undefined) return null;
+    const dx = (px[0] - size[0] / 2) * r, dy = (size[1] / 2 - px[1]) * r, a = v.getRotation();
+    return [c[0] + dx * Math.cos(a) - dy * Math.sin(a), c[1] + dx * Math.sin(a) + dy * Math.cos(a)];
+  }
+  /** The dashed box under the last pointer position, at the current search level's size, and the
+   *  coordinates there. */
   refreshHover() {
-    const h = this.lastPixel ? this.onHover() : null;
-    if (!h || !this.lastPixel) { this.hoverF.setGeometry(undefined); return; }
-    const c = this.map.getCoordinateFromPixel(this.lastPixel);
-    if (!c) return;
+    const c = this.lastPixel && this.at(this.lastPixel);
+    if (c) this.onPointer?.(c[0], -c[1]);
+    const h = c ? this.onHover() : null;
+    if (!c || !h) { this.hoverF.setGeometry(undefined); return; }
     this.hoverF.setGeometry(square({ fx: c[0], fy: -c[1], side: h.side }));
     this.hoverF.set("label", h.text);
   }
