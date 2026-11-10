@@ -18,6 +18,15 @@ Matchers:
                  its checkpoint is loaded with torch's weights_only loader (tensors only, no
                  pickled code) and skipped if that loader refuses it
   texture        classical: rotation-invariant LBP histograms + Gabor energies (no learning)
+  pecore-t16     Meta's Perception Encoder, tiny (6M; 4.6x DINOv2-small's speed in the page's
+                 runtime), 112 px, its pooled embedding; -tok: CLS + mean of patch tokens instead
+  pecore-s16     the same, small (23M; 1.4x)
+  morphem        MorphEm (CHAMMI-75): a ViT-S/16 trained on single fluorescence channels (one
+                 input channel), 112 px, each patch standardized (its own mean and std), CLS;
+                 -tok: CLS + mean of patch tokens
+  (timm models, weights from Hugging Face: candidates for a model option in the page)
+  dinov2-small-std  DINOv2-small with each patch standardized as MorphEm's are (the control:
+                 how much of MorphEm's gain is that step)
 
     uv run python experiments/test6_models.py [--targets vesicle mito_full] [--models ...] [--queries 30] [--tag _x]
 """
@@ -57,6 +66,30 @@ def to_tensor(patches, size, mean, std, channels=3):
     return (x - torch.from_numpy(mean)) / torch.from_numpy(std)
 
 
+# timm models: (timm name, weights) - weights None for timm's own pretrained ones
+TIMM = {"pecore-t16": ("vit_pe_core_tiny_patch16_384.fb", None), "pecore-s16": ("vit_pe_core_small_patch16_384.fb", None),
+        "morphem": ("vit_small_patch16_224", ("CaicedoLab/MorphEm", "model.safetensors"))}
+
+
+def timm_matcher(name, size=112):
+    """A timm model at `size` px, without its classifier; MorphEm's weights from its repo (one
+    input channel; its DINO head left out), the position embeddings resampled to the size."""
+    import timm
+
+    arch, weights = TIMM[name]
+    if weights is None:
+        return timm.create_model(arch, pretrained=True, num_classes=0, img_size=size).eval()
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+    from timm.layers import resample_abs_pos_embed
+
+    m = timm.create_model(arch, pretrained=False, num_classes=0, in_chans=1, img_size=size)
+    sd = {k: v for k, v in load_file(hf_hub_download(*weights)).items() if not k.startswith("head.")}
+    sd["pos_embed"] = resample_abs_pos_embed(sd["pos_embed"], (size // 16, size // 16), num_prefix_tokens=1)
+    m.load_state_dict(sd, strict=True)
+    return m.eval()
+
+
 class Matcher:
     def __init__(self, name):
         torch.set_num_threads(int(os.environ.get("TORCH_THREADS", os.cpu_count())))
@@ -64,7 +97,8 @@ class Matcher:
         if name.startswith("dinov2"):
             from transformers import AutoModel
 
-            self.m = AutoModel.from_pretrained(f"facebook/{name}").eval()
+            self.standardize = name.endswith("-std")
+            self.m = AutoModel.from_pretrained(f"facebook/{name.removesuffix('-std')}").eval()
             self.size, self.mean, self.std = 112, IMNET_MEAN, IMNET_STD
             self.skip = 1 + int(getattr(self.m.config, "num_register_tokens", 0))  # CLS, then any register tokens
         elif name == "dinov3-small":
@@ -116,6 +150,14 @@ class Matcher:
             self.std = np.array([sigma], np.float32)[:, None, None]
         elif name == "texture":
             self.m = None
+        elif name.removesuffix("-tok") in TIMM:
+            base = name.removesuffix("-tok")
+            self.m, self.size, self.tokens = timm_matcher(base), 112, name.endswith("-tok")
+            self.standardize = base == "morphem"  # MorphEm: each image to zero mean, unit std
+            self.channels = 1 if self.standardize else 3
+            cfg = self.m.pretrained_cfg
+            self.mean = np.array(cfg.get("mean", (0.5,) * 3)[:self.channels], np.float32)[:, None, None]
+            self.std = np.array(cfg.get("std", (0.5,) * 3)[:self.channels], np.float32)[:, None, None]
         else:
             raise ValueError(name)
 
@@ -126,7 +168,16 @@ class Matcher:
         with torch.inference_mode():
             for i in range(0, len(patches), batch):
                 x = to_tensor(patches[i:i + batch], self.size, self.mean, self.std, self.channels)
-                if self.name.startswith("dinov"):
+                if getattr(self, "standardize", False):
+                    x = (x - x.mean((2, 3), keepdim=True)) / (x.std((2, 3), keepdim=True) + 1e-6)
+                if self.name.removesuffix("-tok") in TIMM:
+                    if self.tokens:  # CLS (when it has one) + mean of the patch tokens, as DINOv2's
+                        f, k = self.m.forward_features(x), self.m.num_prefix_tokens
+                        mean = torch.nn.functional.normalize(f[:, k:].mean(1), dim=1)
+                        v = torch.cat([torch.nn.functional.normalize(f[:, 0], dim=1), mean], 1) if k else mean
+                    else:
+                        v = self.m(x)
+                elif self.name.startswith("dinov"):
                     h = self.m(pixel_values=x).last_hidden_state
                     skip = getattr(self, "skip", 1)
                     v = torch.cat([torch.nn.functional.normalize(h[:, 0], dim=1),

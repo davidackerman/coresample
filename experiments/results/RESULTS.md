@@ -314,6 +314,32 @@ keeps DINOv2-small.
 One grey EM dataset: on colour data (Earth, Mars), where there are no labels here to grade
 with, the image-text models and DINOv3 may rank differently.
 
+**Follow-up: candidates for a model option in the page.** Small encoders with weights a page
+may host, exported to ONNX and timed in the page's runtime (ONNX Runtime Web, WebAssembly, one
+thread; DINOv2-small at 112 px: 5.6 patches/s), then graded here (same candidates and 30
+queries per target; `--tag _candidates`, and `_std` for the control). Paired against
+DINOv2-small, all 90 queries:
+
+| model | licence, size | speed in the page | p@10 | p@25 |
+|---|---|---|---|---|
+| PE-Core-T16 (Meta), pooled | Apache-2.0, 25 MB | 4.6x | -0.060 +/- 0.022 | -0.058 +/- 0.015 |
+| PE-Core-S16, pooled | Apache-2.0, 94 MB | 1.4x | -0.027 +/- 0.023 | -0.048 +/- 0.018 |
+| **MorphEm** (CHAMMI-75: ViT-S/16 on single fluorescence channels), CLS | MIT, 86 MB | 1.6x | **+0.057 +/- 0.021** | **+0.044 +/- 0.011** |
+| DINOv2-small, each patch standardized as MorphEm's (control) | | 1x | -0.039 +/- 0.019 | -0.031 +/- 0.011 |
+
+(CLS + mean of tokens instead of the pooled output: PE-Core worse still, MorphEm +0.064 /
++0.030. Per target, MorphEm: mito +0.13 / +0.09, vesicles +0.04 / +0.02, mito whole volume
++0.00 / +0.02.) **MorphEm, trained on fluorescence microscopy, one channel at a time, finds
+more on this EM than DINOv2-small, and is not the standardizing**: that step alone costs
+DINOv2-small 0.03-0.04, and MorphEm beats the standardized DINOv2-small by +0.10 / +0.07. It
+is also faster in the page (16 px patches: 7 x 7 tokens at 112 px). PE-Core, the fastest, loses
+on both targets. Also exported and timed, not graded (no labels here for their data): Zoobot
+(galaxies; ConvNeXt pico/nano, Apache-2.0, 34-60 MB, 1.5-2.7x), Satlas Swin-v2-T (Sentinel-2
+RGB, ODC-BY, 111 MB, 0.9x), the pathology ViT-S/16s of kaiko and Lunit (non-commercial, 87 MB,
+1.4x), MobileCLIP2-S0 (research-only, 44 MB, 1.6x) and SigLIP2-base (Apache-2.0, 371 MB, 2.6x
+slower at 112 px, 28x at 224). One labelled dataset: before MorphEm is anyone's default, a
+second labelled EM volume should agree.
+
 ## Test 7: the Mars CTX explorer's matching (follow-up)
 
 mars_ctx_explorer (DINOv3 over Mars CTX tiles) embeds each tile once, keeps every patch token,
