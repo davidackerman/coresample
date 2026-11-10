@@ -1148,6 +1148,7 @@ function showWhyHelp() {
   if (!whyOn || !search) return;
   const m = search.opt.match, tok = search.opt.method === "tokens";
   $("whytext").innerHTML = `<b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
+    + (m?.adapt ? "after removing what every patch here shares (adapt to data), " : "")
     + (tok ? "of the window's average token. "
        : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
@@ -1577,6 +1578,7 @@ $("detail").innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.label}</o
 $("detail").addEventListener("change", async () => {
   const det = $<HTMLSelectElement>("detail");
   emb.use(det.value);
+  $<HTMLInputElement>("adapt").checked = !!emb.spec.adapt;  // PE-Core-T: see MODELS
   await warmUp();
   again();  // embeddings differ: search again
 });

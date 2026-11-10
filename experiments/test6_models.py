@@ -269,6 +269,13 @@ def run(target, args, data, log):
         if mname == "texture":  # standardize the hand-made features over the candidates, then compare
             mu, sd = E.mean(0), E.std(0) + 1e-6
             E, Q = unit((E - mu) / sd), unit((Q - mu) / sd)
+        if args.adapt and (mname.startswith("dinov") or mname.endswith("-tok")):
+            # the page's "adapt to data": each part ([CLS | mean token]) less the candidates' mean,
+            # then the cosine, the two averaged (each half unit length, over sqrt 2)
+            w, mu = E.shape[1] // 2, E.mean(0)
+            def adapt(X):
+                return np.concatenate([unit(X[:, :w] - mu[:w]), unit(X[:, w:] - mu[w:])], 1) / np.sqrt(2)
+            E, Q = adapt(E), adapt(Q)
         gl = []
         for qc, q in zip(queries, Q):
             notself = ~np.all(np.abs(gc - qc) < P / 2, 1)
@@ -292,6 +299,7 @@ def main():
     ap.add_argument("--queries", type=int, default=30)
     ap.add_argument("--seed", type=int, default=2)
     ap.add_argument("--tag", default="", help="suffix for the result and log files (a separate run)")
+    ap.add_argument("--adapt", action="store_true", help="compare as the page's adapt to data does (the [CLS | mean] models)")
     args = ap.parse_args()
     logf = open(RESULTS / f"test6{args.tag}.log", "a")
 

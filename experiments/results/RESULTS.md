@@ -340,6 +340,23 @@ RGB, ODC-BY, 111 MB, 0.9x), the pathology ViT-S/16s of kaiko and Lunit (non-comm
 slower at 112 px, 28x at 224). One labelled dataset: before MorphEm is anyone's default, a
 second labelled EM volume should agree.
 
+**Follow-up: adapt to data (`--adapt`, `--tag _adapt`).** In the page, PE-Core-T scored every
+hit about 0.99: its CLS token ("look") is nearly the same for every patch (cosine 0.999-1.000
+between any two of 300 Mars CTX patches, 5th-95th percentile; DINOv2-small 0.49-0.93, MorphEm
+0.58-0.94), so only the mean token ranked. Its attention-pooled output is less so (0.93-0.99).
+After subtracting the patches' mean the CLS tokens spread as DINOv2-small's do (-0.66 to
+0.68). The page's adapt to data does that (each part less the candidates' mean, then the
+cosine); here on the same candidates and queries, paired, all 90 queries:
+
+| model | p@10 raw, adapted | p@25 raw, adapted |
+|---|---|---|
+| DINOv2-small | 0.572, 0.578 (+0.006 +/- 0.009) | 0.564, 0.563 (-0.001 +/- 0.005) |
+| MorphEm (CLS + mean) | 0.637, 0.637 (+0.000 +/- 0.010) | 0.594, 0.592 (-0.002 +/- 0.006) |
+| PE-Core-T (CLS + mean) | 0.508, 0.506 (-0.002 +/- 0.020) | 0.475, 0.494 (+0.019 +/- 0.012) |
+
+It finds as many for every model, so choosing PE-Core-T in the page turns adapt to data on:
+its scores spread out and its look counts.
+
 ## Test 7: the Mars CTX explorer's matching (follow-up)
 
 mars_ctx_explorer (DINOv3 over Mars CTX tiles) embeds each tile once, keeps every patch token,
