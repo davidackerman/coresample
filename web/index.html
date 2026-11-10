@@ -156,7 +156,7 @@
   .hit .why { display: none; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.35; }
   body.why .hit .why { display: block; }
   button.tog { padding: 1px 8px; font-size: 11px; color: var(--dim); }
-  button.tog.on { color: var(--text); border-color: #d55181; background: #d5518122; }
+  button.tog.on { color: var(--text); border-color: #21918c; background: #21918c22; }
   #whyhelp { margin: 8px 14px 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim); background: var(--raise); border: 1px solid var(--line); border-radius: 8px; }
   #whyhelp[hidden] { display: none; } #whyhelp b { color: var(--text); font-weight: 600; }
   .empty { color: var(--faint); grid-column: 1 / -1; font-size: 12px; }
@@ -168,9 +168,11 @@
   .legend .lg { width: 34px; height: 7px; border-radius: 2px; }
   .legend .ls { border: 1px dashed #7ee0a0; border-radius: 1px; }
   .heatrow { gap: 6px 8px; margin-top: 6px; font-size: 11.5px; }
-  .heatrow input[type=range] { width: 70px; accent-color: #d55181; }
+  .heatrow input[type=range] { width: 70px; accent-color: #21918c; }
   .heatrow label { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
   #heatimg { gap: 6px; } #heatimg[hidden] { display: none; }
+  .again { grid-column: 1 / -1; gap: 6px; font-size: 12px; } .again[hidden] { display: none; }
+  .again button { padding: 1px 8px; font-size: 11px; }
   #heatval { color: var(--dim); min-width: 28px; font-variant-numeric: tabular-nums; }
   #addex.on { border-color: var(--acc); color: var(--acc); }
   #stage.adding #view, #stage.adding canvas { cursor: copy; }
@@ -286,7 +288,8 @@
           <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
             <option value="patches" selected>patches</option><option value="tokens">tiles + tokens (Mars CTX explorer)</option></select>
           <span class="lbl">model</span>
-          <div class="row"><select id="detail" title="The model that compares patches. DINOv2-small (the default): detailed (224 px) sees finer texture at 4x the compute; on labelled EM neither won consistently. MorphEm (grey; trained on fluorescence channels): found more on labelled HeLa EM, 6.4 of its top 10 right on average to DINOv2's 5.7. PE-Core-T: 4.6x as fast on a CPU (without WebGPU), 5.1 of the top 10 right there; it turns on adapt to data. The tiles + tokens method always uses DINOv2-small at 224 px"></select><a href="models/NOTICE.txt" target="_blank" rel="noopener" style="font-size:12px" title="Where each model comes from, its licence, and what was changed to run it here">licences</a></div>
+          <div class="row"><select id="detail" title="The model that compares patches. DINOv2-small (the default): detailed (224 px) sees finer texture at 4x the compute; on labelled EM neither won consistently. MorphEm (grey; trained on fluorescence channels): found more on labelled HeLa EM, 6.4 of its top 10 right on average to DINOv2's 5.7. PE-Core-T: 4.6x as fast on a CPU (without WebGPU), 5.1 of the top 10 right there; it turns on adapt to data. The tiles + tokens method always uses DINOv2-small at 224 px. A search keeps the model it began with: choosing another asks whether to search again"></select><a href="models/NOTICE.txt" target="_blank" rel="noopener" style="font-size:12px" title="Where each model comes from, its licence, and what was changed to run it here">licences</a></div>
+          <div id="again" class="row again" hidden><span>Search again with <b id="againwhat"></b>?</span><button id="againyes">Search</button><button id="againno" title="Keep this search on what it began with; the next click uses the new choice">Not now</button></div>
           <span class="lbl">compare</span>
           <select id="focus" title="Compare the whole box, or the object at its centre (where you clicked): useful when the surroundings vary">
             <option value="whole" selected>whole box</option><option value="center">object at the centre</option></select>

@@ -6,7 +6,7 @@
 // (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those. More
 // examples can join the query at any time (it becomes their mean), and every place compared
 // leaves its score in a compact list for the similarity heat map.
-import { GRID, PART, similarity, type Embedder, type Focus, type Patch, type TokenGrid } from "./embedder.ts";
+import { GRID, PART, similarity, type Embedder, type Focus, type ModelSpec, type Patch, type TokenGrid } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput, type ScanNorm } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
@@ -200,10 +200,14 @@ export class Search {
 
   src: Source;
   emb: Embedder;
+  /** The model this search runs on: the one chosen when it began, kept to the end (choosing
+   * another in the page is for the next search, so the embeddings compared never mix). */
+  spec: ModelSpec;
   opt: Options;
   constructor(src: Source, emb: Embedder, query: Vec3, opt: Options) {
     this.src = src;
     this.emb = emb;
+    this.spec = emb.spec;
     this.opt = opt;
     this.query = query;
     const L = src.levels[opt.working];
@@ -568,7 +572,7 @@ export class Search {
         const tiles = this.next < limit() ? await this.takeTiles(gpu ? 4 : 1, limit()) : [];
         if (!tiles.length) { if (this.next < budget && (await this.expandOnce())) continue; break; }
         const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
-        const grids = await this.emb.tokens(preps.flatMap((p) => p.crops));
+        const grids = await this.emb.tokens(preps.flatMap((p) => p.crops), false, this.spec);
         const fresh: number[] = [];
         let k = 0;
         for (const p of preps) { fresh.push(...this.scoreWindows(p, grids.slice(k, k + p.crops.length))); k += p.crops.length; }
@@ -589,7 +593,7 @@ export class Search {
       }
       if (this.queueDirty) { this.queue.sort((x, y) => y.pri - x.pri); this.queueDirty = false; }
       const batch = this.queue.splice(0, B);
-      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`), this.opt.brush);
+      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`), this.opt.brush, this.spec);
       const fresh: number[] = [];
       batch.forEach((q, k) => {
         this.sum ??= new Float64Array(e[k].length);
@@ -677,7 +681,7 @@ export class Search {
     const q = this.query, c: Vec3 = [d3 ? Math.floor(q[0] / f) : 0, Math.floor(q[1] / f), Math.floor(q[2] / f)];
     const base = this.opt.sketch ? shrink(this.opt.sketch, p) : (await this.readAt(L, [c], p))[0];
     if (!base || !informative(base.data)) return;
-    const q0 = (await this.emb.embed([base]))[0];
+    const q0 = (await this.emb.embed([base], undefined, undefined, this.spec))[0];
     this.examples[0].rough = q0;
     // 2-D grids are not overlapping (stride P at the working level): sample every other place
     this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], dirty: false, withEmbs: 0,
@@ -710,7 +714,7 @@ export class Search {
     r.ahead = r.cursor < this.order.length ? this.roughFetch() : null;
     const { tiles, cells, patches } = cur;
     const keep = cells.map((_, i) => i).filter((i) => patches[i] && informative(patches[i]!.data));
-    const embs = keep.length ? await this.emb.embed(keep.map((i) => patches[i]!)) : [];
+    const embs = keep.length ? await this.emb.embed(keep.map((i) => patches[i]!), undefined, undefined, this.spec) : [];
     const per = tiles.map(() => ({ s: -Infinity, embs: [] as Float32Array[] }));
     keep.forEach((i, j) => {
       const t = per[cells[i].ti];
@@ -780,7 +784,7 @@ export class Search {
     const f = 2 ** r.k, c: Vec3 = [this.src.dims === 3 ? Math.floor(it.c[0] / f) : 0, Math.floor(it.c[1] / f), Math.floor(it.c[2] / f)];
     const p = (await this.readAt(r.L, [c], r.p))[0];
     if (!p || !informative(p.data)) return;
-    const e = (await this.emb.embed([p]))[0];
+    const e = (await this.emb.embed([p], undefined, undefined, this.spec))[0];
     if (!(good ? this.good : this.bad).includes(id)) return;  // undone meanwhile
     (good ? r.goods : r.bads).push({ id, e });
     this.roughRequery();
@@ -817,7 +821,7 @@ export class Search {
     if (r) {
       const f = 2 ** r.k, rc: Vec3 = [this.src.dims === 3 ? Math.floor(c[0] / f) : 0, Math.floor(c[1] / f), Math.floor(c[2] / f)];
       const p = (await this.readAt(r.L, [rc], r.p))[0];
-      if (p && informative(p.data)) ex.rough = (await this.emb.embed([p]))[0];
+      if (p && informative(p.data)) ex.rough = (await this.emb.embed([p], undefined, undefined, this.spec))[0];
       r.q0 = unitMean(this.examples.flatMap((e) => (e.rough ? [e.rough] : [])));
       this.roughRequery();
     }
@@ -979,9 +983,9 @@ export class Search {
       }
     }
     const keyed = (vs: Float32Array[]) => new Map(vs.map((v, i) => [keys[i], v]));
-    if (!this.tokenMode) return keyed(await this.emb.embed(patches, undefined, this.opt.brush));
+    if (!this.tokenMode) return keyed(await this.emb.embed(patches, undefined, this.opt.brush, this.spec));
     // token mode: each variant's crop through the model, its central window of tokens averaged
-    return keyed((await this.emb.tokens(patches)).map(({ tokens, g, D }) => {
+    return keyed((await this.emb.tokens(patches, false, this.spec)).map(({ tokens, g, D }) => {
       const v = new Float32Array(D), o = (g - WIN) / 2;
       for (let y = o; y < o + WIN; y++) for (let x = o; x < o + WIN; x++)
         for (let d = 0; d < D; d++) v[d] += tokens[(y * g + x) * D + d];
