@@ -1,13 +1,15 @@
 # Experiments
 
 The feasibility tests behind the browser tool: Python at workstation scale, graded on
-labelled EM. Each test asks one question about the search, and the answer decided a default
+labelled EM (test 13: Mars craters). Each test asks one question about the search, and the answer decided a default
 or a feature of the page. The numbers, plots and full write-up are in
 [results/RESULTS.md](results/RESULTS.md).
 
 Data: [OpenOrganelle](https://openorganelle.janelia.org) `jrc_hela-2` from the public bucket
 `s3://janelia-cosem-datasets`, read lazily with range requests. Its organelle segmentations
 are used only to choose queries and grade hits; the search code never sees them.
+Test 13 reads the Mars CTX mosaic (Murray Lab) from Esri's tile cache and grades with the
+Robbins & Hynek (2012) crater catalogue from USGS Astrogeology.
 
 | test | question | answer |
 |---|---|---|
@@ -23,6 +25,7 @@ are used only to choose queries and grade hits; the search code never sees them.
 | [10](test10_sketch.py) | Can a drawing be the query? | Not on EM |
 | [11](test11_context.py) | Can coarser levels rule out regions by their surroundings? | At 4x the box, three quarters at no loss (half the model's work); wider loses on mito |
 | [12](test12_brush.py) | Does marking what matters in the box find more? | A rough brush on its own: +0.04 in the top 10, nothing in the top 25 |
+| [13](test13_craters.py) | Do the page's models rank the same on Mars craters? | MorphEm ahead on the plains (+0.05 p@10 overall), PE-Core-T behind; adapt to data helps every model (+0.06 for DINOv2-small) |
 
 ## Run
 

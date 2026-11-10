@@ -63,8 +63,9 @@ size, adapt to data, tiles + tokens, combining examples) are for data where they
 on labelled EM none moved top-10 precision by more than a few hundredths (tests 5-9,
 [RESULTS.md](experiments/results/RESULTS.md)). **Options > model** has two more models (test 6):
 MorphEm (MIT; trained on single fluorescence channels, so it sees grey), the only one that found
-more on labelled HeLa EM, 6.4 of the top 10 right to DINOv2-small's 5.7; and PE-Core-T
-(Apache-2.0), 4.6x as fast without a GPU, 5.1 of the top 10 right there. Its look (class token)
+more on labelled HeLa EM, 6.4 of the top 10 right to DINOv2-small's 5.7, and more Mars craters
+on plains (test 13); and PE-Core-T (Apache-2.0), 4.6x as fast without a GPU, 5.1 of the top 10
+right there. Its look (class token)
 is nearly the same for every patch (cosine 0.999), so choosing it turns on **adapt to data**,
 which spreads its scores out and finds as many (test 6). Each model's source, licence and
 changes: [web/public/models/NOTICE.txt](web/public/models/NOTICE.txt) (**licences** beside the picker).
