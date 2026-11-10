@@ -1,7 +1,7 @@
 // coresample's page: a pan/zoom viewer over any multiscale source, click to search, hits stream
 // into the side panel. Raw data only; nothing is precomputed.
 import { PRESETS, type Layer, type Preset } from "./datasets.ts";
-import { Embedder, type Focus } from "./embedder.ts";
+import { Embedder, MODELS, type Focus } from "./embedder.ts";
 import { scanInWorkers } from "./scanpool.ts";
 import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
 import type { Patch, TokenGrid } from "./embedder.ts";
@@ -68,7 +68,7 @@ let hitEls: HTMLElement[] = [];
 let modelNote: string | null = null;
 function noteModel(text: string | null) {
   modelNote = text;
-  if (text) setModel("loading", text, "DINOv2-small: 88 MB the first time, then cached by the browser");
+  if (text) setModel("loading", text, `${emb.spec.name}: ${emb.spec.mb} MB the first time, then cached by the browser`);
   if (search?.state.phase === "query") panel(search.state);
 }
 /** The model file, from the browser's cache or downloaded (with progress) and cached. */
@@ -99,7 +99,7 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
   return bytes.buffer;
 }
 try { caches.delete("coresample-models-v2").catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
-const emb = new Embedder((size) => new URL(`models/dinov2-small-${size}.onnx`, document.baseURI).href,
+const emb = new Embedder((file) => new URL(`models/${file}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 const modelEl = $("model");
 function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title = "") {
@@ -112,7 +112,7 @@ function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title =
 let warmed: Promise<void> | null = null;
 async function warmUp() {
   try {
-    noteModel(`loading the model (${emb.input} px)`);
+    noteModel(`loading the model (${emb.spec.name})`);
     const t = performance.now();
     await emb.embed([{ data: new Float32Array(64 * 64), size: 64, channels: 1 }]);
     const n = 32, d = new Float32Array(64 * 64);
@@ -132,8 +132,8 @@ let loadNote = "";
 /** The model chip: its speed (patches through the model per second of its own time). */
 function showRate(rate: number, how: string) {
   const gpu = emb.provider === "webgpu";
-  const detail = `DINOv2-small, ${emb.input} px input, ${rate.toFixed(0)} patches/s (${how}), ${loadNote}.`;
-  setModel(gpu ? "gpu" : "cpu", `DINOv2-small \u00b7 ${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
+  const detail = `${emb.spec.name}, ${emb.input} px input, ${rate.toFixed(0)} patches/s (${how}), ${loadNote}.`;
+  setModel(gpu ? "gpu" : "cpu", `${emb.spec.name} \u00b7 ${gpu ? "GPU" : "CPU, slow"}: ${rate.toFixed(0)} patches/s`,
     gpu ? detail : detail + (window.isSecureContext
       ? " No WebGPU here: try Chrome on a machine with a GPU (on Linux, chrome://flags/#enable-unsafe-webgpu)."
       : " WebGPU needs https or localhost: open https://davidackerman.github.io/coresample/ instead."));
@@ -1107,10 +1107,12 @@ function panel(st: State) {
 
 // ---------------------------------------------------------------------------------------
 // why: how each hit was matched. Under each hit, the parts of its score; over it, a map of
-// which parts of it look like the query (each of its 16 x 16 tokens from the 224 px model,
-// by cosine with the query's average token: the "parts" term of the score, in finer detail)
+// which parts of it look like the query (each of its 16 x 16 tokens from the 224 px model, or
+// the model's own 7 x 7 when it is not DINOv2, by cosine with the query's average token: the
+// "parts" term of the score, in finer detail)
 // ---------------------------------------------------------------------------------------
-const modelName = () => `DINOv2-small (${emb.input === 224 ? "detailed, 224" : "fast, 112"} px)`;
+// the tiles + tokens method runs DINOv2-small at 224 px whatever the model chosen: its maps too
+const modelName = () => (search?.opt.method === "tokens" ? MODELS.find((m) => m.id === "224")!.label : emb.spec.label);
 let whyOn = false;
 /** match: a spotlight on each hit where it matches what was clicked (the rest dimmed), and on
  * the query, the part being matched. Each piece (16 x 16 per box, 224 px model) is scored by
@@ -1149,9 +1151,9 @@ function showWhyHelp() {
     + (tok ? "of the window's average token. "
        : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
-         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : "its 8 x 8 pieces"}). `)
+         + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${emb.spec.grid} x ${emb.spec.grid} pieces`}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
-    + (emb.input === 224 ? "" : "(224 px model: 88 MB the first time.)");
+    + (emb.input === 224 || emb.spec.ownTokens ? "" : "(The colours: the 224 px model, 88 MB the first time.)");
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
@@ -1239,10 +1241,10 @@ function paintMap(cv: HTMLCanvasElement, g: number, px: (t: number) => [number, 
   c2.imageSmoothingEnabled = true; c2.imageSmoothingQuality = "high";
   c2.drawImage(tmp, ...cropTo(g, r.w, r.h), r.x, r.y, r.w, r.h);
 }
-/** The query's tokens (each example's) from the 224 px model, and their average token. */
+/** The query's tokens (each example's) from the 224 px model (or the model's own), and their average token. */
 async function queryTokens(s: Search) {
   const P = s.state.patch, C = src!.channels;
-  qgrids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })));
+  qgrids = await emb.tokens(s.examplePixels().map((pix) => ({ data: Float32Array.from(pix), size: P, channels: C })), s.opt.method !== "tokens");
   const D = qgrids[0].D, q = new Float32Array(D);
   for (const g of qgrids) {
     const m = new Float32Array(D);
@@ -1273,7 +1275,7 @@ async function queryTokens(s: Search) {
 async function fillMaps() {
   const s = search;
   if (!s || filling) return;
-  const key = `${s.state.examples}|${s.state.patch}|${emb.input}`;
+  const key = `${s.state.examples}|${s.state.patch}|${emb.spec.id}|${s.opt.method}`;
   if (mapFor !== s || mapKey !== key) { maps.clear(); toks.clear(); mapFor = s; mapKey = key; qgrids = null; qtok = null; qcen = null; qmaps = []; pca = null; }
   filling = true;
   try {
@@ -1283,7 +1285,7 @@ async function fillMaps() {
       const todo = hitEls.map((el) => Number(el.dataset.index)).filter((i) => !toks.has(i)).slice(0, 8);
       if (!todo.length) return;
       const P = s.state.patch, C = src!.channels;
-      const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })));
+      const grids = await emb.tokens(todo.map((i) => ({ data: Float32Array.from(s.patchPixels(i)), size: P, channels: C })), s.opt.method !== "tokens");
       grids.forEach((g, k) => toks.set(todo[k], g.tokens));
       if (!pca) { pca = fitPca([...qgrids!.map((g) => g.tokens), ...toks.values()], grids[0].D); drawQueryMap(); }
       matchMaps();
@@ -1571,10 +1573,10 @@ $("hitsort").addEventListener("click", (e) => {
 /** The same query again (same place or drawing, level and box), as a new search. */
 function again() { if (search) begin(search.query, search.state.working, search.state.patch, search.opt.sketch); }
 $("method").addEventListener("change", again);  // candidates are embedded differently: search again
+$("detail").innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
 $("detail").addEventListener("change", async () => {
   const det = $<HTMLSelectElement>("detail");
-  det.dataset.touched = "1";
-  emb.input = Number(det.value);
+  emb.use(det.value);
   await warmUp();
   again();  // embeddings differ: search again
 });
@@ -1715,7 +1717,7 @@ $("bpadgo").addEventListener("click", () => againWithBrush(bpad.marked ? Float32
 $("bpadoff").addEventListener("click", () => againWithBrush(null));
 
 // for debugging from the console
-(window as any).coresample = { get src() { return src; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; },
+(window as any).coresample = { get src() { return src; }, get emb() { return emb; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; },
   local: { open: openLocal, handleFolder, entryFolder } };
 
 // start

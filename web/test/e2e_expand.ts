@@ -10,7 +10,7 @@ import { OmeZarrSource, type Vec3 } from "../src/sources.ts";
 
 const url = "s3://janelia-cosem-datasets/jrc_hela-2/jrc_hela-2.zarr/recon-1/em/fibsem-uint8";
 const src = await OmeZarrSource.open(url, "jrc_hela-2 EM");
-const emb = new Embedder((size) => new URL(`../public/models/dinov2-small-${size}.onnx`, import.meta.url).pathname, undefined,
+const emb = new Embedder((file) => new URL(`../public/models/${file}.onnx`, import.meta.url).pathname, undefined,
                          async (path) => readFileSync(path).buffer as ArrayBuffer);
 const q: Vec3 = [666, 139, 2244];
 const region: [Vec3, Vec3] = [[602, 64, 2116], [730, 256, 2372]];  // a small box (2 x 3 x 4 tiles): the next areas are around it

@@ -6,7 +6,7 @@ name: Pages
 #   /           the page, its worker and assets (web/dist)
 #   /ng/        Neuroglancer, built from source: the page drives it in a same-origin iframe
 #               (reads clicks and zoom, adds hit annotations), which an appspot iframe cannot do
-#   /models/    DINOv2-small as ONNX (web/scripts/export_model.py), run in the page by ONNX
+#   /models/    DINOv2-small, MorphEm and PE-Core-T as ONNX (web/scripts/export_model.py), run in the page by ONNX
 #               Runtime Web through chunkmirage's wrapper
 #   /ort/       ONNX Runtime Web's WebAssembly runtime (copied by chunkmirage's Vite plugin)
 #
@@ -55,11 +55,11 @@ jobs:
         with:
           path: web/public/models
           key: model-${{ hashFiles('web/scripts/export_model.py') }}
-      - name: Export DINOv2-small to ONNX
+      - name: Export the models to ONNX
         if: steps.model.outputs.cache-hit != 'true'
         run: |
-          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -q transformers onnx onnxruntime onnxscript numpy
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -q transformers "timm>=1.0.31" onnx onnxruntime onnxscript numpy
           python web/scripts/export_model.py
 
       - uses: actions/cache@v4
@@ -85,7 +85,7 @@ jobs:
       # not as a blank viewer on the site
       - name: Check the site
         run: |
-          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx ort/ort-wasm-simd-threaded.asyncify.wasm; do
+          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx models/morphem-112-tokens.onnx models/pecore-t16-112-tokens.onnx ort/ort-wasm-simd-threaded.asyncify.wasm; do
             [ -f "web/dist/$f" ] || { echo "::error::web/dist/$f is missing"; exit 1; }
           done
           touch web/dist/.nojekyll

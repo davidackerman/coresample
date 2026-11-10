@@ -286,8 +286,7 @@
           <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
             <option value="patches" selected>patches</option><option value="tokens">tiles + tokens (Mars CTX explorer)</option></select>
           <span class="lbl">model</span>
-          <select id="detail" title="Model input: detailed (224 px) sees finer texture at 4x the compute. On labelled EM neither won consistently">
-            <option value="112" selected>DINOv2-small, fast (112 px)</option><option value="224">DINOv2-small, detailed (224 px)</option></select>
+          <select id="detail" title="The model that compares patches. DINOv2-small (the default): detailed (224 px) sees finer texture at 4x the compute; on labelled EM neither won consistently. MorphEm (grey; trained on fluorescence channels): found more on labelled HeLa EM, 6.4 of its top 10 right on average to DINOv2's 5.7. PE-Core-T: 4.6x as fast on a CPU (without WebGPU), 5.1 of the top 10 right there. The tiles + tokens method always uses DINOv2-small at 224 px"></select>
           <span class="lbl">compare</span>
           <select id="focus" title="Compare the whole box, or the object at its centre (where you clicked): useful when the surroundings vary">
             <option value="whole" selected>whole box</option><option value="center">object at the centre</option></select>

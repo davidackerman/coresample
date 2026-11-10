@@ -26,9 +26,9 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 - **match:** brightens the parts of each hit that look most like the middle of your box (or the
   parts you marked) and dims the rest; what every box has (plain background) does not count. **why:** each hit's score broken down, and its pieces
   coloured the way the model sees them.
-- **what matters:** after a click, mark the parts of your box that matter, on its 8 x 8 grid (the
-  pieces the model sees). The match then compares only those pieces, where they sit in the box,
-  and the search starts again (the first time, 88 MB more of the model). On labelled EM, a rough
+- **what matters:** after a click, mark the parts of your box that matter, on an 8 x 8 grid (the
+  pieces DINOv2-small sees). The match then compares only those pieces, where they sit in the box,
+  and the search starts again (with DINOv2-small, the first time, 88 MB more of it). On labelled EM, a rough
   brush over the object found a few more in the top 10, not in the top 25 (test 12).
 - **Heat:** how well every place compared matched, on the **Where it has looked** map (the
   whole dataset, the area searched so far outlined), and over the image if you tick **over the
@@ -60,9 +60,11 @@ your GPU through WebGPU; without it, on the CPU, about 10x slower).
 Nothing is uploaded. The live site counts dataset views and searches with GoatCounter (no
 cookies; your own data counts only as its format, never its address). The **Options** (detailed 224 px input, centre object, any rotation, any
 size, adapt to data, tiles + tokens, combining examples) are for data where they make sense:
-on labelled EM none moved top-10 precision by more than a few hundredths, and of the other
-models only MorphEm, trained on single fluorescence channels, found more (+0.06 in the top 10;
-tests 5-9, [RESULTS.md](experiments/results/RESULTS.md)).
+on labelled EM none moved top-10 precision by more than a few hundredths (tests 5-9,
+[RESULTS.md](experiments/results/RESULTS.md)). **Options > model** has two more models (test 6):
+MorphEm (MIT; trained on single fluorescence channels, so it sees grey), the only one that found
+more on labelled HeLa EM, 6.4 of the top 10 right to DINOv2-small's 5.7; and PE-Core-T
+(Apache-2.0), 4.6x as fast without a GPU, 5.1 of the top 10 right there.
 
 ## Data
 
@@ -89,12 +91,12 @@ the page also reads through their other addresses for the same data.
 ## Run locally
 
 ```bash
-cd web && npm install && npm run model   # exports DINOv2-small to ONNX (88 MB, gitignored)
+cd web && npm install && npm run model   # exports the models to ONNX (370 MB, gitignored)
 npm run build && npx vite preview        # http://localhost:5180
 ```
 
 The site is built by `.github/workflows/pages.yml` (Neuroglancer from source with
-`web/scripts/patch_neuroglancer.sh`, the ONNX model, chunkmirage at `web/chunkmirage.lock`).
+`web/scripts/patch_neuroglancer.sh`, the ONNX models, chunkmirage at `web/chunkmirage.lock`).
 The same search runs from the command line too, and chunk sizes alone make a map of where the
 content is (no pixel reads):
 

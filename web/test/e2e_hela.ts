@@ -14,7 +14,7 @@ const src = await OmeZarrSource.open(url, "jrc_hela-2 EM");
 console.log(`opened ${src.levels.length} levels in ${((performance.now() - t) / 1000).toFixed(1)}s; s2 shape ${src.levels[2].shape} chunk ${src.levels[2].chunk}`);
 const method = (process.argv[5] ?? "patches") as "patches" | "tokens";
 const roughPass = process.argv[6] === "rough" ? true : process.argv[6] === "norough" ? false : undefined;
-const emb = new Embedder((size) => new URL(`../public/models/dinov2-small-${size}.onnx`, import.meta.url).pathname, undefined,
+const emb = new Embedder((file) => new URL(`../public/models/${file}.onnx`, import.meta.url).pathname, undefined,
                          async (path) => readFileSync(path).buffer as ArrayBuffer);
 const s = new Search(src, emb, query, { working: 2, patch: 64, method, roughPass, maxCoarseVoxels: Number(process.argv[4] ?? 16e6) });
 let last = "";
