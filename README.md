@@ -70,7 +70,7 @@ more on labelled HeLa EM, 6.4 of the top 10 right to DINOv2-small's 5.7; and PE-
 
 | how | example |
 |---|---|
-| a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-sky`, `legacy-ngc6129`, `s2`, `hela`, `idr-organoid`, `idr-lung` |
+| a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-sky`, `legacy-ngc6129`, `s2` (the default), `hela`, `idr-organoid`, `idr-lung` |
 | OME-Zarr (v0.4/0.5, 2-D or 3-D, sharded or not) | `https://...`, `s3://bucket/path`, `gs://bucket/path` |
 | Neuroglancer precomputed | `precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg` |
 | web-map tiles | `https://host/.../{z}/{x}/{y}.png` (`#maxZoom=12` sets the finest zoom) |

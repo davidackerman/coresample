@@ -45,6 +45,10 @@ const CTX_W = 4194304, CTX_H = 2097152;
 const WAC_W = 131072, WAC_H = 65536;
 const S2_W = 256 * 2 ** 14;
 
+/** What the page opens on without ?d=: Earth, whose start view is already at a zoom where the
+ * first click searches well, in a scene anyone can judge (Mars opens on the whole planet). */
+export const DEFAULT_PRESET = "s2";
+
 export const PRESETS: Preset[] = [
   {
     id: "mars-ctx", geo: "equirect", label: "Mars: CTX global mosaic", detail: "5 m/px, Murray Lab / Esri", kind: "planetary map", count: CTX_W * CTX_H,
