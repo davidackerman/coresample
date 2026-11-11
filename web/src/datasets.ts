@@ -1,7 +1,9 @@
 // Preset datasets: public, read straight from their hosts (every one answers CORS), each a
-// pyramid already published by its owner. View centres are in full-resolution pixels.
+// pyramid already published by its owner, except Jezero: one TIFF with no pyramid, its coarser
+// levels made as it is read (src/remotetiff.ts). View centres are in full-resolution pixels.
 import type { GlobeSpec } from "./globeviewer.ts";
 import { OmeZarrSource, TileSource, legacySky, legacySurvey, openZoomify, type Source } from "./sources.ts";
+import { tiffSource } from "./remotetiff.ts";
 
 export interface Preset {
   id: string;
@@ -74,6 +76,17 @@ export const PRESETS: Preset[] = [
     globe: { radii: [1737400, 1737400, 1737400], template: "https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
              credit: "NASA/GSFC/Arizona State University (NASA Trek)" },
     note: "Start: Tycho crater.",
+  },
+  {
+    id: "jezero", label: "Mars: Jezero crater, one TIFF with no pyramid", detail: "25 cm/px HiRISE, 7.4 GB TIFF, USGS", kind: "planetary map", count: 85600 * 85952,
+    open: async () => {
+      const { s } = await tiffSource("https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/mars2020_trn/HiRISE/JEZ_hirise_soc_006_orthoMosaic_25cm_Eqc_latTs0_lon0_first.tif",
+                                     "Jezero crater HiRISE mosaic (USGS, Mars 2020 TRN)");
+      s.attribution = "NASA/JPL-Caltech/University of Arizona/USGS (Fergason et al. 2020)";
+      return s;
+    },
+    view: { cx: 38400, cy: 40960, scale: 16 },  // the delta
+    note: "Start: the delta, where Perseverance landed. One 7.4 GB TIFF with no pyramid: the zoomed-out levels are made from every 2nd, 4th... row as you go, so zooming out reads more than a pyramid would.",
   },
   {
     id: "andromeda", label: "Andromeda: Hubble PHAT mosaic", detail: "Hubble, ESA", kind: "astronomy", count: 1.5e9,
