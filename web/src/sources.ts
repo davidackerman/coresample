@@ -200,11 +200,15 @@ export class OmeZarrSource implements Source {
     this.name = name ?? url.split("/").slice(-3).join("/");
     this.ngUrl = url;
   }
-  get bytesRead() { return this.store.bytes; }
+  /** Bytes downloaded: the store's, or for data made on the fly from another file (a remote
+   * TIFF), what that file's reader downloaded. */
+  get bytesRead() { return this.netBytes ? this.netBytes() : this.store.bytes; }
+  private netBytes: (() => number) | null = null;
   get chunksRead() { return this.store.chunks; }
 
-  static async open(url: string, name?: string, { mirrors = true } = {}): Promise<OmeZarrSource> {
+  static async open(url: string, name?: string, { mirrors = true, bytes }: { mirrors?: boolean; bytes?: () => number } = {}): Promise<OmeZarrSource> {
     const s = new OmeZarrSource(normalizeUrl(url), name);
+    s.netBytes = bytes ?? null;
     const root = zarr.root(s.store);
     const grp = await zarr.open(root, { kind: "group" });
     let attrs = grp.attrs as Record<string, any>;

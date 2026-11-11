@@ -67,7 +67,7 @@ export function handleFolder(root: FileSystemDirectoryHandle): Folder {
   };
 }
 
-export const canPick = typeof (window as any).showDirectoryPicker === "function";
+export const canPick = typeof window !== "undefined" && typeof (window as any).showDirectoryPicker === "function";
 export async function pickFolder(): Promise<Folder | null> {
   try { return handleFolder(await (window as any).showDirectoryPicker({ mode: "read" })); }
   catch (e) { if ((e as Error).name === "AbortError") return null; throw e; }

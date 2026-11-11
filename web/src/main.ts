@@ -16,6 +16,7 @@ import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
 import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, type Folder } from "./local.ts";
 import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
+import { TIFF_URL, tiffSource } from "./remotetiff.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -642,9 +643,10 @@ async function openCustom(text: string) {
   $("status").textContent = text;
   openBtn.disabled = true; openBtn.textContent = "Opening...";
   try {
-    let s: Source;
+    let s: Source, tiff: Awaited<ReturnType<typeof tiffSource>> | null = null;
     const m = /^legacy:\s*([-\d.]+)\s*,\s*([-\d.]+)/i.exec(text);
     if (m) s = legacySurvey(Number(m[1]), Number(m[2]));
+    else if (TIFF_URL.test(text)) { $("status").textContent = "Reading the TIFF's directory"; tiff = await tiffSource(text); s = tiff.s; }
     else if (/^precomputed:\/\//i.test(text)) s = await PrecomputedSource.open(text);
     else if (/\{z\}/.test(text) && /\{x\}/.test(text) && /\{y\}/.test(text)) {
       // a web-map tile template: square world, 256 px tiles; "#maxZoom=N" sets the finest zoom
@@ -659,23 +661,24 @@ async function openCustom(text: string) {
       try { s = await OmeZarrSource.open(text); }
       catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
     }
-    const fmt = m ? "legacy" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
-    await showOwn(s, text, fmt);
+    const fmt = m ? "legacy" : tiff ? "tiff" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
+    await showOwn(s, text, fmt, tiff?.startScale);
+    if (tiff) $("status").prepend(tiff.note + "\n");
   } catch (e) {
     const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
     $("status").textContent = (/fetch/i.test(msg) ? "The host did not answer, or does not allow reads from web pages (CORS). " : "") + msg
-      + "\nReadable: OME-Zarr, Neuroglancer precomputed (precomputed://...), web-map tiles, Zoomify, legacy:RA,Dec.";
+      + "\nReadable: OME-Zarr, Neuroglancer precomputed (precomputed://...), a TIFF (.tif), web-map tiles, Zoomify, legacy:RA,Dec.";
   } finally {
     openBtn.disabled = false; openBtn.textContent = "Open";
   }
 }
 
-/** Your own data, opened: shown at its middle, the address bar a link to it (`link`; none for a
- * folder on this computer), counted as its format. */
-async function showOwn(s: Source, link: string | null, fmt: string) {
+/** Your own data, opened: shown at its middle (all of it, or at `scale`), the address bar a link
+ * to it (`link`; none for a folder on this computer), counted as its format. */
+async function showOwn(s: Source, link: string | null, fmt: string, scale?: number) {
   const L0 = s.levels[0].shape;
-  await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+  await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: scale ?? Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
   const u = new URL(location.href);
   u.searchParams.delete("d");
   if (link) u.searchParams.set("url", link); else u.searchParams.delete("url");

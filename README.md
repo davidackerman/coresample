@@ -75,11 +75,12 @@ model's source, licence and changes: [web/public/models/NOTICE.txt](web/public/m
 
 | how | example |
 |---|---|
-| a preset | `?d=mars-ctx`, `moon-wac`, `andromeda`, `webb`, `legacy-sky`, `legacy-ngc6129`, `s2` (the default), `hela`, `idr-organoid`, `idr-lung` |
+| a preset | `?d=mars-ctx`, `moon-wac`, `jezero` (one TIFF, no pyramid), `andromeda`, `webb`, `legacy-sky`, `legacy-ngc6129`, `s2` (the default), `hela`, `idr-organoid`, `idr-lung` |
 | OME-Zarr (v0.4/0.5, 2-D or 3-D, sharded or not) | `https://...`, `s3://bucket/path`, `gs://bucket/path` |
 | Neuroglancer precomputed | `precomputed://gs://neuroglancer-janelia-flyem-hemibrain/emdata/clahe_yz/jpeg` |
 | web-map tiles | `https://host/.../{z}/{x}/{y}.png` (`#maxZoom=12` sets the finest zoom) |
 | Zoomify | `https://host/.../ImageProperties.xml` |
+| a TIFF on the web (GeoTIFF, COG, BigTIFF; 2-D) | `https://host/.../image.tif`: its own pyramid if it has one; if not, coarser levels made as it is read, from every 2nd, 4th... row |
 | a Legacy Surveys field | `legacy:245.43,37.996` (RA, Dec) |
 | a folder on this computer | drop it on the page, or **Your data** > **Choose a folder** (Chrome, Edge): an OME-Zarr (or a folder with some inside: it opens the first), or a precomputed volume |
 | an image file on this computer | drop it on the page, or **Your data** > **Choose an image**: PNG, JPEG, WebP, GIF, BMP, AVIF, or TIFF (multi-page: z planes and channels as its OME-XML or ImageJ description says, else z planes), read whole into memory (up to 1.5 billion values; bigger, convert it to OME-Zarr) |
@@ -89,8 +90,14 @@ Paste a link under **Your data**; the address bar then holds `?url=...` and the 
 service worker, `web/public/local-sw.js`, serves it to the page and Neuroglancer, an image as an
 OME-Zarr made on the fly, `web/src/imagefile.ts`; nothing is uploaded), so there is no link to it. Other address options: `&globe=0`
 (flat map), `&rough=0` / `&rough=1` (rough pass off / forced on a CPU). The data must be a
-multiscale pyramid on a host that allows cross-origin reads (CORS), as public buckets, NASA
-Trek, ESA and IDR do. S3 and IDR let a browser download only 6 files at once per address, so
+multiscale pyramid (a TIFF need not be) on a host that allows cross-origin reads (CORS), as public buckets, NASA
+Trek, ESA and IDR do. A TIFF is read by byte ranges (`web/src/remotetiff.ts`) and served to the
+page as an OME-Zarr made on the fly. Without a pyramid, a level 2^k coarser reads one row in 2^k
+(an uncompressed row costs only its bytes; a compressed tile or strip is read whole, so a
+compressed TIFF needs one), and a finer level reuses the rows a coarser one read. Zooming out and
+the quick pass therefore read more than a pyramid would. On Jezero (7.4 GB) the first view read
+29 MB, and a search's quick pass over the whole crater about 105 MB. USGS Astrogeology's bucket
+holds many such mosaics, up to Venus at 117 GB. S3 and IDR let a browser download only 6 files at once per address, so
 the page also reads through their other addresses for the same data.
 
 ## Run locally

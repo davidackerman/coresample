@@ -38,13 +38,13 @@ async function serve(req, u) {
   const msg = { coresampleLocal: id, path, range: parseRange(req.headers.get("range")), head: req.method === "HEAD" };
   let ans = null;
   const known = owner.has(id) ? await self.clients.get(owner.get(id)) : null;
-  if (known) ans = await ask(known, msg, 60000);
+  if (known) ans = await ask(known, msg, 240000);  // a chunk made from a remote file can take a while
   else {  // this worker restarted (it forgets): ask every window, the one with the folder answers
     const all = await self.clients.matchAll({ type: "window" });
     ans = await new Promise((res) => {
       let left = all.length;
       if (!left) res(null);
-      for (const c of all) ask(c, msg, 60000).then((a) => { if (a) { owner.set(id, c.id); res(a); } else if (!--left) res(null); });
+      for (const c of all) ask(c, msg, 240000).then((a) => { if (a) { owner.set(id, c.id); res(a); } else if (!--left) res(null); });
     });
   }
   if (!ans) return new Response("this folder is no longer open: open it again", { status: 410 });
