@@ -793,8 +793,9 @@ function clearSearch() {
   hitEls = [];
   hitTiles.clear();
   $("marks").hidden = true;
-  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div>';
+  $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first.</div>';
   $("hitcount").textContent = "";
+  $("hithelp").hidden = true;
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = true; stopBtn.textContent = "Pause";
   $<HTMLButtonElement>("clear").disabled = true;
@@ -1094,8 +1095,10 @@ function panel(st: State) {
   drawWhere(st);
   const box = $("hits");
   const sp = spread();
-  $("hitcount").textContent = !st.hits.length ? "" : `${st.hits.length} best` + (sp.between > 1 ? `, ${sp.between} boxes apart` : ", no overlaps")
-    + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "");
+  $("hitcount").textContent = st.hits.length ? String(st.hits.length) : "";
+  $("hitspread").textContent = (sp.between > 1 ? `${sp.between} boxes apart` : "No overlaps")
+    + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "") + ".";
+  $("hithelp").hidden = !st.hits.length;
   if (!st.hits.length) {  // none yet, or none left (each marked fewer like this): no tiles from before
     for (const el of hitEls) el.remove();
     hitEls = [];
