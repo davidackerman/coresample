@@ -86,10 +86,12 @@ function serviceWorker(): Promise<ServiceWorkerContainer> {
     c.addEventListener("message", answer);
     c.startMessages();
     await c.register("./local-sw.js", { scope: "./" });
-    await c.ready;
-    if (!c.controller) {  // the first time: the worker takes over this page as it starts
+    const reg = await c.ready;
+    if (!c.controller) {  // the first time the worker takes over this page as it starts; after a
+      // reload that skipped it (shift-reload) it is running already, so it is asked to take over
       await new Promise<void>((res, rej) => {
         c.addEventListener("controllerchange", () => res(), { once: true });
+        reg.active?.postMessage({ coresampleClaim: true });
         setTimeout(() => (c.controller ? res() : rej(new Error("the folder reader did not start: reload the page and drop it again"))), 5000);
       });
     }
@@ -125,6 +127,13 @@ export async function serveFolder(f: Folder): Promise<string> {
   folders.set(id, f);
   c.controller?.postMessage({ coresampleLocal: id });  // so the worker knows which window has it
   return new URL(`local/${id}`, document.baseURI).href;
+}
+
+/** The folder served at an address from serveFolder (or anything under it) is let go: a dataset
+ * closed, so what it holds (an image file read into memory, a remote TIFF's kept blocks) can be freed. */
+export function unserve(url: string) {
+  const m = /\/local\/([^/?#]+)/.exec(url);
+  if (m && url.startsWith(new URL("local/", document.baseURI).href)) folders.delete(m[1]);
 }
 
 // ---------------------------------------------------------------------------------------

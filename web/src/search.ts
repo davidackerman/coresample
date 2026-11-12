@@ -11,6 +11,17 @@ import { scan as scanSync, type Dims, type ScanInput, type ScanNorm } from "./sc
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
 export interface Hit { center: Vec3; score: number; index: number }
+
+/** Which pixels a place's patch has, for the embedding cache's keys: the source (one number per
+ * source opened) and how it reads now (a multi-channel image's mix), so a search on another
+ * dataset, or the same one with other channels, never reuses an embedding of different pixels. */
+const sourceIds = new WeakMap<Source, number>();
+let nextSourceId = 0;
+function readsKey(src: Source): string {
+  let id = sourceIds.get(src);
+  if (id === undefined) sourceIds.set(src, (id = nextSourceId++));
+  return `${id}|${src.look?.() ?? ""}`;
+}
 /** A marked hit's embedding at the rough level (by the hit's item id, so a mark can be undone). */
 interface Mark { id: number; e: Float32Array }
 /** How a candidate scored (Search.explain): the score is the mean of its parts' cosines with the
@@ -62,6 +73,7 @@ const MARGIN = 4;
 const KEEP = 3000;
 /** The "place" of a drawn query: none (every comparison with it is false). */
 export const NOWHERE: Vec3 = [NaN, NaN, NaN];
+const CANCELLED = new Error("cancelled");  // thrown inside start() once a search is cancelled
 const placed = (c: Vec3) => c.every(Number.isFinite);
 
 /** The model's pass over a coarser level that decides which tiles are read in detail (test 8:
@@ -193,6 +205,8 @@ export class Search {
   private ringQ: [Vec3, Vec3][] = [];
   private next = 0;
   private stopFlag = false;
+  private cancelled = false;  // cancel(): over for good
+  private reads: string;      // readsKey of the source as this search reads it
   private t0 = performance.now();
   private bytes0: number;
   private region: [Vec3, Vec3];
@@ -215,6 +229,7 @@ export class Search {
     this.area = [[...this.region[0]] as Vec3, [...this.region[1]] as Vec3];
     this.limits = opt.expand ? [[0, 0, 0], [...L.shape] as Vec3] : this.region;
     this.bytes0 = src.bytesRead;
+    this.reads = readsKey(src);
     this.state = { phase: "query", message: "embedding the query", working: opt.working, coarse: -1, patch: opt.patch,
                    tilesRead: 0, tilesBudget: 0, tilesTotal: 0, patches: 0, queued: 0, hits: [], bytes: 0, seconds: 0,
                    scanSeconds: 0, firstHitSeconds: null, rough: null, looked: 0, ruledOut: 0, examples: 1, areas: 1,
@@ -317,7 +332,9 @@ export class Search {
           throw new Error("no data under the query (outside the image, or the server has a gap there): click somewhere else or change the zoom");
         pix = q.bytes[0];
       }
+      this.live();
       this.examples = [{ c: sk ? NOWHERE : this.query, vars: await this.queryVariants(await this.queryBase(sk ? NOWHERE : this.query), this.query), pix, rough: null }];
+      this.live();
       this.combine();
       this.qvars = this.q0vars.map((v) => Float32Array.from(v));
       // 1. the cheap scan's query: its window at the coarse level
@@ -331,6 +348,7 @@ export class Search {
         const qc: Vec3 = [d3 ? Math.floor(this.query[0] / f) : 0, Math.floor(this.query[1] / f), Math.floor(this.query[2] / f)];
         const qlo: Vec3 = [qc[0] - Math.floor(w[0] / 2) - m[0], qc[1] - Math.floor(w[1] / 2) - m[1], qc[2] - Math.floor(w[2] / 2) - m[2]];
         qr = await this.src.read(C, qlo, [qlo[0] + w[0] + 2 * m[0], qlo[1] + w[1] + 2 * m[1], qlo[2] + w[2] + 2 * m[2]]);
+        this.live();
       }
       this.qscan = { C, f, w, m, query: fillMissing(luminance(qr)), qdims: qr.shape };
       // 2. the region scanned, its tiles ranked
@@ -339,14 +357,17 @@ export class Search {
       if (n0 !== undefined) this.emit({ scanRead: 0, scanChunks: need });
       const tick = setInterval(() => this.emit(n0 === undefined ? {} : { scanRead: Math.min(need, this.src.chunksRead! - n0) }), 500);
       try { ({ tiles: this.order, scores: this.orderS } = await this.scanRegion(this.region)); } finally { clearInterval(tick); }
+      this.live();
       this.emit({ scanSeconds: (performance.now() - ts) / 1000, scanRead: need, scanChunks: need });
       await this.setupRough();
+      this.live();
       this.setReady();
       this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, best-ranked first" });
       await this.resume();
     } catch (e) {
-      this.emit({ phase: "error", message: String((e as Error).message ?? e) });
       this.setReady();
+      if (this.cancelled) return;  // nobody is listening for this search any more
+      this.emit({ phase: "error", message: String((e as Error).message ?? e) });
     }
   }
 
@@ -559,7 +580,7 @@ export class Search {
 
   /** Read tiles up to `budget` in total (tests use it to read a fixed number). */
   async readUntil(budget: number) {
-    if (this.reading) return;
+    if (this.reading || this.cancelled) return;
     this.reading = true;
     this.stopFlag = false;
     this.dry = false;
@@ -567,53 +588,58 @@ export class Search {
     void this.spread();
     const W = this.opt.working, P = this.opt.patch, gpu = this.emb.provider === "webgpu";
     const limit = () => Math.min(budget, this.order.length);
-    while (!this.stopFlag) {
-      if (this.tokenMode) {  // a few tiles at a time, every crop of them through the model in one go
-        const tiles = this.next < limit() ? await this.takeTiles(gpu ? 4 : 1, limit()) : [];
-        if (!tiles.length) { if (this.next < budget && (await this.expandOnce())) continue; break; }
-        const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
-        const grids = await this.emb.tokens(preps.flatMap((p) => p.crops), false, this.spec);
+    let failed: string | null = null;
+    try {
+      while (!this.stopFlag) {
+        if (this.tokenMode) {  // a few tiles at a time, every crop of them through the model in one go
+          const tiles = this.next < limit() ? await this.takeTiles(gpu ? 4 : 1, limit()) : [];
+          if (!tiles.length) { if (this.next < budget && (await this.expandOnce())) continue; break; }
+          const preps = (await Promise.all(tiles.map((t) => this.prepTokens(t)))).flat();
+          const grids = await this.emb.tokens(preps.flatMap((p) => p.crops), false, this.spec);
+          const fresh: number[] = [];
+          let k = 0;
+          for (const p of preps) { fresh.push(...this.scoreWindows(p, grids.slice(k, k + p.crops.length))); k += p.crops.length; }
+          this.rank(fresh);
+          this.prune();
+          await new Promise((r) => setTimeout(r, 0));
+          this.emit({ tilesRead: this.next, patches: this.embedded, queued: 0, ...this.roughCounts(),
+                      firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
+          continue;
+        }
+        const B = gpu ? 64 : 16;
+        this.feed(limit, B);
+        const coming = [...this.inflight, ...(this.taking ? [this.taking] : [])];
+        if (this.queue.length < B && coming.length) { await Promise.race(coming); continue; }  // wait for a full batch
+        if (!this.queue.length) {  // nothing queued and nothing coming: the next area, or the end
+          if (this.next < budget && (await this.expandOnce())) continue;
+          break;
+        }
+        if (this.queueDirty) { this.queue.sort((x, y) => y.pri - x.pri); this.queueDirty = false; }
+        const batch = this.queue.splice(0, B);
+        const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${this.reads}|${W}|${P}|${q.c.join(",")}`), this.opt.brush, this.spec);
         const fresh: number[] = [];
-        let k = 0;
-        for (const p of preps) { fresh.push(...this.scoreWindows(p, grids.slice(k, k + p.crops.length))); k += p.crops.length; }
+        batch.forEach((q, k) => {
+          this.sum ??= new Float64Array(e[k].length);
+          for (let d = 0; d < e[k].length; d++) this.sum[d] += e[k][d];
+          const id = this.nextId++;
+          this.items.set(id, { c: q.c, e: e[k], pix: Uint8Array.from(q.patch.data), s: -Infinity, h: this.heatAdd(q.c, -Infinity) });
+          fresh.push(id);
+        });
+        this.embedded += batch.length;
         this.rank(fresh);
         this.prune();
-        await new Promise((r) => setTimeout(r, 0));
-        this.emit({ tilesRead: this.next, patches: this.embedded, queued: 0, ...this.roughCounts(),
+        await new Promise((r) => setTimeout(r, 0));  // let the page draw
+        this.emit({ tilesRead: this.next, patches: this.embedded, queued: this.queue.length, ...this.roughCounts(),
                     firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
-        continue;
       }
-      const B = gpu ? 64 : 16;
-      this.feed(limit, B);
-      const coming = [...this.inflight, ...(this.taking ? [this.taking] : [])];
-      if (this.queue.length < B && coming.length) { await Promise.race(coming); continue; }  // wait for a full batch
-      if (!this.queue.length) {  // nothing queued and nothing coming: the next area, or the end
-        if (this.next < budget && (await this.expandOnce())) continue;
-        break;
-      }
-      if (this.queueDirty) { this.queue.sort((x, y) => y.pri - x.pri); this.queueDirty = false; }
-      const batch = this.queue.splice(0, B);
-      const e = await this.emb.embed(batch.map((q) => q.patch), batch.map((q) => `${W}|${P}|${q.c.join(",")}`), this.opt.brush, this.spec);
-      const fresh: number[] = [];
-      batch.forEach((q, k) => {
-        this.sum ??= new Float64Array(e[k].length);
-        for (let d = 0; d < e[k].length; d++) this.sum[d] += e[k][d];
-        const id = this.nextId++;
-        this.items.set(id, { c: q.c, e: e[k], pix: Uint8Array.from(q.patch.data), s: -Infinity, h: this.heatAdd(q.c, -Infinity) });
-        fresh.push(id);
-      });
-      this.embedded += batch.length;
-      this.rank(fresh);
-      this.prune();
-      await new Promise((r) => setTimeout(r, 0));  // let the page draw
-      this.emit({ tilesRead: this.next, patches: this.embedded, queued: this.queue.length, ...this.roughCounts(),
-                  firstHitSeconds: this.state.firstHitSeconds ?? (this.state.hits.length ? (performance.now() - this.t0) / 1000 : null) });
+    } catch (e) {  // the model failed (a lost GPU device...): paused, so Resume can try again
+      failed = String((e as Error).message ?? e);
     }
     this.reading = false;
-    const all = !this.stopFlag && (this.next < budget || this.next >= this.order.length);
+    const all = !failed && !this.stopFlag && (this.next < budget || this.next >= this.order.length);
     const ruled = this.roughCounts().ruledOut;
     this.emit({ phase: all ? "done" : "paused", tilesRead: this.next, queued: this.queue.length, ...this.roughCounts(),
-                message: !all ? "stopped"
+                message: failed ? `stopped: ${failed}` : !all ? "stopped"
                   : ruled ? `read the tiles the model picked; it ruled out ${ruled}`
                   : this.opt.expand ? "read every tile of the level" : "read every tile of the region" });
   }
@@ -809,6 +835,7 @@ export class Search {
    * first stays the first example's. Resolves to an error message, or null when added. */
   async addExample(c: Vec3): Promise<string | null> {
     await this.ready;
+    if (this.cancelled) return "that search was closed";
     if (this.state.phase === "error") return this.state.message;
     if (this.atExample(c)) return "that place is already an example";
     const q = await this.readPatches([c]);
@@ -954,7 +981,13 @@ export class Search {
     return fresh;
   }
 
+  /** Pause: the reads stop after the batch under way; resume() carries on. */
   stop() { this.stopFlag = true; }
+  /** Over for good (a new search, or the dataset closed): nothing resumes it, and a step it
+   * still awaits (the query's model run, the quick pass) ends it there instead of reading on. */
+  cancel() { this.cancelled = this.stopFlag = true; }
+  /** Throws once cancelled: start() checks after each step. */
+  private live() { if (this.cancelled) throw CANCELLED; }
 
   /** The query's embeddings: the patch itself, plus its 7 other rotations/flips and its view at
    * half and double the field (one level finer and coarser), as the match options ask. */

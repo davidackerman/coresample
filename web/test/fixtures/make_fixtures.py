@@ -16,3 +16,18 @@ tifffile.imwrite(f"{out}/deflate_rgb.tif", rgb, photometric="rgb", rowsperstrip=
 y, x = grid(300, 260)
 pl = np.stack([(x * 5 - y * 3), (x * y) % 3001 - 1500]).astype(np.int16)
 tifffile.imwrite(f"{out}/planar_be.tif", pl, byteorder=">", planarconfig="separate", photometric="minisblack", rowsperstrip=16, compression=None)
+# JPEG (YCbCr, chroma halved both ways: GDAL's default for RGB JPEG), and big-endian with a
+# predictor (horizontal on integers, floating-point on floats); these need imagecodecs:
+#   uv run --with imagecodecs python web/test/fixtures/make_fixtures.py web/test/fixtures
+y, x = grid(96, 160)
+r, g, b = x + 40.0, 2 * y + 20.0, (x + y) // 2 + 60.0
+# tifffile stores the samples given as they are: Y, Cb, Cr made here (JFIF), as libtiff does from RGB
+ycc = np.stack([0.299 * r + 0.587 * g + 0.114 * b, 128 - 0.168736 * r - 0.331264 * g + 0.5 * b,
+                128 + 0.5 * r - 0.418688 * g - 0.081312 * b], -1).round().clip(0, 255).astype(np.uint8)
+tifffile.imwrite(f"{out}/ycbcr_jpeg.tif", ycc, photometric="ycbcr", subsampling=(2, 2), compression="jpeg",
+                 compressionargs={"level": 95}, rowsperstrip=16)
+y, x = grid(120, 90)
+tifffile.imwrite(f"{out}/be_predictor_u16.tif", ((x * 701 + y * 13) % 60000).astype(np.uint16), byteorder=">",
+                 compression="deflate", predictor=True, rowsperstrip=16)
+tifffile.imwrite(f"{out}/be_predictor_f32.tif", (x * 0.5 - y * 0.25).astype(np.float32), byteorder=">",
+                 compression="deflate", predictor=3, rowsperstrip=16)

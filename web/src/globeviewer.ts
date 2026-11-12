@@ -55,6 +55,7 @@ export class GlobeViewer {
 
   private async start(init: { cx: number; cy: number; scale: number }) {
     const C = (this.C = await loadCesium());
+    if (this.gone) throw new Error("the globe was closed");  // before Cesium had loaded: no viewer to make
     const [a, b, c] = this.spec.radii;
     this.ellipsoid = new C.Ellipsoid(a, b, c);
     C.Ellipsoid.default = this.ellipsoid;
@@ -179,5 +180,6 @@ export class GlobeViewer {
     for (const q of queries) this.boxes.push(this.entity(q, "#5ab0ff"));
   }
 
-  destroy() { this.viewer?.destroy(); this.div.innerHTML = ""; }
+  private gone = false;
+  destroy() { this.gone = true; this.viewer?.destroy(); this.viewer = null; this.div.innerHTML = ""; }
 }

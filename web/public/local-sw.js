@@ -8,6 +8,7 @@ const owner = new Map();  // folder id -> the id of the window that opened it
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("message", (e) => {
+  if (e.data?.coresampleClaim) e.waitUntil(self.clients.claim());  // a page that skipped this worker (shift-reload)
   if (e.data?.coresampleLocal && e.source) owner.set(e.data.coresampleLocal, e.source.id);
   e.ports[0]?.postMessage(true);
 });

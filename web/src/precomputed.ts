@@ -81,7 +81,7 @@ export class PrecomputedSource implements Source {
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
         const r = await fetch(url, range ? { headers: { range: `bytes=${range[0]}-${range[1] - 1}` } } : {});
-        if (r.status === 404 || r.status === 403 && !range) return null;
+        if (r.status === 404 || r.status === 403) return null;  // a bucket without listing answers 403 for a missing file, ranges too
         if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
         const buf = await r.arrayBuffer();
         this.bytesRead += buf.byteLength;

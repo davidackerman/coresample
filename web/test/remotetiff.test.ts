@@ -11,9 +11,10 @@ import { readFileSync } from "node:fs";
 import { openTiff, type RemoteTiff } from "../src/remotetiff.ts";
 
 const dir = new URL("./fixtures/", import.meta.url);
-let server: Server, base = "";
+let server: Server, base = "", failing = false;
 before(async () => {
   server = createServer((req, res) => {
+    if (failing) { res.writeHead(500).end(); return; }
     let buf: Buffer;
     try { buf = readFileSync(new URL("." + (req.url ?? ""), dir)); } catch { res.writeHead(404).end(); return; }
     const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
@@ -26,7 +27,7 @@ before(async () => {
 });
 after(() => server.close());
 
-const CTORS: Record<string, any> = { "|u1": Uint8Array, "<u2": Uint16Array, "<i2": Int16Array };
+const CTORS: Record<string, any> = { "|u1": Uint8Array, "<u2": Uint16Array, "<i2": Int16Array, "<f4": Float32Array };
 /** Level k of the served OME-Zarr, channel c, as one array (y, x). */
 async function level(t: RemoteTiff, k: number, c = 0) {
   const za = JSON.parse(await (await t.folder.file(`${k}/.zarray`))!.text());
@@ -104,4 +105,35 @@ test("big-endian, planar, signed 16-bit", async () => {
       assert.equal(L.dtype, "<i2");
       same(L.data, sampled(v[c], 300, 260, k), `channel ${c}, level ${k}`);
     }
+});
+
+test("JPEG in YCbCr (GDAL's RGB JPEG): read as red, green and blue", async () => {
+  const v = [(x: number) => x + 40, (_: number, y: number) => 2 * y + 20, (x: number, y: number) => Math.floor((x + y) / 2) + 60];
+  const t = await openTiff(base + "ycbcr_jpeg.tif");
+  const attrs = JSON.parse(await (await t.folder.file(".zattrs"))!.text());
+  assert.deepEqual(attrs.omero.channels.map((c: any) => c.label), ["red", "green", "blue"]);
+  for (let c = 0; c < 3; c++) {
+    const L = await level(t, 0, c), want = sampled(v[c], 96, 160, 0);
+    let worst = 0, sum = 0;
+    for (let i = 0; i < want.length; i++) { const d = Math.abs(L.data[i] - want[i]); worst = Math.max(worst, d); sum += d; }
+    // lossy, chroma at half size: close, where Y, Cb, Cr read as colours would be off by tens
+    assert.ok(worst <= 12 && sum / want.length <= 3, `channel ${c}: off by ${worst} at worst, ${(sum / want.length).toFixed(2)} on average`);
+  }
+});
+
+test("big-endian with a predictor: 16-bit horizontal, 32-bit float", async () => {
+  const u = await level(await openTiff(base + "be_predictor_u16.tif"), 0);
+  assert.equal(u.dtype, "<u2");
+  same(u.data, sampled((x, y) => (x * 701 + y * 13) % 60000, 120, 90, 0), "uint16, horizontal predictor");
+  const f = await level(await openTiff(base + "be_predictor_f32.tif"), 0);
+  assert.equal(f.dtype, "<f4");
+  same(f.data, Float64Array.from({ length: 120 * 90 }, (_, i) => (i % 90) * 0.5 - Math.floor(i / 90) * 0.25), "float32, floating-point predictor");
+});
+
+test("a read that fails is not kept: it fails (not hangs), and the next one reads", async () => {
+  const t = await openTiff(base + "strips_u8.tif");
+  failing = true;
+  try { await assert.rejects(t.folder.file("0/0/0")); } finally { failing = false; }
+  const a = new Uint8Array(await (await t.folder.file("0/0/0"))!.arrayBuffer());
+  assert.equal(a[1 * 0 + 5], (5 * 5) % 251);
 });

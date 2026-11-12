@@ -14,7 +14,7 @@ import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
-import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, type Folder } from "./local.ts";
+import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, unserve, type Folder } from "./local.ts";
 import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { TIFF_URL, tiffSource } from "./remotetiff.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
@@ -553,9 +553,21 @@ function sizeText(s: Source): string {
                       : `${f(x)} x ${f(y)} px (${si(n)}px), ${s.levels.length} levels`;
 }
 
-async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
+/** Opens under way: each takes a number, and only the latest shows its dataset, so an open that
+ * finishes after another was chosen (a slow server, a big TIFF's directory) changes nothing. */
+let opening = 0;
+function newOpen(): () => boolean { const my = ++opening; return () => my === opening; }
+/** A dataset closed or never shown: the folder or file it was served from (src/local.ts) is let go. */
+function release(s: Source) { const u = (s as { url?: unknown }).url; if (typeof u === "string") unserve(u); }
+
+/** Show `s` (unless `current()` says another open came after: then false, nothing changed). */
+async function setSource(s: Source, v: Preset["view"], p: Preset | null, current: () => boolean = () => true): Promise<boolean> {
+  const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
+  if (!current()) { release(s); return false; }
   clearSearch();
+  if (src && src !== s) release(src);
   src = s;
+  backdrop = null;  // the where-map's picture of the dataset before
   preset = p;
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
   gv?.destroy();
@@ -568,7 +580,6 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   ngv?.destroy();
   ngv = null;
   boxesKey = "";
-  const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
   olDiv.style.display = tiled ? "block" : "none";
   canvas.style.display = tiled || volume ? "none" : "block";
   hover.style.display = tiled ? "none" : "block";
@@ -610,6 +621,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   history.replaceState(null, "", u);
   resize();
   if (tiled && p?.globe && wantGlobe()) void toggleGlobe();
+  return true;
 }
 
 /** A view from the address bar (?v=x,y,z,scale), once, for the first dataset opened. */
@@ -622,9 +634,10 @@ function takeStartView() { const v = startView; startView = null; return v; }
 /** What the usage counts call the open dataset: a preset's id, or "custom/<format>". */
 let countAs = "";
 async function openPreset(p: Preset) {
+  const current = newOpen();
   $("phase").textContent = `Opening ${p.label}`;
-  try { await setSource(await p.open(), takeStartView() ?? p.view, p); idle(); countAs = p.id; countOpen(p.id, p.label); }
-  catch (e) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; }
+  try { if (await setSource(await p.open(), takeStartView() ?? p.view, p, current)) { idle(); countAs = p.id; countOpen(p.id, p.label); } }
+  catch (e) { if (current()) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; } }
 }
 function idle() {
   $("phase").textContent = "Click on the image to search";
@@ -638,6 +651,7 @@ function idle() {
 async function openCustom(text: string) {
   text = text.trim();
   if (!text) return;
+  const current = newOpen();
   const openBtn = $<HTMLButtonElement>("open");
   $("phase").textContent = "Opening your data";
   $("status").textContent = text;
@@ -662,9 +676,10 @@ async function openCustom(text: string) {
       catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
     }
     const fmt = m ? "legacy" : tiff ? "tiff" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
-    await showOwn(s, text, fmt, tiff?.startScale);
+    if (!(await showOwn(s, text, fmt, tiff?.startScale, current))) return;
     if (tiff) $("status").prepend(tiff.note + "\n");
   } catch (e) {
+    if (!current()) return;
     const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
     $("status").textContent = (/fetch/i.test(msg) ? "The host did not answer, or does not allow reads from web pages (CORS). " : "") + msg
@@ -676,27 +691,29 @@ async function openCustom(text: string) {
 
 /** Your own data, opened: shown at its middle (all of it, or at `scale`), the address bar a link
  * to it (`link`; none for a folder on this computer), counted as its format. */
-async function showOwn(s: Source, link: string | null, fmt: string, scale?: number) {
+async function showOwn(s: Source, link: string | null, fmt: string, scale?: number, current?: () => boolean): Promise<boolean> {
   const L0 = s.levels[0].shape;
-  await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: scale ?? Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+  if (!(await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: scale ?? Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null, current))) return false;
   const u = new URL(location.href);
   u.searchParams.delete("d");
   if (link) u.searchParams.set("url", link); else u.searchParams.delete("url");
   history.replaceState(null, "", u);
   idle();
   countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
+  return true;
 }
 
 /** An image file on this computer (PNG, JPEG, TIFF...), read whole and searched as an OME-Zarr. */
 async function openImage(file: File) {
+  const current = newOpen();
   $("phase").textContent = `Opening ${file.name}`;
   $("status").textContent = "Reading the image into memory";
-  try { await openLocal(await imageFolder(file), "image"); }
-  catch (e) { $("phase").textContent = "Could not open the image"; $("status").textContent = (e as Error).message || String(e); }
+  try { const f = await imageFolder(file); if (current()) await openLocal(f, "image", current); }
+  catch (e) { if (current()) { $("phase").textContent = "Could not open the image"; $("status").textContent = (e as Error).message || String(e); } }
 }
 
 /** A folder on this computer: the image in it (the folder itself, or the first inside). */
-async function openLocal(f: Folder, fmt?: string) {
+async function openLocal(f: Folder, fmt?: string, current = newOpen()) {
   $("phase").textContent = `Opening ${f.name}`;
   $("status").textContent = "Looking for an image in the folder";
   try {
@@ -705,10 +722,13 @@ async function openLocal(f: Folder, fmt?: string) {
                                                  : `no OME-Zarr image or precomputed volume in ${f.name}.`);
     const { path, kind } = ok[0], base = await serveFolder(f), url = path ? `${base}/${path}` : base;
     const name = path ? `${f.name}/${path}` : f.name;
-    const s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false });
-    await showOwn(s, null, `local-${fmt ?? kind}`);
+    let s: Source;
+    try { s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false }); }
+    catch (e) { unserve(url); throw e; }
+    if (!(await showOwn(s, null, `local-${fmt ?? kind}`, undefined, current))) return;
     if (ok.length > 1) $("status").textContent = `Opened ${name}. Also in the folder: ${ok.slice(1).map((x) => x.path).join(", ")} (drop one of those to open it).`;
   } catch (e) {
+    if (!current()) return;
     $("phase").textContent = "Could not open the folder";
     $("status").textContent = (e as Error).message || String(e);
   }
@@ -757,7 +777,7 @@ function fillLayers(layers: Layer[]) {
 // search
 // ---------------------------------------------------------------------------------------
 function clearSearch() {
-  search?.stop();
+  search?.cancel();
   search = null;
   $("again").hidden = true;
   hitEls = [];
@@ -846,7 +866,8 @@ function addExampleAt(fx: number, fy: number, fz?: number) {
   const c: Vec3 = [src!.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { toast("too close to the edge"); return; }
   toast(`adding example ${s.state.examples + 1}\u2026`);
-  s.addExample(c).then((err) => toast(err ?? `${s.state.examples} examples: hits now match ${combineText()}`));
+  s.addExample(c).then((err) => { if (s === search) toast(err ?? `${s.state.examples} examples: hits now match ${combineText()}`); },
+                       (e) => { if (s === search) toast(`could not add it: ${(e as Error).message ?? e}`); });
 }
 
 function queryAt(fx: number, fy: number, fz?: number, add = false) {
@@ -1064,7 +1085,12 @@ function panel(st: State) {
   const sp = spread();
   $("hitcount").textContent = !st.hits.length ? "" : `${st.hits.length} best` + (sp.between > 1 ? `, ${sp.between} boxes apart` : ", no overlaps")
     + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "");
-  if (!st.hits.length) return;
+  if (!st.hits.length) {  // none yet, or none left (each marked fewer like this): no tiles from before
+    for (const el of hitEls) el.remove();
+    hitEls = [];
+    showMarks(s);
+    return;
+  }
   if (box.querySelector(".empty")) box.innerHTML = "";
   const shown = st.hits.map((h, rank) => {
     const near = s.nearestExample(h.center);
@@ -1102,11 +1128,15 @@ function panel(st: State) {
     if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
   for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
+  showMarks(s);
+  hitEls.length = st.hits.length;
+  if (whyOn || matchOn) fillMaps();
+}
+/** The marks made so far, under Hits (with their undo). */
+function showMarks(s: Search) {
   const mk = s.marks();
   $("marks").hidden = !(mk.good + mk.bad);
   $("markstext").textContent = [mk.good ? `${mk.good} ✓ more like this` : "", mk.bad ? `${mk.bad} ✗ fewer like this (hidden)` : ""].filter(Boolean).join(", ");
-  hitEls.length = st.hits.length;
-  if (whyOn || matchOn) fillMaps();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1627,13 +1657,14 @@ async function toggleGlobe() {
     const at = olv ? { ...olv.center(), scale: olv.scale() } : { cx: view.cx, cy: view.cy, scale: view.scale };
     globeBtn.textContent = "map";
     olDiv.style.display = "none"; globeDiv.style.display = "block";
-    gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
+    const g = gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
       click: (fx, fy, add) => queryAt(fx, fy, undefined, add),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy) => showCursor(fx, fy),
     });
-    try { await gv.ready; boxesKey = ""; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
+    try { await g.ready; if (g === gv) { boxesKey = ""; overlays(); } }
+    catch (err) { if (g === gv) $("status").textContent = String((err as Error).message ?? err); }  // not if closed meanwhile
   }
 }
 
@@ -1718,7 +1749,9 @@ $("brushbtn").addEventListener("click", () => {
   if (!search || !src) return;
   const box = $("bpad");
   if (!box.hidden) { box.hidden = true; return; }
-  bpad.load(search.examplePixels()[0], search.state.patch, src.channels, brushW);
+  const pix = search.examplePixels()[0];
+  if (!pix) { toast("the query is still being read: try again in a moment"); return; }
+  bpad.load(pix, search.state.patch, src.channels, brushW);
   $<HTMLButtonElement>("bpadgo").disabled = !bpad.marked;
   $("pad").hidden = true;
   box.hidden = false;

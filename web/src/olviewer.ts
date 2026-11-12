@@ -125,13 +125,19 @@ export class OlViewer {
     // while dragging too: the box stays under the pointer, not where the drag began
     this.map.on("pointermove", (e) => { this.lastPixel = e.pixel; this.refreshHover(); });
     this.map.on("moveend", () => on.moved());  // panned as well as zoomed
-    target.addEventListener("pointerleave", () => { this.lastPixel = null; this.refreshHover(); });
+    // on the page's own div, which outlives this viewer: taken off in destroy (else it would keep
+    // the viewer, its source and that source's tile caches alive after the dataset is closed)
+    this.leave = () => { this.lastPixel = null; this.refreshHover(); };
+    this.target = target;
+    target.addEventListener("pointerleave", this.leave);
     // zooming changes the search level (and so the box) without the pointer moving
     this.view.on("change:resolution", () => { this.refreshHover(); on.moved(); });
     this.view.on("change:center", () => this.refreshHover());  // panning (and its glide after release)
   }
 
   private lastPixel: number[] | null = null;
+  private target: HTMLElement;
+  private leave: () => void;
   private onHover: () => { side: number; text: string } | null = () => null;
   private onPointer?: (fx: number, fy: number) => void;
   /** The map coordinate at a pixel from the view as it is now (the map's own conversion uses the
@@ -182,5 +188,9 @@ export class OlViewer {
     hits.forEach((b) => add(b, "hit"));
     queries.forEach((b) => add(b, "query"));
   }
-  destroy() { this.map.setTarget(undefined); }
+  destroy() {
+    this.target.removeEventListener("pointerleave", this.leave);
+    this.map.setTarget(undefined);
+    this.map.dispose();
+  }
 }
