@@ -38,12 +38,12 @@ export interface ModelSpec extends Prep {
 }
 export const MODELS: ModelSpec[] = [
   { id: "112", name: "DINOv2-small", label: "DINOv2-small, fast (112 px)", input: 112, grid: 8, file: "dinov2-small-112",
-    brushFile: "dinov2-small-112-tokens", norm: "imagenet", mb: 88 },
-  { id: "224", name: "DINOv2-small 224", label: "DINOv2-small, detailed (224 px)", input: 224, grid: 16, file: "dinov2-small-224", norm: "imagenet", mb: 88 },
+    brushFile: "dinov2-small-112-tokens", norm: "imagenet", mb: 44 },
+  { id: "224", name: "DINOv2-small 224", label: "DINOv2-small, detailed (224 px)", input: 224, grid: 16, file: "dinov2-small-224", norm: "imagenet", mb: 44 },
   { id: "morphem", name: "MorphEm", label: "MorphEm: grey, for EM (112 px)", input: 112, grid: 7, file: "morphem-112-tokens",
-    grey: true, norm: "standardize", ownTokens: true, mb: 86 },
+    grey: true, norm: "standardize", ownTokens: true, mb: 43 },
   { id: "pecore-t", name: "PE-Core-T", label: "PE-Core-T: fastest on a CPU (112 px)", input: 112, grid: 7, file: "pecore-t16-112-tokens",
-    norm: "half", ownTokens: true, adapt: true, mb: 23 },
+    norm: "half", ownTokens: true, adapt: true, mb: 12 },
 ];
 
 /** Where each output pixel samples along one axis (bilinear, half-pixel centres): the two source

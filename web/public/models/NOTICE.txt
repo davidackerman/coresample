@@ -1,7 +1,8 @@
 The models coresample's page runs (https://github.com/davidackerman/coresample)
 
-Each file here is a published model converted to ONNX by web/scripts/export_model.py. The
-models are their authors' work, under their own licences (not coresample's BSD-3-Clause).
+Each file here is a published model converted to ONNX by web/scripts/export_model.py, its
+larger weights stored as float16 (rounded from float32, run in float32). The models are their
+authors' work, under their own licences (not coresample's BSD-3-Clause).
 
 dinov2-small-112.onnx, dinov2-small-224.onnx, dinov2-small-112-tokens.onnx
   DINOv2 ViT-S/14: https://huggingface.co/facebook/dinov2-small

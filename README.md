@@ -29,7 +29,7 @@ twice the first time, to run the model in several threads: about 4x one thread; 
   coloured the way the model sees them.
 - **what matters:** after a click, mark the parts of your box that matter, on an 8 x 8 grid (the
   pieces DINOv2-small sees). The match then compares only those pieces, where they sit in the box,
-  and the search starts again (with DINOv2-small, the first time, 88 MB more of it). On labelled EM, a rough
+  and the search starts again (with DINOv2-small, the first time, 44 MB more of it). On labelled EM, a rough
   brush over the object found a few more in the top 10, not in the top 25 (test 12).
 - **Heat:** how well every place compared matched, on the **Where it has looked** map (the
   whole dataset, the area searched so far outlined), and over the image if you tick **over the
@@ -104,12 +104,12 @@ the page also reads through their other addresses for the same data.
 ## Run locally
 
 ```bash
-cd web && npm install && npm run model   # exports the models to ONNX (370 MB, gitignored)
+cd web && npm install && npm run model   # exports the models to ONNX (188 MB, gitignored)
 npm run build && npx vite preview        # http://localhost:5180
 ```
 
 The site is built by `.github/workflows/pages.yml` (Neuroglancer from source with
-`web/scripts/patch_neuroglancer.sh`, the ONNX models, chunkmirage at `web/chunkmirage.lock`).
+`web/scripts/patch_neuroglancer.sh`, the ONNX models with `web/scripts/export-requirements.txt`, chunkmirage at `web/chunkmirage.lock`).
 The same search runs from the command line too, and chunk sizes alone make a map of where the
 content is (no pixel reads):
 

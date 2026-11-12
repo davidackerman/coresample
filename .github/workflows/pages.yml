@@ -11,7 +11,8 @@ name: Pages
 #   /ort/       ONNX Runtime Web's WebAssembly runtime (copied by chunkmirage's Vite plugin)
 #
 # chunkmirage's browser pieces are imported from a sibling checkout at the commit
-# web/chunkmirage.lock pins. The model and the viewer are cached by what makes them.
+# web/chunkmirage.lock pins. The models and the viewer are cached by what makes them (the models:
+# the script, its pinned Hugging Face revisions and web/scripts/export-requirements.txt).
 on:
   push:
     branches: [main]
@@ -53,13 +54,12 @@ jobs:
       - uses: actions/cache@v4
         id: model
         with:
-          path: web/public/models
-          key: model-${{ hashFiles('web/scripts/export_model.py') }}
+          path: web/public/models/*.onnx   # not the tracked NOTICE and licences beside them
+          key: model-${{ hashFiles('web/scripts/export_model.py', 'web/scripts/export-requirements.txt') }}
       - name: Export the models to ONNX
         if: steps.model.outputs.cache-hit != 'true'
         run: |
-          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install -q transformers "timm>=1.0.31" onnx onnxruntime onnxscript numpy
+          pip install -q -r web/scripts/export-requirements.txt
           python web/scripts/export_model.py
 
       - uses: actions/cache@v4

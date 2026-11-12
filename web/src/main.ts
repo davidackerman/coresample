@@ -69,9 +69,9 @@ let hitEls: HTMLElement[] = [];  // the hit tiles in the order shown
 const hitTiles = new Map<number, HTMLElement>();
 
 // ---------------------------------------------------------------------------------------
-// model (warmed up on load, so the first click does not wait for 88 MB)
+// model (warmed up on load, so the first click does not wait for 44 MB)
 // ---------------------------------------------------------------------------------------
-/** A model file from Cache Storage when there, else downloaded once into it (88 MB each). */
+/** A model file from Cache Storage when there, else downloaded once into it (12-44 MB each). */
 /** What the model is doing while it is not ready yet (shown by the model chip and the panel). */
 let modelNote: string | null = null;
 function noteModel(text: string | null) {
@@ -83,7 +83,7 @@ function noteModel(text: string | null) {
 async function cachedBytes(url: string): Promise<ArrayBuffer> {
   let cache: Cache | null = null;
   try {
-    cache = await caches.open("coresample-models-v3");  // v3: the 224 model outputs its tokens
+    cache = await caches.open("coresample-models-v4");  // v4: weights stored as fp16
     const hit = await cache.match(url);
     if (hit) { noteModel("starting the model"); return hit.arrayBuffer(); }
   } catch { cache = null; /* no Cache Storage here */ }
@@ -106,7 +106,7 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
   try { await cache?.put(url, new Response(bytes, { headers: { "content-type": "application/octet-stream" } })); } catch { /* not cached: downloaded again next time */ }
   return bytes.buffer;
 }
-try { caches.delete("coresample-models-v2").catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
+try { for (const v of ["v2", "v3"]) caches.delete(`coresample-models-${v}`).catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
 const emb = new Embedder((file) => new URL(`models/${file}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 const modelEl = $("model");
@@ -1201,7 +1201,7 @@ function showWhyHelp() {
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${specNow().grid} x ${specNow().grid} pieces`}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
-    + (specNow().input === 224 || specNow().ownTokens ? "" : "(The colours: the 224 px model, 88 MB the first time.)");
+    + (specNow().input === 224 || specNow().ownTokens ? "" : `(The colours: the 224 px model, ${MODELS.find((s) => s.id === "224")!.mb} MB the first time.)`);
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;

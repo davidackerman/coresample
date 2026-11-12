@@ -1,0 +1,13 @@
+# What web/scripts/export_model.py exports the models with: uv.lock's versions, so an export is
+# reproducible and the Pages workflow's model cache (keyed on this file) changes when they do.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+torchvision==0.29.2+cpu
+transformers==5.22.2
+timm==1.0.31
+huggingface_hub==2.4.0
+safetensors==0.8.0
+onnx==1.23.2
+onnxruntime==1.31.1
+onnxscript==0.7.2
+numpy==2.5.4
