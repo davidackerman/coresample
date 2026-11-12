@@ -23,7 +23,9 @@ export interface Source {
   bytesRead: number;
   /** Chunks (tiles) the reads have taken so far, fetched, cached or missing: the progress of a long read. */
   chunksRead?: number;
-  read(level: number, lo: Vec3, hi: Vec3): Promise<Region>;
+  /** The box [lo, hi) of a level. With `zStep` > 1 only every zStep-th plane from lo[0] (shape[0]
+   * = ceil((hi[0] - lo[0]) / zStep)); a source may ignore it and return every plane (check shape[0]). */
+  read(level: number, lo: Vec3, hi: Vec3, zStep?: number): Promise<Region>;
   /** How the reads look now, when that can change (a multi-channel image's mix): cache keys. */
   look?(): string;
   /** A link that opens the original data at a place, when there is a viewer for it. */
@@ -322,18 +324,20 @@ export class OmeZarrSource implements Source {
   }
 
   /** Raw values, channels `cs` interleaved (an image with no channel axis: its one). */
-  private async readRaw(level: number, lo: Vec3, hi: Vec3, cs: number[] = [0]): Promise<Region> {
+  private async readRaw(level: number, lo: Vec3, hi: Vec3, cs: number[] = [0], zStep = 1): Promise<Region> {
     const arr = this.arrays[level];
     const lv = this.levels[level];
     const ax = this.axes, chs = ax.c >= 0 ? cs : [0], C = chs.length;
-    const out = new Float32Array((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]) * C);
+    const st = this.dims === 3 ? Math.max(1, Math.floor(zStep)) : 1, nz = Math.ceil((hi[0] - lo[0]) / st);
+    const out = new Float32Array(nz * (hi[1] - lo[1]) * (hi[2] - lo[2]) * C);
     const a = lo.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
     const b = hi.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
-    const shape: Vec3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    a[0] = lo[0] + Math.max(0, Math.ceil((a[0] - lo[0]) / st)) * st;  // the first plane kept inside the level
+    const shape: Vec3 = [nz, hi[1] - lo[1], hi[2] - lo[2]];
     if (a.some((v, i) => b[i] <= v)) return { data: out, shape, channels: C };
     await Promise.all(chs.map(async (ch, k) => {
       const sel: (number | zarr.Slice | null)[] = new Array(ax.n).fill(0);
-      if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0]) : 0;
+      if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0], st) : 0;
       sel[ax.y] = zarr.slice(a[1], b[1]);
       sel[ax.x] = zarr.slice(a[2], b[2]);
       if (ax.c >= 0) sel[ax.c] = ch;
@@ -343,27 +347,27 @@ export class OmeZarrSource implements Source {
       const kept = sel.map((s, i) => (typeof s === "number" ? -1 : i)).filter((i) => i >= 0);
       const strideOf = (axis: number) => (axis < 0 || !kept.includes(axis) ? 0 : res.stride[kept.indexOf(axis)]);
       const sz = strideOf(ax.z), sy = strideOf(ax.y), sx = strideOf(ax.x);
-      for (let z = a[0]; z < b[0]; z++)
+      for (let z = a[0]; z < b[0]; z += st)
         for (let y = a[1]; y < b[1]; y++)
           for (let x = a[2]; x < b[2]; x++) {
-            const src = (z - a[0]) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
-            out[((((z - lo[0]) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C) + k] = Number(data[src]);
+            const src = ((z - a[0]) / st) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
+            out[(((((z - lo[0]) / st) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C) + k] = Number(data[src]);
           }
     }));
     return { data: out, shape, channels: C };
   }
 
   /** 0-255: one channel in grey, or the channels on, each in its colour over its range, added. */
-  async read(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
+  async read(level: number, lo: Vec3, hi: Vec3, zStep = 1): Promise<Region> {
     if (!this.chans.length) {
-      const r = await this.readRaw(level, lo, hi);
+      const r = await this.readRaw(level, lo, hi, [0], zStep);
       if (this.window) {
         const [w0, w1] = this.window, k = 255 / Math.max(w1 - w0, 1e-9);
         for (let i = 0; i < r.data.length; i++) r.data[i] = Math.min(255, Math.max(0, (r.data[i] - w0) * k));
       }
       return r;
     }
-    const mix = this.mixed(), M = mix.length, r = await this.readRaw(level, lo, hi, mix.map((c) => c.index));
+    const mix = this.mixed(), M = mix.length, r = await this.readRaw(level, lo, hi, mix.map((c) => c.index), zStep);
     const n = r.data.length / M, C = M > 1 ? 3 : 1, out = new Float32Array(n * C);
     // a range set high to low (the viewer's inverted stretch) reads inverted too
     const lo0 = mix.map((c) => c.range[0]), k = mix.map((c) => { const d = c.range[1] - c.range[0]; return 255 / (Math.abs(d) < 1e-9 ? 1e-9 : d); });

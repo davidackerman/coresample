@@ -59,7 +59,10 @@ canvas.after(olDiv);
 olDiv.after(globeDiv);
 /** Full-resolution pixels per device pixel, whichever viewer is showing. */
 const zoomScale = () => (gv ? gv.scale() : olv ? olv.scale() : ngv ? ngv.scale() : view.scale);
-let hitEls: HTMLElement[] = [];
+let hitEls: HTMLElement[] = [];  // the hit tiles in the order shown
+/** Each hit's tile, by the hit's index: a tile is drawn once and moved when the ranks shift
+ * (drawn per slot, a shift redrew every tile below it, its why / match map too). */
+const hitTiles = new Map<number, HTMLElement>();
 
 // ---------------------------------------------------------------------------------------
 // model (warmed up on load, so the first click does not wait for 88 MB)
@@ -408,8 +411,11 @@ function jumpTo(fx: number, fy: number, fz?: number) {
 /** The view in the address bar (?v=x,y,z,scale), so a link opens this place. */
 let viewTimer = 0;
 function saveView() {
-  clearTimeout(viewTimer);
+  // at most every 600 ms, the view as it is then (pushed back on each call instead, it never came
+  // while a search redrew the page every frame)
+  if (viewTimer) return;
   viewTimer = window.setTimeout(() => {
+    viewTimer = 0;
     const v = currentView();
     if (!v || !src) return;
     const u = new URL(location.href);
@@ -781,6 +787,7 @@ function clearSearch() {
   search = null;
   $("again").hidden = true;
   hitEls = [];
+  hitTiles.clear();
   $("marks").hidden = true;
   $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div>';
   $("hitcount").textContent = "";
@@ -1088,6 +1095,7 @@ function panel(st: State) {
   if (!st.hits.length) {  // none yet, or none left (each marked fewer like this): no tiles from before
     for (const el of hitEls) el.remove();
     hitEls = [];
+    hitTiles.clear();
     showMarks(s);
     return;
   }
@@ -1097,14 +1105,18 @@ function panel(st: State) {
     return { h, rank, d: near ? distance(h.center, near, st.working) : { v: 0, text: "" } };
   });
   if (hitSort !== "best") shown.sort((a, b) => (hitSort === "near" ? a.d.v - b.d.v : b.d.v - a.d.v));
+  const want = new Set(shown.map(({ h }) => h.index));
+  for (const [i, el] of hitTiles) if (!want.has(i)) { el.remove(); hitTiles.delete(i); }
   shown.forEach(({ h, rank, d }, k) => {
-    let el = hitEls[k];
+    let el = hitTiles.get(h.index);
     if (!el) {
       el = document.createElement("div");
       el.className = "hit";
       el.innerHTML = `<canvas title="go there"></canvas><canvas class="map"></canvas><div class="fb"><button data-g="1" title="More like this: the query moves toward this hit, every hit is scored again, and the tiles still to read favour places like it (click again to undo)">&#10003;</button><button data-g="0" title="Fewer like this: hidden, and the query moves away from it (undo under Hits)">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div><div class="why"></div>`;
-      box.appendChild(el);
-      hitEls[k] = el;
+      hitTiles.set(h.index, el);
+      el.dataset.index = String(h.index);
+      drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
+      drawMap(el, h.index);
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
       el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
         const i = Number(el!.dataset.index), good = b.dataset.g === "1";
@@ -1116,20 +1128,15 @@ function panel(st: State) {
                    : "✗ Fewer like this: hidden, hits re-ranked away from it. Undo under Hits.");
       }));
     }
-    if (el.dataset.index !== String(h.index)) {
-      el.dataset.index = String(h.index);
-      drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
-      drawMap(el, h.index);
-    }
+    if (box.children[k] !== el) box.insertBefore(el, box.children[k] ?? null);  // moved, not redrawn
     el.classList.toggle("good", s.markOf(h.index) === "good");
     el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
     el.querySelector(".z")!.textContent = [d.text, src?.dims === 3 ? `z ${num(h.center[0] * 2 ** st.working)}` : ""].filter(Boolean).join(", ");
     if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
-  for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
+  hitEls = shown.map(({ h }) => hitTiles.get(h.index)!);
   showMarks(s);
-  hitEls.length = st.hits.length;
   if (whyOn || matchOn) fillMaps();
 }
 /** The marks made so far, under Hits (with their undo). */
@@ -1397,6 +1404,9 @@ function drawQueryMap() {
 // (x-z), with the tiles read, the hits, the query and the view
 // ---------------------------------------------------------------------------------------
 const whereCv = $<HTMLCanvasElement>("where");
+/** The map's width in CSS pixels, kept by an observer: read in every redraw it forced a layout per frame. */
+let whereCss = 0;
+new ResizeObserver((es) => { whereCss = es[0].contentRect.width; scheduleWhere(); }).observe(whereCv);
 /** What the map spans: searching outward, the whole dataset (the area searched so far outlined);
  * else the search region. */
 function whereFrame(s: Search): [Vec3, Vec3] {
@@ -1441,18 +1451,20 @@ function drawWhere(st: State) {
   $("lsearched").hidden = !outlined;
   // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
   // one scale across, y stretched to a readable height if the volume is thin in y
-  const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
+  const cw = Math.max(200, whereCss || whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
   const specs = d3 ? [{ a: 2, name: "from above (x, y)" }, { a: 0, name: "from the side (z, y)" }] : [{ a: 2, name: "" }];
   const across = specs.reduce((t, sp) => t + ext[sp.a], 0);
   const sa = Math.min((cw - 2 - gap * (specs.length - 1)) / across, maxH / Math.max(1, ext[1]));
   const sb = Math.max(sa, minH / Math.max(1, ext[1])), h = ext[1] * sb, y0 = d3 ? top : 0;
   let x = (cw - (across * sa + gap * (specs.length - 1))) / 2;
   wherePanels = specs.map((sp) => { const w = ext[sp.a] * sa, p = { a: sp.a, b: 1, x0: x, y0, sa, sb, w, h }; x += w + gap; return p; });
-  whereCv.width = cw; whereCv.height = y0 + h + 2;
-  whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
+  if (whereCv.width !== cw || whereCv.height !== y0 + h + 2) {
+    whereCv.width = cw; whereCv.height = y0 + h + 2;
+    whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
+  }
   const g = whereCv.getContext("2d")!;
   g.clearRect(0, 0, whereCv.width, whereCv.height);
-  const tiles = search.readTiles(), view = currentView(), heat = heatImages(st);
+  const view = currentView(), heat = heatImages(st), layer = readLayer(rlo, ch);
   wherePanels.forEach((p, k) => {
     const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
     if (specs[k].name) {  // the long label if it fits over the panel, else the axes, else none
@@ -1470,9 +1482,7 @@ function drawWhere(st: State) {
       g.drawImage(bd.cv, X(0), Y(0), Lw[2] * p.sa, Lw[1] * p.sb);
       g.globalAlpha = 1;
     }
-    g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
-    for (const t of tiles) g.fillRect(X(t[p.a] * ch[p.a]), Y(t[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
-    g.globalAlpha = 1;
+    g.drawImage(layer, p.x0, p.y0, p.w, p.h, p.x0, p.y0, p.w, p.h);  // the read tiles
     if (heat?.[k]) { g.imageSmoothingEnabled = false; g.drawImage(heat[k], Math.round(p.x0), Math.round(p.y0)); }
     if (view) {  // what is on screen: a rectangle from above, the slice from the side
       g.strokeStyle = "#ffffffcc"; g.lineWidth = dpr;
@@ -1494,6 +1504,36 @@ function drawWhere(st: State) {
     }
     g.restore();
   });
+}
+
+/** The read tiles over the map's panels, faint blue (overlapping columns add up): drawn into a
+ * layer of their own as they are read, each once; drawn again only when the map's frame or size
+ * changes (each redraw drew every tile read so far, up to every frame). */
+let tilesDrawn: { s: Search; key: string; n: number; cv: HTMLCanvasElement } | null = null;
+function readLayer(rlo: Vec3, ch: Vec3): HTMLCanvasElement {
+  const s = search!, tiles = s.readTiles();
+  const key = `${whereCv.width}x${whereCv.height}|${rlo}|${wherePanels.map((p) => [p.x0, p.y0, p.sa, p.sb, p.w, p.h].join()).join("|")}`;
+  let t = tilesDrawn;
+  if (!t || t.s !== s || t.key !== key || t.n > tiles.length) {
+    const cv = t?.cv ?? document.createElement("canvas");
+    cv.width = whereCv.width; cv.height = whereCv.height;  // (cleared)
+    t = tilesDrawn = { s, key, n: 0, cv };
+  }
+  if (t.n < tiles.length) {
+    const g = t.cv.getContext("2d")!;
+    g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;
+    for (const p of wherePanels) {
+      const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
+      g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();
+      for (let i = t.n; i < tiles.length; i++) {
+        const tl = tiles[i];
+        g.fillRect(X(tl[p.a] * ch[p.a]), Y(tl[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
+      }
+      g.restore();
+    }
+    t.n = tiles.length;
+  }
+  return t.cv;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -46,26 +46,40 @@ export const MODELS: ModelSpec[] = [
     norm: "half", ownTokens: true, adapt: true, mb: 23 },
 ];
 
-/** Bilinear resize of a square patch to INPUT x INPUT, normalized as the model takes it, written
- * channel-first (3 channels, or 1 when `grey`). */
-export function prepare(p: Patch, out: Float32Array, offset: number, INPUT = 112, how: Prep = {}) {
-  const s = p.size, C = p.channels, k = s / INPUT, plane = INPUT * INPUT, norm = how.norm ?? "imagenet";
-  let src = p.data, stride = C;
-  if (how.grey && C === 3) {  // colour to one channel: the mean of the three
-    src = new Float32Array(s * s);
-    for (let i = 0; i < s * s; i++) src[i] = (p.data[3 * i] + p.data[3 * i + 1] + p.data[3 * i + 2]) / 3;
-    stride = 1;
+/** Where each output pixel samples along one axis (bilinear, half-pixel centres): the two source
+ * indices and the weight of the second, per (source size, output size). */
+const axes = new Map<string, { i0: Int32Array; i1: Int32Array; w: Float32Array }>();
+function axisTable(s: number, n: number) {
+  const key = `${s}>${n}`;
+  let t = axes.get(key);
+  if (!t) {
+    const k = s / n, i0 = new Int32Array(n), i1 = new Int32Array(n), w = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const f = Math.min(s - 1, Math.max(0, (i + 0.5) * k - 0.5)), a = Math.floor(f); i0[i] = a; i1[i] = Math.min(s - 1, a + 1); w[i] = f - a; }
+    axes.set(key, (t = { i0, i1, w }));
   }
-  const nc = how.grey ? 1 : 3;
-  for (let y = 0; y < INPUT; y++) {
-    const fy = Math.min(s - 1, Math.max(0, (y + 0.5) * k - 0.5)), y0 = Math.floor(fy), y1 = Math.min(s - 1, y0 + 1), wy = fy - y0;
-    for (let x = 0; x < INPUT; x++) {
-      const fx = Math.min(s - 1, Math.max(0, (x + 0.5) * k - 0.5)), x0 = Math.floor(fx), x1 = Math.min(s - 1, x0 + 1), wx = fx - x0;
-      for (let c = 0; c < nc; c++) {
-        const cc = stride === 3 ? c : 0;
-        const v = (1 - wy) * ((1 - wx) * src[(y0 * s + x0) * stride + cc] + wx * src[(y0 * s + x1) * stride + cc])
-                + wy * ((1 - wx) * src[(y1 * s + x0) * stride + cc] + wx * src[(y1 * s + x1) * stride + cc]);
-        out[offset + c * plane + y * INPUT + x] = norm === "imagenet" ? (v / 255 - MEAN[c]) / STD[c] : norm === "half" ? (v / 255 - 0.5) / 0.5 : v / 255;
+  return t;
+}
+
+/** Bilinear resize of a square patch to INPUT x INPUT, normalized as the model takes it, written
+ * channel-first (3 channels, or 1 when `grey`). One channel plane at a time, the sampling from a
+ * table and the normalization folded into one multiply-add (1.2-1.7x the per-pixel version). */
+export function prepare(p: Patch, out: Float32Array, offset: number, INPUT = 112, how: Prep = {}) {
+  const s = p.size, C = p.channels, plane = INPUT * INPUT, norm = how.norm ?? "imagenet", nc = how.grey ? 1 : 3, ax = axisTable(s, INPUT);
+  // each output channel's source plane: the patch's one channel, its mean of three (grey), or its own
+  const srcs: Float32Array[] = [];
+  if (C === 1) srcs.push(p.data);
+  else if (how.grey) { const g = new Float32Array(s * s); for (let i = 0; i < s * s; i++) g[i] = (p.data[3 * i] + p.data[3 * i + 1] + p.data[3 * i + 2]) / 3; srcs.push(g); }
+  else for (let c = 0; c < 3; c++) { const g = new Float32Array(s * s); for (let i = 0; i < s * s; i++) g[i] = p.data[3 * i + c]; srcs.push(g); }
+  for (let c = 0; c < nc; c++) {
+    const src = srcs[Math.min(c, srcs.length - 1)], o = offset + c * plane;
+    const a = norm === "imagenet" ? 1 / (255 * STD[c]) : norm === "half" ? 2 / 255 : 1 / 255;
+    const b = norm === "imagenet" ? -MEAN[c] / STD[c] : norm === "half" ? -1 : 0;
+    for (let y = 0; y < INPUT; y++) {
+      const r0 = ax.i0[y] * s, r1 = ax.i1[y] * s, wy = ax.w[y], oy = o + y * INPUT;
+      for (let x = 0; x < INPUT; x++) {
+        const x0 = ax.i0[x], x1 = ax.i1[x], wx = ax.w[x];
+        const top = src[r0 + x0] + wx * (src[r0 + x1] - src[r0 + x0]), bot = src[r1 + x0] + wx * (src[r1 + x1] - src[r1 + x0]);
+        out[oy + x] = (top + wy * (bot - top)) * a + b;
       }
     }
   }
@@ -171,15 +185,24 @@ export class Embedder {
     keys = keys?.map((k) => `${k}|${sp.id}${bk}`);
     const out: (Float32Array | null)[] = patches.map((_, i) => (keys ? this.cache.get(keys[i]) ?? null : null));
     const todo = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
-    for (let s = 0; s < todo.length; s += this.batch) {
-      // give the page a turn between batches: on the CPU (WebAssembly) a pass blocks the thread
-      await new Promise((r) => setTimeout(r, 0));
-      if (this.provider === "wasm") this.batch = 8;
-      const idx = todo.slice(s, s + this.batch);
+    if (!todo.length) return out as Float32Array[];
+    // the batch size from where the model runs, before the first pass (a first batch of 32 on the
+    // CPU held the page for seconds): building the session tells
+    if (!this.provider && typeof this.onnx.session === "function") { await this.onnx.session(model); this.provider = this.onnx.provider; }
+    if (this.provider === "wasm") this.batch = 8;
+    const prep = (idx: number[]) => {
       const x = new Float32Array(idx.length * n);
       idx.forEach((i, j) => prepare(patches[i], x, j * n, size, sp));
-      const t0 = performance.now();
-      const r = await this.onnx.run(model, x, [idx.length, ch, size, size]);
+      return x;
+    };
+    let idx = todo.slice(0, this.batch), x = prep(idx);
+    for (let s = 0; s < todo.length;) {
+      // give the page a turn between batches: on the CPU (WebAssembly) a pass blocks the thread
+      await new Promise((r) => setTimeout(r, 0));
+      const t0 = performance.now(), pass = this.onnx.run(model, x, [idx.length, ch, size, size]);
+      // the next batch's pixels made while the GPU runs this one (on the CPU it changes nothing)
+      const nextS = s + idx.length, nextIdx = todo.slice(nextS, nextS + this.batch), nextX = nextIdx.length ? prep(nextIdx) : null;
+      const r = await pass;
       this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
       this.count += idx.length;
       this.provider = this.onnx.provider;
@@ -191,6 +214,9 @@ export class Embedder {
       });
       // a bounded cache (oldest out first): a search can read without end
       for (const k of this.cache.keys()) { if (this.cache.size <= 20000) break; this.cache.delete(k); }
+      s = nextS;
+      if (!nextX) break;
+      idx = nextIdx; x = nextX;
     }
     return out as Float32Array[];
   }

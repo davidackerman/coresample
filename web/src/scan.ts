@@ -16,22 +16,31 @@ export function boxSum(a: Float32Array, d: Dims, w: Dims): { data: Float32Array;
     nd[axis] = cd[axis] - k + 1;
     if (nd[axis] <= 0) return { data: new Float32Array(0), dims: [0, 0, 0] };
     const out = new Float32Array(nd[0] * nd[1] * nd[2]);
-    const stride = axis === 2 ? 1 : axis === 1 ? cd[2] : cd[1] * cd[2];
-    const ostride = axis === 2 ? 1 : axis === 1 ? nd[2] : nd[1] * nd[2];
-    const [A, B] = axis === 2 ? [cd[0] * cd[1], 1] : axis === 1 ? [cd[0], cd[2]] : [1, cd[1] * cd[2]];
-    const len = cd[axis];
-    for (let p = 0; p < A; p++)
-      for (let q = 0; q < B; q++) {
-        const base = axis === 2 ? p * cd[2] : axis === 1 ? p * cd[1] * cd[2] + q : q;
-        const obase = axis === 2 ? p * nd[2] : axis === 1 ? p * nd[1] * nd[2] + q : q;
+    if (axis === 2) {
+      const len = cd[2], lines = cd[0] * cd[1], on = nd[2];
+      for (let p = 0; p < lines; p++) {
+        const base = p * len, obase = p * on;
         let s = 0;
-        for (let i = 0; i < k; i++) s += cur[base + i * stride];
+        for (let i = 0; i < k; i++) s += cur[base + i];
         out[obase] = s;
-        for (let i = 1; i <= len - k; i++) {
-          s += cur[base + (i + k - 1) * stride] - cur[base + (i - 1) * stride];
-          out[obase + i * ostride] = s;
+        for (let i = 1; i < on; i++) { s += cur[base + i + k - 1] - cur[base + i - 1]; out[obase + i] = s; }
+      }
+    } else {
+      // rows of `inner` contiguous values: a running sum of whole rows (cache-friendly), kept in
+      // 64 bits as the per-line sum was (in 32 bits, slabs started apart drifted by 5e-4)
+      const inner = axis === 1 ? cd[2] : cd[1] * cd[2], outer = axis === 1 ? cd[0] : 1, len = cd[axis], on = nd[axis];
+      const acc = new Float64Array(inner);
+      for (let p = 0; p < outer; p++) {
+        const base = p * len * inner, obase = p * on * inner;
+        acc.fill(0);
+        for (let i = 0; i < k; i++) { const src = base + i * inner; for (let j = 0; j < inner; j++) acc[j] += cur[src + j]; }
+        for (let j = 0; j < inner; j++) out[obase + j] = acc[j];
+        for (let i = 1; i < on; i++) {
+          const o = obase + i * inner, add = base + (i + k - 1) * inner, sub = base + (i - 1) * inner;
+          for (let j = 0; j < inner; j++) out[o + j] = acc[j] += cur[add + j] - cur[sub + j];
         }
       }
+    }
     cur = out;
     cd = nd;
   }
@@ -44,19 +53,32 @@ export function correlate1d(a: Float32Array, d: Dims, axis: number, k: Float32Ar
   const n = d[axis], r = (k.length - 1) >> 1;
   const res = out ?? new Float32Array(a.length);
   if (n === 1) { res.set(a); return res; }
-  const stride = axis === 2 ? 1 : axis === 1 ? d[2] : d[1] * d[2];
-  const lines = a.length / n, line = new Float32Array(n + 2 * r);
-  for (let l = 0; l < lines; l++) {
-    const base = axis === 2 ? l * n : axis === 1 ? Math.floor(l / d[2]) * d[1] * d[2] + (l % d[2]) : l;
-    for (let i = 0; i < n + 2 * r; i++) {
-      let j = i - r;
-      while (j < 0 || j >= n) j = j < 0 ? -j - 1 : 2 * n - j - 1;
-      line[i] = a[base + j * stride];
+  const refl = (j: number) => { while (j < 0 || j >= n) j = j < 0 ? -j - 1 : 2 * n - j - 1; return j; };
+  if (axis === 2) {
+    const lines = a.length / n, line = new Float32Array(n + 2 * r);
+    for (let l = 0; l < lines; l++) {
+      const base = l * n;
+      for (let i = 0; i < n + 2 * r; i++) line[i] = a[base + refl(i - r)];
+      for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let t = 0; t <= 2 * r; t++) s += k[t] * line[i + t];
+        res[base + i] = s;
+      }
     }
+    return res;
+  }
+  // axes 0 and 1: whole rows of `inner` contiguous values at a time
+  const inner = axis === 1 ? d[2] : d[1] * d[2], outer = axis === 1 ? d[0] : 1;
+  for (let p = 0; p < outer; p++) {
+    const base = p * n * inner;
     for (let i = 0; i < n; i++) {
-      let s = 0;
-      for (let t = 0; t <= 2 * r; t++) s += k[t] * line[i + t];
-      res[base + i * stride] = s;
+      const o = base + i * inner;
+      for (let j = 0; j < inner; j++) res[o + j] = 0;
+      for (let t = 0; t <= 2 * r; t++) {
+        const kt = k[t], src = base + refl(i + t - r) * inner;
+        if (kt === 0) continue;
+        for (let j = 0; j < inner; j++) res[o + j] += kt * a[src + j];
+      }
     }
   }
   return res;

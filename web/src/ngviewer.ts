@@ -336,6 +336,7 @@ export class NgViewer {
 
   /** Show the heat over the slice panel (null hides it). */
   setHeat(x: NgHeat | null) { this.heat = x; this.queueHeat(); }
+  private heatImg: { key: string; img: HTMLCanvasElement; cell: number; gx0: number; gy0: number; gw: number; gh: number } | null = null;
   private queueHeat = () => {
     if (this.heatQueued) return;
     this.heatQueued = true;
@@ -373,11 +374,21 @@ export class NgViewer {
     const y0 = (c.cy - (r.height / 2) * k) / f, y1 = (c.cy + (r.height / 2) * k) / f;
     const sub = this.slabOf(x, c.z / f);
     if (!sub.n) return;
-    // one cell per place, coarser when the view holds very many
-    const cell = x.foot * Math.max(1, Math.ceil(Math.sqrt(((x1 - x0) / x.foot) * ((y1 - y0) / x.foot) / 1e6)));
-    const gx0 = Math.floor(x0 / cell) * cell, gy0 = Math.floor(y0 / cell) * cell;
-    const gw = Math.max(1, Math.ceil((x1 - gx0) / cell)), gh = Math.max(1, Math.ceil((y1 - gy0) / cell));
-    const img = heatCanvas(heatGrid(sub, gw, gh, 2, 1, [0, gy0, gx0], 1 / cell, 1 / cell, x.foot), gw, gh, x.lo, x.hi);
+    // one cell per place, coarser when the view holds very many; made for the view and half a view
+    // around it, and kept while the view stays inside that at about the same zoom, so panning
+    // only moves the picture (made again on every frame, it went through every place each time)
+    const vw = x1 - x0, vh = y1 - y0, cell0 = x.foot * Math.max(1, Math.ceil(Math.sqrt((vw / x.foot) * (vh / x.foot) / 1e6)));
+    const key = `${sub.version}|${sub.n}|${Math.floor(c.z / f)}|${x.lo}|${x.hi}|${x.foot}`, k0 = this.heatImg;
+    const fits = k0 && k0.key === key && k0.cell >= cell0 / 2 && k0.cell <= cell0 * 2
+      && k0.gx0 <= x0 && k0.gy0 <= y0 && k0.gx0 + k0.gw * k0.cell >= x1 && k0.gy0 + k0.gh * k0.cell >= y1;
+    if (!fits) {
+      const cell = x.foot * Math.max(1, Math.ceil(Math.sqrt(((2 * vw) / x.foot) * ((2 * vh) / x.foot) / 2e6)));
+      const gx0 = Math.floor((x0 - vw / 2) / cell) * cell, gy0 = Math.floor((y0 - vh / 2) / cell) * cell;
+      const gw = Math.max(1, Math.ceil((x1 + vw / 2 - gx0) / cell)), gh = Math.max(1, Math.ceil((y1 + vh / 2 - gy0) / cell));
+      const img = heatCanvas(heatGrid(sub, gw, gh, 2, 1, [0, gy0, gx0], 1 / cell, 1 / cell, x.foot), gw, gh, x.lo, x.hi, k0?.img);
+      this.heatImg = { key, img, cell, gx0, gy0, gw, gh };
+    }
+    const { img, cell, gx0, gy0, gw, gh } = this.heatImg!;
     const sx = r.left + r.width / 2 + (gx0 * f - c.cx) / k, sy = r.top + r.height / 2 + (gy0 * f - c.cy) / k;
     g.save();
     g.beginPath(); g.rect(r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr); g.clip();
