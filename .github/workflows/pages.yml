@@ -77,8 +77,15 @@ jobs:
           npm run build -- --output="$GITHUB_WORKSPACE/web/public/ng"
           find "$GITHUB_WORKSPACE/web/public/ng" -name '*.map' -delete
 
+      # the type check and unit tests first (as tests.yml runs them on pull requests): a failing
+      # one stops the deploy
       - name: Build the page
-        run: npm ci --no-audit --no-fund && npx vite build
+        run: |
+          npm ci --no-audit --no-fund
+          ln -s "$PWD/node_modules" ../../chunkmirage/web/node_modules
+          npx tsc --noEmit
+          npm test
+          npx vite build
         working-directory: web
 
       # every piece checked before anything is published: a missing one should fail here,

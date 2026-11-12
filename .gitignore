@@ -7,3 +7,16 @@ cache/
 web/node_modules/
 web/dist/
 web/public/models/*.onnx
+# run outputs not kept (the logs and pictures RESULTS.md cites are committed by name)
+experiments/results/**/*.stdout
+experiments/results/**/*.npy
+experiments/results/**/*.npz
+# written by the web's manual scripts (scan_parity.ts, e2e_hela.ts)
+web/test/scan_ts.*
+web/test/e2e_hela_hits*.json
+# Neuroglancer built for the site (pages.yml builds it)
+web/public/ng/
+# design and review drafts at the root
+/*_report*.md
+/concepts_brief.md
+/design_draft.md
