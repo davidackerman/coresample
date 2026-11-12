@@ -21,7 +21,12 @@ unit std; PE-Core-T 0.5 mean and std.
           (batch, 50, 384): its 192-d tokens with 192 zeros after them, so every part is 384-d
           as the page expects; zeros change no cosine (test 6: 4.6x faster on the CPU, -0.06 p@10).
 
-Writes web/public/models/<name>.onnx and checks each against PyTorch.
+Each float32 weight of more than a thousand values is stored as float16, with a Cast back to
+float32 after it: the files are half the size (the page downloads them), while the graph still
+computes in float32, as ONNX Runtime folds the Casts into float32 weights when it creates the
+session (no slower to run). Each export is checked against PyTorch: the cosine of each 384-d part
+(or token) and the largest difference. The weights come from pinned Hugging Face revisions, the
+packages from web/scripts/export-requirements.txt (the Pages workflow caches the models on both).
     python web/scripts/export_model.py [name ...]"""
 
 import os
@@ -36,6 +41,11 @@ import torch  # noqa: E402
 
 OUT = ROOT / "web/public/models"
 WIDTH = 384  # every part of the page's embeddings
+FP16_MIN = 1024  # float32 weights with more values than this are stored as float16
+# the Hugging Face revisions the weights come from (a change here re-exports in the Pages workflow)
+DINOV2 = "ed25f3a31f01632728cabb09d1542f84ab7b0056"  # facebook/dinov2-small
+MORPHEM = "0e8d58787421f83f975634d72420d85c5dfc9c2c"  # CaicedoLab/MorphEm
+PECORE_T = "29e4ebb6cc0502b84ba432add45499f4ffa44238"  # timm/vit_pe_core_tiny_patch16_384.fb
 
 
 class Pooled(torch.nn.Module):
@@ -68,7 +78,7 @@ class Tokens(torch.nn.Module):
 
 def dinov2():
     from transformers import AutoModel
-    return AutoModel.from_pretrained("facebook/dinov2-small").eval()
+    return AutoModel.from_pretrained("facebook/dinov2-small", revision=DINOV2).eval()
 
 
 def morphem(size=112):
@@ -80,7 +90,7 @@ def morphem(size=112):
     from timm.layers import resample_abs_pos_embed
 
     m = timm.create_model("vit_small_patch16_224", pretrained=False, num_classes=0, in_chans=1, img_size=size)
-    sd = {k: v for k, v in load_file(hf_hub_download("CaicedoLab/MorphEm", "model.safetensors")).items() if not k.startswith("head.")}
+    sd = {k: v for k, v in load_file(hf_hub_download("CaicedoLab/MorphEm", "model.safetensors", revision=MORPHEM)).items() if not k.startswith("head.")}
     sd["pos_embed"] = resample_abs_pos_embed(sd["pos_embed"], (size // 16, size // 16), num_prefix_tokens=1)
     m.load_state_dict(sd, strict=True)
     return m.eval()
@@ -88,7 +98,35 @@ def morphem(size=112):
 
 def pecore_t(size=112):
     import timm
-    return timm.create_model("vit_pe_core_tiny_patch16_384.fb", pretrained=True, num_classes=0, img_size=size).eval()
+    return timm.create_model("vit_pe_core_tiny_patch16_384.fb", pretrained=True, num_classes=0, img_size=size,
+                             pretrained_cfg_overlay={"hf_hub_id": f"timm/vit_pe_core_tiny_patch16_384.fb@{PECORE_T}"}).eval()
+
+
+def fp16_weights(path, least=FP16_MIN):
+    """Rewrite an ONNX file so each float32 initializer of more than `least` values is stored as
+    float16, a Cast to float32 giving it its old name: half the bytes, the same float32 graph.
+    The small ones (LayerNorm, biases, scalars) stay float32; they are little of the file."""
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    m = onnx.load(str(path))
+    g = m.graph
+    inits, casts = [], []
+    for t in g.initializer:
+        a = numpy_helper.to_array(t) if t.data_type == TensorProto.FLOAT and np.prod(t.dims) > least else None
+        if a is None or np.abs(a).max() > np.finfo(np.float16).max:
+            inits.append(t)
+            continue
+        inits.append(numpy_helper.from_array(a.astype(np.float16), f"{t.name}.fp16"))
+        casts.append(helper.make_node("Cast", [f"{t.name}.fp16"], [t.name], name=f"{t.name}.cast", to=TensorProto.FLOAT))
+    nodes = casts + list(g.node)  # the Casts first, so the nodes stay in topological order
+    g.ClearField("initializer")
+    g.initializer.extend(inits)
+    g.ClearField("node")
+    g.node.extend(nodes)
+    onnx.checker.check_model(m)
+    onnx.save(m, str(path))
+    return len(casts)
 
 
 # file name: (loader, input size, input channels, wrapper)
@@ -118,11 +156,15 @@ def main(names=tuple(EXPORTS)):
         torch.onnx.export(w, (torch.randn(2, ch, size, size),), str(out), input_names=["pixel_values"],
                           output_names=[name], opset_version=17, dynamo=False,
                           dynamic_axes={"pixel_values": {0: "batch"}, name: {0: "batch"}})
+        n16 = fp16_weights(out)
         x = torch.randn(5, ch, size, size)
         with torch.no_grad():
             ref = w(x).numpy()
-        diff = np.abs(ref - ort.InferenceSession(str(out)).run(None, {"pixel_values": x.numpy()})[0]).max()
-        print(f"wrote {out} ({out.stat().st_size / 1e6:.0f} MB), output {name} {ref.shape[1:]}, max |torch - onnx| = {diff:.2e}")
+        got = ort.InferenceSession(str(out)).run(None, {"pixel_values": x.numpy()})[0]
+        a, b = ref.reshape(-1, WIDTH), got.reshape(-1, WIDTH)  # each 384-d part, or each token
+        cos = (a * b).sum(1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1))
+        print(f"wrote {out} ({out.stat().st_size / 1e6:.0f} MB, {n16} weights as float16), output {name} {ref.shape[1:]}, "
+              f"torch vs onnx: min cosine {cos.min():.6f}, max |diff| {np.abs(ref - got).max():.2e}")
 
 
 if __name__ == "__main__":

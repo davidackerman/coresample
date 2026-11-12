@@ -55,6 +55,7 @@ export class GlobeViewer {
 
   private async start(init: { cx: number; cy: number; scale: number }) {
     const C = (this.C = await loadCesium());
+    if (this.gone) throw new Error("the globe was closed");  // before Cesium had loaded: no viewer to make
     const [a, b, c] = this.spec.radii;
     this.ellipsoid = new C.Ellipsoid(a, b, c);
     C.Ellipsoid.default = this.ellipsoid;
@@ -63,7 +64,9 @@ export class GlobeViewer {
       baseLayer: false, globe: new C.Globe(this.ellipsoid), skyAtmosphere: false, skyBox: false,
       baseLayerPicker: false, geocoder: false, timeline: false, animation: false, homeButton: false,
       sceneModePicker: false, navigationHelpButton: false, fullscreenButton: false, infoBox: false,
-      selectionIndicator: false, requestRenderMode: false,
+      // a frame only when something changes (the camera, tiles arriving, the boxes: requestRender),
+      // not 60 a second while nothing moves
+      selectionIndicator: false, requestRenderMode: true, maximumRenderTimeChange: Infinity,
     });
     this.viewer.scene.globe.baseColor = C.Color.BLACK;
     this.viewer.scene.globe.showGroundAtmosphere = false;
@@ -163,13 +166,14 @@ export class GlobeViewer {
 
   refreshHover() {
     if (!this.viewer) return;
-    if (this.hoverE) { this.viewer.entities.remove(this.hoverE); this.hoverE = null; }
+    if (this.hoverE) { this.viewer.entities.remove(this.hoverE); this.hoverE = null; this.viewer.scene.requestRender(); }
     const hb = this.lastMouse ? this.on.hover() : null;
     if (!hb) return;
     const ll = this.pick(this.lastMouse);
     if (!ll) return;
     const [fx, fy] = this.pixel(ll[0], ll[1]);
     this.hoverE = this.entity({ fx, fy, side: hb.side, label: hb.text }, "#5ab0ff", true);
+    this.viewer.scene.requestRender();
   }
 
   setBoxes(queries: GBox[], hits: GBox[]) {
@@ -177,7 +181,9 @@ export class GlobeViewer {
     for (const e of this.boxes) this.viewer.entities.remove(e);
     this.boxes = hits.map((b) => this.entity(b, "#ffd24a"));
     for (const q of queries) this.boxes.push(this.entity(q, "#5ab0ff"));
+    this.viewer.scene.requestRender();
   }
 
-  destroy() { this.viewer?.destroy(); this.div.innerHTML = ""; }
+  private gone = false;
+  destroy() { this.gone = true; this.viewer?.destroy(); this.viewer = null; this.div.innerHTML = ""; }
 }

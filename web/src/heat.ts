@@ -50,8 +50,10 @@ export function heatGrid(h: Heat, w: number, ht: number, a: number, b: number, o
     const s = h.s[i];
     if (!(s > -Infinity)) continue;
     const va = h.c[3 * i + a] - origin[a], vb = h.c[3 * i + b] - origin[b];
-    const x0 = Math.max(0, Math.floor((va - half) * scaleA)), x1 = Math.min(w, Math.max(x0 + 1, Math.ceil((va + half) * scaleA)));
-    const y0 = Math.max(0, Math.floor((vb - half) * scaleB)), y1 = Math.min(ht, Math.max(y0 + 1, Math.ceil((vb + half) * scaleB)));
+    // at least one cell, then clipped to the grid (a place off its left or top edge paints nothing)
+    const xa = Math.floor((va - half) * scaleA), ya = Math.floor((vb - half) * scaleB);
+    const x0 = Math.max(0, xa), x1 = Math.min(w, Math.max(xa + 1, Math.ceil((va + half) * scaleA)));
+    const y0 = Math.max(0, ya), y1 = Math.min(ht, Math.max(ya + 1, Math.ceil((vb + half) * scaleB)));
     for (let y = y0; y < y1; y++) for (let x = x0, o = y * w; x < x1; x++) if (s > g[o + x]) g[o + x] = s;
   }
   return g;

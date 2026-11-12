@@ -14,10 +14,14 @@ import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
-import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, type Folder } from "./local.ts";
+import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, unserve, type Folder } from "./local.ts";
 import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { TIFF_URL, tiffSource } from "./remotetiff.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
+import { isolate } from "./local.ts";
+
+// threads for the model on the CPU: may load the page again once, before anything else starts
+await isolate();
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
@@ -59,12 +63,15 @@ canvas.after(olDiv);
 olDiv.after(globeDiv);
 /** Full-resolution pixels per device pixel, whichever viewer is showing. */
 const zoomScale = () => (gv ? gv.scale() : olv ? olv.scale() : ngv ? ngv.scale() : view.scale);
-let hitEls: HTMLElement[] = [];
+let hitEls: HTMLElement[] = [];  // the hit tiles in the order shown
+/** Each hit's tile, by the hit's index: a tile is drawn once and moved when the ranks shift
+ * (drawn per slot, a shift redrew every tile below it, its why / match map too). */
+const hitTiles = new Map<number, HTMLElement>();
 
 // ---------------------------------------------------------------------------------------
-// model (warmed up on load, so the first click does not wait for 88 MB)
+// model (warmed up on load, so the first click does not wait for 44 MB)
 // ---------------------------------------------------------------------------------------
-/** A model file from Cache Storage when there, else downloaded once into it (88 MB each). */
+/** A model file from Cache Storage when there, else downloaded once into it (12-44 MB each). */
 /** What the model is doing while it is not ready yet (shown by the model chip and the panel). */
 let modelNote: string | null = null;
 function noteModel(text: string | null) {
@@ -76,7 +83,7 @@ function noteModel(text: string | null) {
 async function cachedBytes(url: string): Promise<ArrayBuffer> {
   let cache: Cache | null = null;
   try {
-    cache = await caches.open("coresample-models-v3");  // v3: the 224 model outputs its tokens
+    cache = await caches.open("coresample-models-v4");  // v4: weights stored as fp16
     const hit = await cache.match(url);
     if (hit) { noteModel("starting the model"); return hit.arrayBuffer(); }
   } catch { cache = null; /* no Cache Storage here */ }
@@ -99,7 +106,7 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
   try { await cache?.put(url, new Response(bytes, { headers: { "content-type": "application/octet-stream" } })); } catch { /* not cached: downloaded again next time */ }
   return bytes.buffer;
 }
-try { caches.delete("coresample-models-v2").catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
+try { for (const v of ["v2", "v3"]) caches.delete(`coresample-models-${v}`).catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
 const emb = new Embedder((file) => new URL(`models/${file}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 const modelEl = $("model");
@@ -408,8 +415,11 @@ function jumpTo(fx: number, fy: number, fz?: number) {
 /** The view in the address bar (?v=x,y,z,scale), so a link opens this place. */
 let viewTimer = 0;
 function saveView() {
-  clearTimeout(viewTimer);
+  // at most every 600 ms, the view as it is then (pushed back on each call instead, it never came
+  // while a search redrew the page every frame)
+  if (viewTimer) return;
   viewTimer = window.setTimeout(() => {
+    viewTimer = 0;
     const v = currentView();
     if (!v || !src) return;
     const u = new URL(location.href);
@@ -553,9 +563,21 @@ function sizeText(s: Source): string {
                       : `${f(x)} x ${f(y)} px (${si(n)}px), ${s.levels.length} levels`;
 }
 
-async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
+/** Opens under way: each takes a number, and only the latest shows its dataset, so an open that
+ * finishes after another was chosen (a slow server, a big TIFF's directory) changes nothing. */
+let opening = 0;
+function newOpen(): () => boolean { const my = ++opening; return () => my === opening; }
+/** A dataset closed or never shown: the folder or file it was served from (src/local.ts) is let go. */
+function release(s: Source) { const u = (s as { url?: unknown }).url; if (typeof u === "string") unserve(u); }
+
+/** Show `s` (unless `current()` says another open came after: then false, nothing changed). */
+async function setSource(s: Source, v: Preset["view"], p: Preset | null, current: () => boolean = () => true): Promise<boolean> {
+  const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
+  if (!current()) { release(s); return false; }
   clearSearch();
+  if (src && src !== s) release(src);
   src = s;
+  backdrop = null;  // the where-map's picture of the dataset before
   preset = p;
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
   gv?.destroy();
@@ -568,7 +590,6 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   ngv?.destroy();
   ngv = null;
   boxesKey = "";
-  const tiled = s instanceof TileSource, volume = (s instanceof OmeZarrSource || s instanceof PrecomputedSource) && (await hasNeuroglancer());
   olDiv.style.display = tiled ? "block" : "none";
   canvas.style.display = tiled || volume ? "none" : "block";
   hover.style.display = tiled ? "none" : "block";
@@ -610,6 +631,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null) {
   history.replaceState(null, "", u);
   resize();
   if (tiled && p?.globe && wantGlobe()) void toggleGlobe();
+  return true;
 }
 
 /** A view from the address bar (?v=x,y,z,scale), once, for the first dataset opened. */
@@ -622,9 +644,10 @@ function takeStartView() { const v = startView; startView = null; return v; }
 /** What the usage counts call the open dataset: a preset's id, or "custom/<format>". */
 let countAs = "";
 async function openPreset(p: Preset) {
+  const current = newOpen();
   $("phase").textContent = `Opening ${p.label}`;
-  try { await setSource(await p.open(), takeStartView() ?? p.view, p); idle(); countAs = p.id; countOpen(p.id, p.label); }
-  catch (e) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; }
+  try { if (await setSource(await p.open(), takeStartView() ?? p.view, p, current)) { idle(); countAs = p.id; countOpen(p.id, p.label); } }
+  catch (e) { if (current()) { $("phase").textContent = "Could not open the data"; $("status").textContent = (e as Error).message; } }
 }
 function idle() {
   $("phase").textContent = "Click on the image to search";
@@ -638,6 +661,7 @@ function idle() {
 async function openCustom(text: string) {
   text = text.trim();
   if (!text) return;
+  const current = newOpen();
   const openBtn = $<HTMLButtonElement>("open");
   $("phase").textContent = "Opening your data";
   $("status").textContent = text;
@@ -662,9 +686,10 @@ async function openCustom(text: string) {
       catch (ez) { try { s = await PrecomputedSource.open(text); } catch { throw ez; } }
     }
     const fmt = m ? "legacy" : tiff ? "tiff" : s instanceof PrecomputedSource ? "precomputed" : s instanceof OmeZarrSource ? "ome-zarr" : /\{z\}/.test(text) ? "tiles" : "zoomify";
-    await showOwn(s, text, fmt, tiff?.startScale);
+    if (!(await showOwn(s, text, fmt, tiff?.startScale, current))) return;
     if (tiff) $("status").prepend(tiff.note + "\n");
   } catch (e) {
+    if (!current()) return;
     const msg = (e as Error).message || String(e);
     $("phase").textContent = "Could not open the data";
     $("status").textContent = (/fetch/i.test(msg) ? "The host did not answer, or does not allow reads from web pages (CORS). " : "") + msg
@@ -676,27 +701,29 @@ async function openCustom(text: string) {
 
 /** Your own data, opened: shown at its middle (all of it, or at `scale`), the address bar a link
  * to it (`link`; none for a folder on this computer), counted as its format. */
-async function showOwn(s: Source, link: string | null, fmt: string, scale?: number) {
+async function showOwn(s: Source, link: string | null, fmt: string, scale?: number, current?: () => boolean): Promise<boolean> {
   const L0 = s.levels[0].shape;
-  await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: scale ?? Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null);
+  if (!(await setSource(s, takeStartView() ?? { cx: L0[2] / 2, cy: L0[1] / 2, z: Math.floor(L0[0] / 2), scale: scale ?? Math.max(1, Math.max(L0[2], L0[1]) / 1600) }, null, current))) return false;
   const u = new URL(location.href);
   u.searchParams.delete("d");
   if (link) u.searchParams.set("url", link); else u.searchParams.delete("url");
   history.replaceState(null, "", u);
   idle();
   countAs = `custom/${fmt}`; countOpen(countAs, `your own data (${fmt})`);
+  return true;
 }
 
 /** An image file on this computer (PNG, JPEG, TIFF...), read whole and searched as an OME-Zarr. */
 async function openImage(file: File) {
+  const current = newOpen();
   $("phase").textContent = `Opening ${file.name}`;
   $("status").textContent = "Reading the image into memory";
-  try { await openLocal(await imageFolder(file), "image"); }
-  catch (e) { $("phase").textContent = "Could not open the image"; $("status").textContent = (e as Error).message || String(e); }
+  try { const f = await imageFolder(file); if (current()) await openLocal(f, "image", current); }
+  catch (e) { if (current()) { $("phase").textContent = "Could not open the image"; $("status").textContent = (e as Error).message || String(e); } }
 }
 
 /** A folder on this computer: the image in it (the folder itself, or the first inside). */
-async function openLocal(f: Folder, fmt?: string) {
+async function openLocal(f: Folder, fmt?: string, current = newOpen()) {
   $("phase").textContent = `Opening ${f.name}`;
   $("status").textContent = "Looking for an image in the folder";
   try {
@@ -705,10 +732,13 @@ async function openLocal(f: Folder, fmt?: string) {
                                                  : `no OME-Zarr image or precomputed volume in ${f.name}.`);
     const { path, kind } = ok[0], base = await serveFolder(f), url = path ? `${base}/${path}` : base;
     const name = path ? `${f.name}/${path}` : f.name;
-    const s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false });
-    await showOwn(s, null, `local-${fmt ?? kind}`);
+    let s: Source;
+    try { s = kind === "precomputed" ? await PrecomputedSource.open(url, name) : await OmeZarrSource.open(url, name, { mirrors: false }); }
+    catch (e) { unserve(url); throw e; }
+    if (!(await showOwn(s, null, `local-${fmt ?? kind}`, undefined, current))) return;
     if (ok.length > 1) $("status").textContent = `Opened ${name}. Also in the folder: ${ok.slice(1).map((x) => x.path).join(", ")} (drop one of those to open it).`;
   } catch (e) {
+    if (!current()) return;
     $("phase").textContent = "Could not open the folder";
     $("status").textContent = (e as Error).message || String(e);
   }
@@ -757,10 +787,11 @@ function fillLayers(layers: Layer[]) {
 // search
 // ---------------------------------------------------------------------------------------
 function clearSearch() {
-  search?.stop();
+  search?.cancel();
   search = null;
   $("again").hidden = true;
   hitEls = [];
+  hitTiles.clear();
   $("marks").hidden = true;
   $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first. Hover one: ✓ more like this, ✗ fewer like this.</div>';
   $("hitcount").textContent = "";
@@ -846,7 +877,8 @@ function addExampleAt(fx: number, fy: number, fz?: number) {
   const c: Vec3 = [src!.dims === 3 ? Math.floor((fz ?? view.z) / f) : 0, Math.floor(fy / f), Math.floor(fx / f)];
   if (c[1] < P / 2 || c[2] < P / 2 || c[1] > L[1] - P / 2 || c[2] > L[2] - P / 2) { toast("too close to the edge"); return; }
   toast(`adding example ${s.state.examples + 1}\u2026`);
-  s.addExample(c).then((err) => toast(err ?? `${s.state.examples} examples: hits now match ${combineText()}`));
+  s.addExample(c).then((err) => { if (s === search) toast(err ?? `${s.state.examples} examples: hits now match ${combineText()}`); },
+                       (e) => { if (s === search) toast(`could not add it: ${(e as Error).message ?? e}`); });
 }
 
 function queryAt(fx: number, fy: number, fz?: number, add = false) {
@@ -1064,21 +1096,31 @@ function panel(st: State) {
   const sp = spread();
   $("hitcount").textContent = !st.hits.length ? "" : `${st.hits.length} best` + (sp.between > 1 ? `, ${sp.between} boxes apart` : ", no overlaps")
     + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "");
-  if (!st.hits.length) return;
+  if (!st.hits.length) {  // none yet, or none left (each marked fewer like this): no tiles from before
+    for (const el of hitEls) el.remove();
+    hitEls = [];
+    hitTiles.clear();
+    showMarks(s);
+    return;
+  }
   if (box.querySelector(".empty")) box.innerHTML = "";
   const shown = st.hits.map((h, rank) => {
     const near = s.nearestExample(h.center);
     return { h, rank, d: near ? distance(h.center, near, st.working) : { v: 0, text: "" } };
   });
   if (hitSort !== "best") shown.sort((a, b) => (hitSort === "near" ? a.d.v - b.d.v : b.d.v - a.d.v));
+  const want = new Set(shown.map(({ h }) => h.index));
+  for (const [i, el] of hitTiles) if (!want.has(i)) { el.remove(); hitTiles.delete(i); }
   shown.forEach(({ h, rank, d }, k) => {
-    let el = hitEls[k];
+    let el = hitTiles.get(h.index);
     if (!el) {
       el = document.createElement("div");
       el.className = "hit";
       el.innerHTML = `<canvas title="go there"></canvas><canvas class="map"></canvas><div class="fb"><button data-g="1" title="More like this: the query moves toward this hit, every hit is scored again, and the tiles still to read favour places like it (click again to undo)">&#10003;</button><button data-g="0" title="Fewer like this: hidden, and the query moves away from it (undo under Hits)">&#10005;</button></div><div class="cap"><b></b><span></span></div><div class="z"></div><div class="why"></div>`;
-      box.appendChild(el);
-      hitEls[k] = el;
+      hitTiles.set(h.index, el);
+      el.dataset.index = String(h.index);
+      drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
+      drawMap(el, h.index);
       el.querySelector("canvas")!.addEventListener("click", () => goTo(Number(el!.dataset.index)));
       el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
         const i = Number(el!.dataset.index), good = b.dataset.g === "1";
@@ -1090,23 +1132,22 @@ function panel(st: State) {
                    : "✗ Fewer like this: hidden, hits re-ranked away from it. Undo under Hits.");
       }));
     }
-    if (el.dataset.index !== String(h.index)) {
-      el.dataset.index = String(h.index);
-      drawPatch(el.querySelector("canvas")!, s.patchPixels(h.index), P, C);
-      drawMap(el, h.index);
-    }
+    if (box.children[k] !== el) box.insertBefore(el, box.children[k] ?? null);  // moved, not redrawn
     el.classList.toggle("good", s.markOf(h.index) === "good");
     el.querySelector(".cap b")!.textContent = `#${rank + 1}`;
     el.querySelector(".cap span")!.textContent = h.score.toFixed(3);
     el.querySelector(".z")!.textContent = [d.text, src?.dims === 3 ? `z ${num(h.center[0] * 2 ** st.working)}` : ""].filter(Boolean).join(", ");
     if (whyOn) el.querySelector(".why")!.textContent = whyText(s, h.index);
   });
-  for (let k = st.hits.length; k < hitEls.length; k++) hitEls[k].remove();
+  hitEls = shown.map(({ h }) => hitTiles.get(h.index)!);
+  showMarks(s);
+  if (whyOn || matchOn) fillMaps();
+}
+/** The marks made so far, under Hits (with their undo). */
+function showMarks(s: Search) {
   const mk = s.marks();
   $("marks").hidden = !(mk.good + mk.bad);
   $("markstext").textContent = [mk.good ? `${mk.good} ✓ more like this` : "", mk.bad ? `${mk.bad} ✗ fewer like this (hidden)` : ""].filter(Boolean).join(", ");
-  hitEls.length = st.hits.length;
-  if (whyOn || matchOn) fillMaps();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1160,7 +1201,7 @@ function showWhyHelp() {
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${specNow().grid} x ${specNow().grid} pieces`}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
-    + (specNow().input === 224 || specNow().ownTokens ? "" : "(The colours: the 224 px model, 88 MB the first time.)");
+    + (specNow().input === 224 || specNow().ownTokens ? "" : `(The colours: the 224 px model, ${MODELS.find((s) => s.id === "224")!.mb} MB the first time.)`);
 }
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
@@ -1367,6 +1408,9 @@ function drawQueryMap() {
 // (x-z), with the tiles read, the hits, the query and the view
 // ---------------------------------------------------------------------------------------
 const whereCv = $<HTMLCanvasElement>("where");
+/** The map's width in CSS pixels, kept by an observer: read in every redraw it forced a layout per frame. */
+let whereCss = 0;
+new ResizeObserver((es) => { whereCss = es[0].contentRect.width; scheduleWhere(); }).observe(whereCv);
 /** What the map spans: searching outward, the whole dataset (the area searched so far outlined);
  * else the search region. */
 function whereFrame(s: Search): [Vec3, Vec3] {
@@ -1411,18 +1455,20 @@ function drawWhere(st: State) {
   $("lsearched").hidden = !outlined;
   // side by side, sharing the vertical (y) axis: from above (x across) and from the side (z across);
   // one scale across, y stretched to a readable height if the volume is thin in y
-  const cw = Math.max(200, whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
+  const cw = Math.max(200, whereCss || whereCv.clientWidth) * dpr, maxH = 150 * dpr, minH = 56 * dpr, gap = 10 * dpr, top = 14 * dpr;
   const specs = d3 ? [{ a: 2, name: "from above (x, y)" }, { a: 0, name: "from the side (z, y)" }] : [{ a: 2, name: "" }];
   const across = specs.reduce((t, sp) => t + ext[sp.a], 0);
   const sa = Math.min((cw - 2 - gap * (specs.length - 1)) / across, maxH / Math.max(1, ext[1]));
   const sb = Math.max(sa, minH / Math.max(1, ext[1])), h = ext[1] * sb, y0 = d3 ? top : 0;
   let x = (cw - (across * sa + gap * (specs.length - 1))) / 2;
   wherePanels = specs.map((sp) => { const w = ext[sp.a] * sa, p = { a: sp.a, b: 1, x0: x, y0, sa, sb, w, h }; x += w + gap; return p; });
-  whereCv.width = cw; whereCv.height = y0 + h + 2;
-  whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
+  if (whereCv.width !== cw || whereCv.height !== y0 + h + 2) {
+    whereCv.width = cw; whereCv.height = y0 + h + 2;
+    whereCv.style.height = `${(y0 + h + 2) / dpr}px`;
+  }
   const g = whereCv.getContext("2d")!;
   g.clearRect(0, 0, whereCv.width, whereCv.height);
-  const tiles = search.readTiles(), view = currentView(), heat = heatImages(st);
+  const view = currentView(), heat = heatImages(st), layer = readLayer(rlo, ch);
   wherePanels.forEach((p, k) => {
     const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
     if (specs[k].name) {  // the long label if it fits over the panel, else the axes, else none
@@ -1440,9 +1486,7 @@ function drawWhere(st: State) {
       g.drawImage(bd.cv, X(0), Y(0), Lw[2] * p.sa, Lw[1] * p.sb);
       g.globalAlpha = 1;
     }
-    g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;  // read tiles: overlapping columns add up
-    for (const t of tiles) g.fillRect(X(t[p.a] * ch[p.a]), Y(t[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
-    g.globalAlpha = 1;
+    g.drawImage(layer, p.x0, p.y0, p.w, p.h, p.x0, p.y0, p.w, p.h);  // the read tiles
     if (heat?.[k]) { g.imageSmoothingEnabled = false; g.drawImage(heat[k], Math.round(p.x0), Math.round(p.y0)); }
     if (view) {  // what is on screen: a rectangle from above, the slice from the side
       g.strokeStyle = "#ffffffcc"; g.lineWidth = dpr;
@@ -1464,6 +1508,36 @@ function drawWhere(st: State) {
     }
     g.restore();
   });
+}
+
+/** The read tiles over the map's panels, faint blue (overlapping columns add up): drawn into a
+ * layer of their own as they are read, each once; drawn again only when the map's frame or size
+ * changes (each redraw drew every tile read so far, up to every frame). */
+let tilesDrawn: { s: Search; key: string; n: number; cv: HTMLCanvasElement } | null = null;
+function readLayer(rlo: Vec3, ch: Vec3): HTMLCanvasElement {
+  const s = search!, tiles = s.readTiles();
+  const key = `${whereCv.width}x${whereCv.height}|${rlo}|${wherePanels.map((p) => [p.x0, p.y0, p.sa, p.sb, p.w, p.h].join()).join("|")}`;
+  let t = tilesDrawn;
+  if (!t || t.s !== s || t.key !== key || t.n > tiles.length) {
+    const cv = t?.cv ?? document.createElement("canvas");
+    cv.width = whereCv.width; cv.height = whereCv.height;  // (cleared)
+    t = tilesDrawn = { s, key, n: 0, cv };
+  }
+  if (t.n < tiles.length) {
+    const g = t.cv.getContext("2d")!;
+    g.fillStyle = "#5ab0ff"; g.globalAlpha = 0.16;
+    for (const p of wherePanels) {
+      const X = (v: number) => p.x0 + (v - rlo[p.a]) * p.sa, Y = (v: number) => p.y0 + (v - rlo[p.b]) * p.sb;
+      g.save(); g.beginPath(); g.rect(p.x0, p.y0, p.w, p.h); g.clip();
+      for (let i = t.n; i < tiles.length; i++) {
+        const tl = tiles[i];
+        g.fillRect(X(tl[p.a] * ch[p.a]), Y(tl[p.b] * ch[p.b]), Math.max(1, ch[p.a] * p.sa), Math.max(1, ch[p.b] * p.sb));
+      }
+      g.restore();
+    }
+    t.n = tiles.length;
+  }
+  return t.cv;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1627,13 +1701,14 @@ async function toggleGlobe() {
     const at = olv ? { ...olv.center(), scale: olv.scale() } : { cx: view.cx, cy: view.cy, scale: view.scale };
     globeBtn.textContent = "map";
     olDiv.style.display = "none"; globeDiv.style.display = "block";
-    gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
+    const g = gv = new GlobeViewer(globeDiv, src, preset.globe, at, {
       click: (fx, fy, add) => queryAt(fx, fy, undefined, add),
       hover: () => (src ? { side: Number($<HTMLSelectElement>("patch").value) * 2 ** searchLevel(), text: patchSize() } : null),
       moved: () => { drawHover(); saveView(); },
       pointer: (fx, fy) => showCursor(fx, fy),
     });
-    try { await gv.ready; boxesKey = ""; overlays(); } catch (err) { $("status").textContent = String((err as Error).message ?? err); }
+    try { await g.ready; if (g === gv) { boxesKey = ""; overlays(); } }
+    catch (err) { if (g === gv) $("status").textContent = String((err as Error).message ?? err); }  // not if closed meanwhile
   }
 }
 
@@ -1718,7 +1793,9 @@ $("brushbtn").addEventListener("click", () => {
   if (!search || !src) return;
   const box = $("bpad");
   if (!box.hidden) { box.hidden = true; return; }
-  bpad.load(search.examplePixels()[0], search.state.patch, src.channels, brushW);
+  const pix = search.examplePixels()[0];
+  if (!pix) { toast("the query is still being read: try again in a moment"); return; }
+  bpad.load(pix, search.state.patch, src.channels, brushW);
   $<HTMLButtonElement>("bpadgo").disabled = !bpad.marked;
   $("pad").hidden = true;
   box.hidden = false;

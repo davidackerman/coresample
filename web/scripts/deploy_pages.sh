@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Build the page and publish it to the repository's gh-pages branch (GitHub Pages serves it at
-# https://<owner>.github.io/coresample/). The model file must exist first (npm run model).
+# https://<owner>.github.io/coresample/). The models and Neuroglancer must exist first (npm run
+# model; Neuroglancer as .github/workflows/pages.yml builds it into public/ng): the same files that
+# workflow checks before it publishes.
 # Pushes by URL with the gh credential helper, so no git remote is needed; never force-pushes:
 # each deploy is a new commit on top of the branch.
 set -euo pipefail
 REPO="${REPO:-davidackerman/coresample}"
 URL="https://github.com/${REPO}.git"
 cd "$(dirname "$0")/.."
-[ -f public/models/dinov2-small-112.onnx ] || { echo "model missing: run npm run model"; exit 1; }
+for f in models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx models/morphem-112-tokens.onnx \
+         models/pecore-t16-112-tokens.onnx models/NOTICE.txt models/LICENSE-Apache-2.0.txt models/LICENSE-MIT-MorphEm.txt ng/index.html; do
+  [ -f "public/$f" ] || { echo "public/$f is missing (models: npm run model; ng/: as pages.yml builds it)"; exit 1; }
+done
 npx vite build
 work="$(mktemp -d)"
 git_() { git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "$@"; }

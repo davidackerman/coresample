@@ -23,7 +23,11 @@ export interface Source {
   bytesRead: number;
   /** Chunks (tiles) the reads have taken so far, fetched, cached or missing: the progress of a long read. */
   chunksRead?: number;
-  read(level: number, lo: Vec3, hi: Vec3): Promise<Region>;
+  /** The box [lo, hi) of a level. With `zStep` > 1 only every zStep-th plane from lo[0] (shape[0]
+   * = ceil((hi[0] - lo[0]) / zStep)); a source may ignore it and return every plane (check shape[0]). */
+  read(level: number, lo: Vec3, hi: Vec3, zStep?: number): Promise<Region>;
+  /** How the reads look now, when that can change (a multi-channel image's mix): cache keys. */
+  look?(): string;
   /** A link that opens the original data at a place, when there is a viewer for it. */
   link?(level: number, center: Vec3): string | null;
 }
@@ -78,6 +82,17 @@ export class Lru<V> {
     if (old) { this.total -= old.size; this.map.delete(k); }
     this.map.set(k, { v, size });
     this.total += size;
+    this.evict();
+  }
+  /** The entry `k`'s real size, once known (if it still holds `v`). */
+  resize(k: string, v: V, size: number) {
+    const e = this.map.get(k);
+    if (!e || e.v !== v) return;
+    this.total += size - e.size;
+    e.size = size;
+    this.evict();
+  }
+  private evict() {
     for (const [key, e] of this.map) {
       if (this.total <= this.limit) break;
       this.map.delete(key);
@@ -183,6 +198,7 @@ export class OmeZarrSource implements Source {
     const n = this.axes.c >= 0 ? this.arrays[0].shape[this.axes.c] : 1;
     this.mix = m && m.map((c) => ({ ...c, index: Math.min(n - 1, Math.max(0, c.index)) }));
   }
+  look(): string { return this.chans.length ? JSON.stringify(this.mixed().map((c) => [c.index, c.color, c.range])) : ""; }
   levels: Level[] = [];
   unit = "";
   attribution?: string;
@@ -308,18 +324,20 @@ export class OmeZarrSource implements Source {
   }
 
   /** Raw values, channels `cs` interleaved (an image with no channel axis: its one). */
-  private async readRaw(level: number, lo: Vec3, hi: Vec3, cs: number[] = [0]): Promise<Region> {
+  private async readRaw(level: number, lo: Vec3, hi: Vec3, cs: number[] = [0], zStep = 1): Promise<Region> {
     const arr = this.arrays[level];
     const lv = this.levels[level];
     const ax = this.axes, chs = ax.c >= 0 ? cs : [0], C = chs.length;
-    const out = new Float32Array((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]) * C);
+    const st = this.dims === 3 ? Math.max(1, Math.floor(zStep)) : 1, nz = Math.ceil((hi[0] - lo[0]) / st);
+    const out = new Float32Array(nz * (hi[1] - lo[1]) * (hi[2] - lo[2]) * C);
     const a = lo.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
     const b = hi.map((v, i) => Math.max(0, Math.min(v, lv.shape[i]))) as Vec3;
-    const shape: Vec3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    a[0] = lo[0] + Math.max(0, Math.ceil((a[0] - lo[0]) / st)) * st;  // the first plane kept inside the level
+    const shape: Vec3 = [nz, hi[1] - lo[1], hi[2] - lo[2]];
     if (a.some((v, i) => b[i] <= v)) return { data: out, shape, channels: C };
     await Promise.all(chs.map(async (ch, k) => {
       const sel: (number | zarr.Slice | null)[] = new Array(ax.n).fill(0);
-      if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0]) : 0;
+      if (ax.z >= 0) sel[ax.z] = this.dims === 3 ? zarr.slice(a[0], b[0], st) : 0;
       sel[ax.y] = zarr.slice(a[1], b[1]);
       sel[ax.x] = zarr.slice(a[2], b[2]);
       if (ax.c >= 0) sel[ax.c] = ch;
@@ -329,27 +347,27 @@ export class OmeZarrSource implements Source {
       const kept = sel.map((s, i) => (typeof s === "number" ? -1 : i)).filter((i) => i >= 0);
       const strideOf = (axis: number) => (axis < 0 || !kept.includes(axis) ? 0 : res.stride[kept.indexOf(axis)]);
       const sz = strideOf(ax.z), sy = strideOf(ax.y), sx = strideOf(ax.x);
-      for (let z = a[0]; z < b[0]; z++)
+      for (let z = a[0]; z < b[0]; z += st)
         for (let y = a[1]; y < b[1]; y++)
           for (let x = a[2]; x < b[2]; x++) {
-            const src = (z - a[0]) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
-            out[((((z - lo[0]) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C) + k] = Number(data[src]);
+            const src = ((z - a[0]) / st) * sz + (y - a[1]) * sy + (x - a[2]) * sx;
+            out[(((((z - lo[0]) / st) * shape[1] + (y - lo[1])) * shape[2] + (x - lo[2])) * C) + k] = Number(data[src]);
           }
     }));
     return { data: out, shape, channels: C };
   }
 
   /** 0-255: one channel in grey, or the channels on, each in its colour over its range, added. */
-  async read(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
+  async read(level: number, lo: Vec3, hi: Vec3, zStep = 1): Promise<Region> {
     if (!this.chans.length) {
-      const r = await this.readRaw(level, lo, hi);
+      const r = await this.readRaw(level, lo, hi, [0], zStep);
       if (this.window) {
         const [w0, w1] = this.window, k = 255 / Math.max(w1 - w0, 1e-9);
         for (let i = 0; i < r.data.length; i++) r.data[i] = Math.min(255, Math.max(0, (r.data[i] - w0) * k));
       }
       return r;
     }
-    const mix = this.mixed(), M = mix.length, r = await this.readRaw(level, lo, hi, mix.map((c) => c.index));
+    const mix = this.mixed(), M = mix.length, r = await this.readRaw(level, lo, hi, mix.map((c) => c.index), zStep);
     const n = r.data.length / M, C = M > 1 ? 3 : 1, out = new Float32Array(n * C);
     // a range set high to low (the viewer's inverted stretch) reads inverted too
     const lo0 = mix.map((c) => c.range[0]), k = mix.map((c) => { const d = c.range[1] - c.range[0]; return 255 / (Math.abs(d) < 1e-9 ? 1e-9 : d); });
@@ -412,17 +430,23 @@ export interface TileSpec {
   skipZooms?: number[];
 }
 
-/** Decodes an image to RGBA pixels; the browser's decoder by default (tests swap it). */
-export let decodeImage = async (blob: Blob): Promise<{ data: Uint8ClampedArray; width: number; height: number }> => {
-  const off = decodeOff(blob, blob.type);  // in a worker
-  if (off) return off as Promise<{ data: Uint8ClampedArray; width: number; height: number }>;
+/** A decoded tile: RGBA, or (planes 1) one plane of luminance. */
+export interface Pixels { data: Uint8ClampedArray | Uint8Array; width: number; height: number; planes?: 1 | 4 }
+/** Decodes an image to RGBA pixels, or with `grey` to its luminance alone (a quarter of the
+ * memory); the browser's decoder by default (tests swap it, and may return RGBA either way). */
+export let decodeImage = async (blob: Blob, grey = false): Promise<Pixels> => {
+  const off = decodeOff(blob, blob.type, { grey });  // in a worker
+  if (off) return off.then((d) => ({ ...d, planes: grey ? 1 : 4 }));
   const bmp = await createImageBitmap(blob);
   const cv = new OffscreenCanvas(bmp.width, bmp.height);
   const ctx = cv.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(bmp, 0, 0);
   const img = ctx.getImageData(0, 0, bmp.width, bmp.height);
   bmp.close();
-  return { data: img.data, width: img.width, height: img.height };
+  if (!grey) return { data: img.data, width: img.width, height: img.height, planes: 4 };
+  const n = img.width * img.height, d = img.data, out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.round(0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2]);
+  return { data: out, width: img.width, height: img.height, planes: 1 };
 };
 export function setDecoder(f: typeof decodeImage) { decodeImage = f; }
 
@@ -447,7 +471,8 @@ export class TileSource implements Source {
   attribution?: string;
   bytesRead = 0;
   chunksRead = 0;
-  private cache = new Lru<Promise<{ data: Uint8ClampedArray; width: number; height: number } | null>>(4000);
+  // decoded tiles and tile files, bounded by bytes (a count let 4,000 Mars tiles of 1 MiB pile up)
+  private cache = new Lru<Promise<Pixels | null>>(768 << 20);
   private nLevels: number;
 
   spec: TileSpec;
@@ -481,7 +506,7 @@ export class TileSource implements Source {
     } finally { this.active--; this.queue.shift()?.(); }
   }
 
-  private blobs = new Lru<Promise<Blob | null>>(4000);
+  private blobs = new Lru<Promise<Blob | null>>(256 << 20);
 
   /** The tile's image file (cached), as the viewer draws it and the search decodes it. Some
    * caches serve cut-off images (Esri's Mars CTX, at every zoom here and there; drawn, the
@@ -492,12 +517,13 @@ export class TileSource implements Source {
     const key = `${zoom}/${x}/${y}`;
     let b = this.blobs.get(key);
     if (!b) {
-      b = (async () => {
+      const p: Promise<Blob | null> = b = (async () => {
         const raw = await this.fetchTile(zoom, x, y);
         if (!raw || (await complete(raw))) return raw;
         return (await this.fromChildren(zoom, x, y)) ?? (await this.fromParent(zoom, x, y)) ?? raw;
       })();
-      this.blobs.set(key, b, 1);
+      this.blobs.set(key, p, 64 << 10);  // a guess until it arrives
+      p.then((v) => this.blobs.resize(key, p, (v?.size ?? 0) + 256), () => this.blobs.resize(key, p, 256));
     }
     return b;
   }
@@ -569,8 +595,10 @@ export class TileSource implements Source {
     const key = `${zoom}/${x}/${y}`;
     let t = this.cache.get(key);
     if (!t) {
-      t = this.blob(zoom, x, y).then((b) => (b ? decodeImage(b).catch(() => null) : null));
-      this.cache.set(key, t, 1);
+      const grey = this.channels === 1, ts = this.spec.tileSize;
+      const p: Promise<Pixels | null> = t = this.blob(zoom, x, y).then((b) => (b ? decodeImage(b, grey).catch(() => null) : null));
+      this.cache.set(key, p, ts * ts * (grey ? 1 : 4));
+      p.then((v) => this.cache.resize(key, p, (v?.data.byteLength ?? 0) + 256), () => this.cache.resize(key, p, 256));
     }
     return t;
   }
@@ -598,6 +626,11 @@ export class TileSource implements Source {
           for (let y = ya; y < yb; y++) {
             const sy = y - ty * ts + oy;
             if (sy >= img.height) break;
+            if (img.planes === 1) {  // luminance already (a grey source)
+              const row = sy * img.width - tx * ts + ox, d = (y - lo[1]) * shape[2] - lo[2], xe = Math.min(xb, img.width + tx * ts - ox);
+              for (let x = xa; x < xe; x++) out[d + x] = img.data[row + x];
+              continue;
+            }
             for (let x = xa; x < xb; x++) {
               const sx = x - tx * ts + ox;
               if (sx >= img.width) break;

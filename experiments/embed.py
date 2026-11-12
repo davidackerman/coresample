@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from common import CACHE
+from common import CACHE, cores
 
 MODEL = "facebook/dinov2-small"
 ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
@@ -31,7 +31,7 @@ class Embedder:
         from transformers import AutoModel
 
         self.torch = torch
-        torch.set_num_threads(threads or os.cpu_count())
+        torch.set_num_threads(threads or cores())
         self.model = AutoModel.from_pretrained(MODEL).eval()
         self.input_size = input_size
         self.batch = batch

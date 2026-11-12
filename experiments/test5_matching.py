@@ -29,7 +29,7 @@ import numpy as np
 import torch
 
 import test2_coarse2fine as t2
-from common import CACHE, RESULTS, Mirror
+from common import CACHE, RESULTS, Mirror, cores
 
 os.environ.setdefault("HF_HOME", str(t2.RESULTS.parent / ".hf"))
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)[:, None, None]
@@ -43,7 +43,7 @@ class Model:
     def __init__(self, size=112, keep_tokens=False):
         from transformers import AutoModel
 
-        torch.set_num_threads(os.cpu_count())
+        torch.set_num_threads(cores())
         self.m = AutoModel.from_pretrained("facebook/dinov2-small").eval()
         self.size = size
         self.keep_tokens = keep_tokens

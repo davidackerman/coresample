@@ -20,7 +20,11 @@ type Ctor = { new (n: number): Arr; new (b: ArrayBufferLike, o: number, n: numbe
 interface Ifd {
   index: number; im: any; w: number; h: number; tiled: boolean; tw: number; th: number;
   comp: number; spp: number; planar: 1 | 2; b: number; fmt: number; le: boolean; across: number; down: number;
-  ctor: Ctor; table?: Promise<{ off: Float64Array; cnt: Float64Array }>; decoder?: Promise<any>;
+  ctor: Ctor; photo: number; table?: Promise<{ off: Float64Array; cnt: Float64Array }>; decoder?: Promise<any>;
+  /** Set by decoder(): the decoded block's byte order is little-endian whatever the file's (geotiff's
+   * floating-point predictor writes it so), and the horizontal predictor is undone here, after
+   * the bytes are swapped to this machine's order (geotiff's would add them in the wrong order). */
+  decodedLE?: boolean; ownPredictor?: boolean;
 }
 /** A level served: rows and columns of `ifd`, every `s`-th row read, `s` columns averaged. */
 interface Lv { ifd: Ifd; s: number; y: number; x: number; chunk: [number, number]; scale: [number, number] }
@@ -81,10 +85,11 @@ class Ranges {
   }
 }
 
-/** Values of `u8` (bytes as stored) as numbers of the file's type, in this machine's order. */
-function typed(u8: Uint8Array, I: Ifd): Arr {
+/** Values of `u8` (bytes in the file's order, or little-endian: `le`) as numbers of the file's
+ * type, in this machine's order. */
+function typed(u8: Uint8Array, I: Ifd, le = I.le): Arr {
   let u = u8.byteOffset % I.b ? u8.slice() : u8;
-  if (!I.le && I.b > 1) {
+  if (!le && I.b > 1) {
     if (u === u8) u = u8.slice();
     for (let i = 0; i < u.length; i += I.b) u.subarray(i, i + I.b).reverse();
   }
@@ -97,27 +102,66 @@ async function describe(im: any, index: number): Promise<Ifd> {
   const ctor = bits % 8 ? null : CTORS[`${fmt}:${bits / 8}`] ?? null;
   if (!ctor) throw new Error(`${bits}-bit ${fmt === 3 ? "float" : fmt === 2 ? "signed" : "unsigned"} samples are not read here`);
   const w = im.getWidth(), h = im.getHeight(), tw = im.getTileWidth(), th = im.isTiled ? im.getTileHeight() : Math.min(h, im.getTileHeight());  // tiles are padded, strips not
-  return { index, im, w, h, tiled: im.isTiled, tw, th, comp: Number(fd.getValue("Compression") ?? 1) || 1, spp, planar: im.planarConfiguration === 2 ? 2 : 1,
-           b: bits / 8, fmt, le: !!im.littleEndian, across: Math.ceil(w / tw), down: Math.ceil(h / th), ctor };
+  const comp = Number(fd.getValue("Compression") ?? 1) || 1, photo = Number(fd.getValue("PhotometricInterpretation") ?? 1);
+  // YCbCr outside JPEG stores its colour subsampled (a layout of its own); JPEG's decoder undoes
+  // the subsampling, and block() turns its Y, Cb, Cr into red, green, blue
+  if (photo === 6 && comp !== 7) throw new Error("YCbCr colour is read here only in JPEG-compressed TIFFs");
+  return { index, im, w, h, tiled: im.isTiled, tw, th, comp, spp, planar: im.planarConfiguration === 2 ? 2 : 1,
+           b: bits / 8, fmt, le: !!im.littleEndian, across: Math.ceil(w / tw), down: Math.ceil(h / th), ctor, photo };
+}
+
+/** A promise kept for next time, forgotten if it fails (so a later read tries again). */
+function once<T>(I: Ifd, key: "table" | "decoder", make: () => Promise<T>): Promise<T> {
+  if (!I[key]) {
+    const p = make();
+    (I as any)[key] = p;
+    p.catch(() => { if (I[key] === (p as any)) I[key] = undefined; });
+  }
+  return I[key] as Promise<T>;
+}
+
+/** JPEG's Y, Cb, Cr (8 bits, interleaved) to red, green, blue in place (JFIF, as geotiff's readRGB). */
+function fromYCbCr(u: Uint8Array, spp: number) {
+  const v = new Uint8ClampedArray(u.buffer, u.byteOffset, u.length);  // rounds and clamps to 0-255
+  for (let i = 0; i + 2 < v.length; i += spp) {
+    const y = v[i], cb = v[i + 1] - 128, cr = v[i + 2] - 128;
+    v[i] = y + 1.402 * cr;
+    v[i + 1] = y - 0.344136 * cb - 0.714136 * cr;
+    v[i + 2] = y + 1.772 * cb;
+  }
 }
 
 /** The tile or strip offsets and byte counts of an image, read once. */
 function table(I: Ifd) {
-  return (I.table ??= (async () => {
+  return once(I, "table", async () => {
     const fd = I.im.getFileDirectory(), [o, c] = I.tiled ? ["TileOffsets", "TileByteCounts"] : ["StripOffsets", "StripByteCounts"];
-    const [off, cnt] = await Promise.all([fd.loadValue(o), fd.loadValue(c)]);
+    let off: unknown, cnt: unknown;
+    try { [off, cnt] = await Promise.all([fd.loadValue(o), fd.loadValue(c)]); }
+    catch (e) {  // geotiff (3.0.5) keeps a failed load of a long tag for good: forgotten, so the next read fetches it again
+      for (const code of I.tiled ? [324, 325] : [273, 279]) { const a = fd.deferredArrays?.get(code); if (a) a.fullFetchPromise = null; }
+      throw e;
+    }
     return { off: Float64Array.from(off as ArrayLike<number | bigint>, Number), cnt: Float64Array.from(cnt as ArrayLike<number | bigint>, Number) };
-  })());
+  });
 }
 function decoder(I: Ifd) {
-  return (I.decoder ??= (async () => {
+  return once(I, "decoder", async () => {
     const fd = I.im.getFileDirectory(), get = async (t: string) => { try { return await fd.loadValue(t); } catch { return undefined; } };
+    const predictor = Number(await get("Predictor")) || 1, swapped = !I.le && I.b > 1;
+    I.decodedLE = swapped && predictor === 3;
+    I.ownPredictor = swapped && predictor === 2;
     const p: Record<string, unknown> = { tileWidth: I.tw, tileHeight: I.th, planarConfiguration: I.planar, bitsPerSample: await get("BitsPerSample"),
-                                         predictor: (await get("Predictor")) || 1, samplesPerPixel: I.spp };
+                                         predictor: I.ownPredictor ? 1 : predictor, samplesPerPixel: I.spp };
     if (I.comp === 7) p.JPEGTables = await get("JPEGTables");
     if (I.comp === 34887) p.LercParameters = await get("LercParameters");
     return (await import("geotiff")).getDecoder(I.comp, p as any);
-  })());
+  });
+}
+/** The horizontal predictor undone: each sample plus the one before it in its row, wrapping as
+ * the type does (`v` in this machine's order, rows of `w` pixels of `n` samples). */
+function accumulate(v: Arr, w: number, n: number) {
+  const row = w * n;
+  for (let r = 0; r + row <= v.length; r += row) for (let i = r + n; i < r + row; i++) v[i] += v[i - n];
 }
 
 export interface RemoteTiff { folder: Folder; name: string; bytes: () => number; startScale: number; note: string }
@@ -140,9 +184,19 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
     ifds.push(I);
   }
   const I0 = ifds[0], net = new Ranges(url);
-  const size = await (async () => { const r = await fetch(url, { headers: { Range: "bytes=0-15" } }); const head = new Uint8Array(await r.arrayBuffer());
-    const n = Number(r.headers.get("content-range")?.split("/")[1]); await net.addMirrors(n, head); return n; })();
   const pxb = (I: Ifd) => I.b * (I.planar === 1 ? I.spp : 1);
+  // the file's size: from the range answer, else (a host that does not let pages see
+  // Content-Range) a HEAD's length, else what the full resolution would take uncompressed (more
+  // than a compressed file is: the cost guard below stays on, erring on the safe side)
+  const size = await (async () => {
+    const r = await fetch(url, { headers: { Range: "bytes=0-15" } });
+    if (r.status !== 206) { void r.body?.cancel(); throw new Error(`${name}: the host does not read parts of files (byte ranges)`); }
+    const head = new Uint8Array(await r.arrayBuffer());
+    let n = Number(r.headers.get("content-range")?.split("/")[1]);
+    if (n > 0) { await net.addMirrors(n, head); return n; }
+    try { n = Number((await fetch(url, { method: "HEAD" })).headers.get("content-length")); } catch { n = NaN; }
+    return n > 0 ? n : ifds.reduce((t, I) => t + I.w * I.h * pxb(I), 0);
+  })();
   // a projected GeoTIFF's pixel size, in metres (else pixels, unitless)
   let unit: string | undefined, px: [number, number] = [1, 1];
   try {
@@ -195,8 +249,11 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
       const { off, cnt } = await table(I);
       if (!cnt[idx]) return new I.ctor(vals);
       const raw = await net.get(off[idx], cnt[idx]);
-      const out = await (await decoder(I)).decode(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
-      return typed(new Uint8Array(out), I);
+      const out = new Uint8Array(await (await decoder(I)).decode(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)));
+      if (I.photo === 6 && I.spp >= 3 && I.planar === 1) fromYCbCr(out, I.spp);
+      const v = typed(out, I, I.decodedLE || I.le);
+      if (I.ownPredictor) accumulate(v, I.tw, I.planar === 1 ? I.spp : 1);
+      return v;
     })();
     const e = { p, n };
     kept.set(key, e);
@@ -232,10 +289,16 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
     timer = null;
     const todo = batch;
     batch = [];
-    const segs = await Promise.all(todo.map(async (t) => {
-      const { off } = await table(t.I), by = Math.floor(t.Y / t.I.th), blk = t.plane + by * t.I.across + (t.I.tiled ? t.j : 0);
-      return { o: off[blk] + ((t.Y - by * t.I.th) * t.I.tw + (t.I.tiled ? 0 : t.j * bw(t.I))) * pxb(t.I), t };
-    }));
+    let segs: { o: number; t: (typeof todo)[number] }[];
+    try {
+      segs = await Promise.all(todo.map(async (t) => {
+        const { off } = await table(t.I), by = Math.floor(t.Y / t.I.th), blk = t.plane + by * t.I.across + (t.I.tiled ? t.j : 0);
+        return { o: off[blk] + ((t.Y - by * t.I.th) * t.I.tw + (t.I.tiled ? 0 : t.j * bw(t.I))) * pxb(t.I), t };
+      }));
+    } catch (err) {  // the offsets did not load: these reads fail (and are tried again when next asked for)
+      for (const t of todo) t.no(err);
+      return;
+    }
     segs.sort((p, q) => p.o - q.o);
     const groups: (typeof segs)[] = [];
     for (const g of segs) {
@@ -250,10 +313,10 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
     }
   }
   /** Rows `Ys` of image I, columns [X0, X1), channel c, as stored (uncompressed images). */
-  async function rawRows(I: Ifd, c: number, Ys: number[], X0: number, X1: number): Promise<Float32Array[]> {
+  async function rawRows(I: Ifd, c: number, Ys: number[], X0: number, X1: number): Promise<Float64Array[]> {
     const cs = I.planar === 1 ? I.spp : 1, plane = I.planar === 2 ? c * I.across * I.down : 0, B = bw(I);
     return Promise.all(Ys.map(async (Y) => {
-      const dst = new Float32Array(X1 - X0), j0 = Math.floor(X0 / B);
+      const dst = new Float64Array(X1 - X0), j0 = Math.floor(X0 / B);  // 64-bit: 32-bit integers stay exact
       await Promise.all(Array.from({ length: Math.floor((X1 - 1) / B) - j0 + 1 }, async (_, k) => {
         const j = j0 + k, v = typed(await rowBlock(I, plane, Y, j), I), a = Math.max(X0, j * B), e = Math.min(X1, (j + 1) * B, I.w);
         for (let X = a; X < e; X++) dst[X - X0] = v[(X - j * B) * cs + (c % cs)];
@@ -263,10 +326,10 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
   }
   /** Rows [Ya, Yb) of image I, columns [X0, X1), channel c, averaged: only those in the tile or
    * strip row that holds row Yc, which is read whole (compressed images). */
-  async function codedRows(I: Ifd, c: number, spans: [number, number, number][], X0: number, X1: number): Promise<Float32Array[]> {
+  async function codedRows(I: Ifd, c: number, spans: [number, number, number][], X0: number, X1: number): Promise<Float64Array[]> {
     const cs = I.planar === 1 ? I.spp : 1, plane = I.planar === 2 ? c * I.across * I.down : 0;
     return Promise.all(spans.map(async ([Ya, Yb, Yc]) => {
-      const by = Math.floor(Yc / I.th), r0 = Math.max(Ya, by * I.th), r1 = Math.min(Yb, (by + 1) * I.th, I.h), dst = new Float32Array(X1 - X0);
+      const by = Math.floor(Yc / I.th), r0 = Math.max(Ya, by * I.th), r1 = Math.min(Yb, (by + 1) * I.th, I.h), dst = new Float64Array(X1 - X0);
       await Promise.all(Array.from({ length: Math.floor((X1 - 1) / I.tw) - Math.floor(X0 / I.tw) + 1 }, async (_, k) => {
         const bx = Math.floor(X0 / I.tw) + k, v = await block(I, plane + by * I.across + bx);
         const a = Math.max(X0, bx * I.tw), e = Math.min(X1, (bx + 1) * I.tw, I.w);
@@ -302,7 +365,7 @@ export async function openTiff(url: string): Promise<RemoteTiff> {
   }
 
   // the OME-Zarr (v2, uncompressed): channels for a colour or multi-sample image
-  const C = I0.spp, multi = C > 1, rgb = C >= 3 && Number(I0.im.getFileDirectory().getValue("PhotometricInterpretation")) === 2;
+  const C = I0.spp, multi = C > 1, rgb = C >= 3 && (I0.photo === 2 || I0.photo === 6);  // YCbCr is read as RGB (block)
   const space = (n: string) => ({ name: n, type: "space", ...(unit ? { unit } : {}) });
   const attrs = {
     multiscales: [{ version: "0.4", name, axes: [...(multi ? [{ name: "c", type: "channel" }] : []), space("y"), space("x")],

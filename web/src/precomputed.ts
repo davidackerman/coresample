@@ -81,7 +81,7 @@ export class PrecomputedSource implements Source {
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
         const r = await fetch(url, range ? { headers: { range: `bytes=${range[0]}-${range[1] - 1}` } } : {});
-        if (r.status === 404 || r.status === 403 && !range) return null;
+        if (r.status === 404 || r.status === 403) return null;  // a bucket without listing answers 403 for a missing file, ranges too
         if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
         const buf = await r.arrayBuffer();
         this.bytesRead += buf.byteLength;
@@ -123,39 +123,43 @@ export class PrecomputedSource implements Source {
   }
 
   /** Voxels [lo, hi) (z, y, x) of level `li`, channel-interleaved numbers; outside the volume NaN. */
-  private async readRaw(li: number, lo: Vec3, hi: Vec3): Promise<Float32Array> {
+  /** With `st` > 1, planes lo[0], lo[0] + st...: chunks holding none of them are not read. */
+  private async readRaw(li: number, lo: Vec3, hi: Vec3, st = 1): Promise<Float32Array> {
     const { s, chunk } = this.scales[li], C = this.channels, Cin = this.info.num_channels ?? 1;
-    const shape = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    const shape = [Math.ceil((hi[0] - lo[0]) / st), hi[1] - lo[1], hi[2] - lo[2]];
+    const kept = (z: number) => lo[0] + Math.ceil((z - lo[0]) / st) * st;  // the first plane kept at or after z
     const out = new Float32Array(shape[0] * shape[1] * shape[2] * C).fill(NaN);
     const size = [s.size[2], s.size[1], s.size[0]], ch = [chunk[2], chunk[1], chunk[0]];  // z, y, x
     const a = lo.map((v, i) => Math.max(0, v)), b = hi.map((v, i) => Math.min(size[i], v));
     if (a.some((v, i) => b[i] <= v)) return out;
     const jobs: Promise<void>[] = [];
-    for (let cz = Math.floor(a[0] / ch[0]); cz * ch[0] < b[0]; cz++)
+    for (let cz = Math.floor(a[0] / ch[0]); cz * ch[0] < b[0]; cz++) {
+      if (kept(Math.max(a[0], cz * ch[0])) >= Math.min(b[0], (cz + 1) * ch[0])) continue;  // no plane kept in this chunk row
       for (let cy = Math.floor(a[1] / ch[1]); cy * ch[1] < b[1]; cy++)
         for (let cx = Math.floor(a[2] / ch[2]); cx * ch[2] < b[2]; cx++) {
           jobs.push(this.chunkAt(li, [cx, cy, cz]).then(({ data, size: cs }) => {
             const [sx, sy, sz] = cs, n = sx * sy * sz, z0 = cz * ch[0], y0 = cy * ch[1], x0 = cx * ch[2];
             const zlo = Math.max(a[0], z0), zhi = Math.min(b[0], z0 + sz), ylo = Math.max(a[1], y0), yhi = Math.min(b[1], y0 + sy);
             const xlo = Math.max(a[2], x0), xhi = Math.min(b[2], x0 + sx);
-            for (let z = zlo; z < zhi; z++) for (let y = ylo; y < yhi; y++) {
-              const src = ((z - z0) * sy + (y - y0)) * sx, dst = ((z - lo[0]) * shape[1] + (y - lo[1])) * shape[2];
+            for (let z = kept(zlo); z < zhi; z += st) for (let y = ylo; y < yhi; y++) {
+              const src = ((z - z0) * sy + (y - y0)) * sx, dst = (((z - lo[0]) / st) * shape[1] + (y - lo[1])) * shape[2];
               for (let x = xlo; x < xhi; x++)
                 for (let c = 0; c < C; c++) out[(dst + x - lo[2]) * C + c] = Number(data[Math.min(c, Cin - 1) * n + src + x - x0]);
             }
           }));
         }
+    }
     await Promise.all(jobs);
     return out;
   }
 
-  async read(level: number, lo: Vec3, hi: Vec3): Promise<Region> {
-    const data = await this.readRaw(level, lo, hi);
+  async read(level: number, lo: Vec3, hi: Vec3, zStep = 1): Promise<Region> {
+    const st = Math.max(1, Math.floor(zStep)), data = await this.readRaw(level, lo, hi, st);
     if (this.window) {
       const [w0, w1] = this.window, k = 255 / Math.max(1e-12, w1 - w0);
       for (let i = 0; i < data.length; i++) { const v = data[i]; if (v === v) data[i] = Math.max(0, Math.min(255, (v - w0) * k)); }
     }
-    return { data, shape: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], channels: this.channels };
+    return { data, shape: [Math.ceil((hi[0] - lo[0]) / st), hi[1] - lo[1], hi[2] - lo[2]], channels: this.channels };
   }
 
   /** Neuroglancer's global dimensions for the finest scale (x, y, z in metres). */

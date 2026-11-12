@@ -127,7 +127,7 @@ Take a patch, make an altered copy, hide the copy among the data, click the orig
 
 ### Open risks
 - WebGPU throughput and memory are unmeasured on real hardware. The WASM path is about 10x slower and has no rough pass.
-- Smaller or quantised models need new ONNX exports (88 MB files, gitignored), so the build and cache key change.
+- Smaller or quantised models need new ONNX exports (44 MB files, gitignored), so the build and cache key change.
 - Higher coverage may push past `KEEP=3000`, `HEAT_MAX=6M` and `POOL_EMBS=20000`. Check at 10x coverage.
 - The augmentation test may be too easy for DINOv2 and needs harder alterations (strong crops, partial occlusion) to separate variants.
 - The "0.15%" figure is not in RESULTS (the nearest is Mars at 0.11% in 122 s), so confirm it is the same measurement before using it as a baseline.

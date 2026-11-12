@@ -26,7 +26,8 @@ export async function imageFolder(file: File): Promise<Folder> {
 
 async function readPicture(file: File): Promise<Img> {
   let bmp: ImageBitmap;
-  try { bmp = await createImageBitmap(file); } catch { throw new Error(`${file.name}: this browser cannot decode it`); }
+  // the file's own values: no colour management (a PNG's gamma or a JPEG's profile would change them)
+  try { bmp = await createImageBitmap(file, { colorSpaceConversion: "none", premultiplyAlpha: "none" }); } catch { throw new Error(`${file.name}: this browser cannot decode it`); }
   const { width: x, height: y } = bmp, n = x * y;
   const cv = new OffscreenCanvas(x, y), g = cv.getContext("2d", { willReadFrequently: true })!;
   g.drawImage(bmp, 0, 0);
@@ -48,7 +49,12 @@ async function readTiff(file: File): Promise<Img> {
   const tif = await fromBlob(file);
   const first = await tif.getImage(0), x = first.getWidth(), y = first.getHeight(), spp = first.getSamplesPerPixel();
   const n = await tif.getImageCount(), pages: number[] = [];
-  for (let i = 0; i < n; i++) { const im = i ? await tif.getImage(i) : first; if (im.getWidth() === x && im.getHeight() === y) pages.push(i); }  // not a pyramid's smaller levels
+  for (let i = 0; i < n; i++) {  // full-size pages: not a pyramid's smaller levels, nor masks (NewSubfileType bit 4)
+    const im = i ? await tif.getImage(i) : first;
+    let sub = 0;
+    try { sub = Number(im.getFileDirectory().getValue("NewSubfileType") ?? 0); } catch { /* deferred: not a mask */ }
+    if (im.getWidth() === x && im.getHeight() === y && !(i && sub & 4)) pages.push(i);
+  }
   const fd = first.getFileDirectory(), tag = async (t: string) => { try { return await fd.loadValue(t as any); } catch { return undefined; } };
   const desc = String((await tag("ImageDescription")) ?? "");
   // how the pages are laid out: OME-XML (DimensionOrder), ImageJ (channels, then slices), else z planes
