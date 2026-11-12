@@ -6,7 +6,8 @@ embedding pass, no index. The data's own multiscale pyramid is the index: a quic
 coarse level decides what to read first, and DINOv2-small scores everything read.
 
 **Try it: https://davidackerman.github.io/coresample/** (Chrome recommended: the model runs on
-your GPU through WebGPU; without it, on the CPU, about 10x slower).
+your GPU through WebGPU; without it, on the CPU, about 10x slower. On the CPU the page loads
+twice the first time, to run the model in several threads: about 4x one thread; `?coi=0` keeps one).
 
 ## Using it
 

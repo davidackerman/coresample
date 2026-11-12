@@ -78,6 +78,10 @@ export async function pickFolder(): Promise<Folder | null> {
 // ---------------------------------------------------------------------------------------
 const folders = new Map<string, Folder>();
 let ready: Promise<ServiceWorkerContainer> | null = null;
+/** The worker's address: with ?coi=1 it also isolates the page (isolate below), so that the
+ * folder reader, registered later, keeps doing so (a registration of the other address would
+ * replace it). */
+let workerUrl = "./local-sw.js";
 
 function serviceWorker(): Promise<ServiceWorkerContainer> {
   return (ready ??= (async () => {
@@ -85,7 +89,7 @@ function serviceWorker(): Promise<ServiceWorkerContainer> {
     if (!c) throw new Error("this browser cannot read folders here (no service workers: a private window?)");
     c.addEventListener("message", answer);
     c.startMessages();
-    await c.register("./local-sw.js", { scope: "./" });
+    await c.register(workerUrl, { scope: "./" });
     const reg = await c.ready;
     if (!c.controller) {  // the first time the worker takes over this page as it starts; after a
       // reload that skipped it (shift-reload) it is running already, so it is asked to take over
@@ -118,6 +122,28 @@ async function answer(e: MessageEvent) {
   } catch (err) {
     port.postMessage({ status: 500, error: String(err) });
   }
+}
+
+/** Where the model runs on the CPU (no WebGPU adapter), the page made cross-origin isolated so
+ * ONNX Runtime can use threads (SharedArrayBuffer): GitHub Pages cannot send the COOP / COEP
+ * headers that takes, so the service worker adds them (COEP credentialless: other sites' data
+ * still loads without their opting in) to this site's pages and workers. The first time, the
+ * page loads again once the worker is in place. Not where WebGPU runs the model, nor with
+ * ?coi=0; a browser that stays unisolated after that one reload (no credentialless: Safari) is
+ * left as it is. Resolves when nothing is to be done (a reload never resolves). */
+export async function isolate(): Promise<void> {
+  if (typeof window === "undefined" || window.crossOriginIsolated || !navigator.serviceWorker) return;
+  if (new URLSearchParams(location.search).get("coi") === "0") return;
+  const gpu = (navigator as any).gpu;
+  try { if (gpu && (await gpu.requestAdapter())) return; } catch { /* no adapter: the CPU */ }
+  let tried = false;
+  try { tried = sessionStorage.getItem("coresample-coi") === "1"; } catch { /* no storage: try anyway */ }
+  workerUrl = "./local-sw.js?coi=1";
+  if (tried) { void serviceWorker().catch(() => {}); return; }  // reloaded once and still not isolated
+  try { await serviceWorker(); } catch { return; }
+  try { sessionStorage.setItem("coresample-coi", "1"); } catch { return; }  // without the flag a reload could repeat
+  location.reload();
+  await new Promise(() => {});
 }
 
 /** The address the readers and the viewer read `f` at (no trailing slash). */

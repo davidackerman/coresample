@@ -18,6 +18,10 @@ import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder
 import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { TIFF_URL, tiffSource } from "./remotetiff.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
+import { isolate } from "./local.ts";
+
+// threads for the model on the CPU: may load the page again once, before anything else starts
+await isolate();
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("view");
