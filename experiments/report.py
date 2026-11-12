@@ -16,6 +16,23 @@ MATCH_REL = 0.9  # "roughly matching brute force": >= 90% of its mean precision.
 MATCH_ABS = 0.05  # ...or within 0.05 absolute (small-number noise)
 
 
+def per_n(o):
+    """p@N divided by N, in rows stored before test 2's evaluate() did so (it divided by the
+    length of the list, shorter than N where fewer places were found): p@N * n@N / N, in place."""
+    if isinstance(o, dict):
+        if not o.get("p_over_n"):
+            for k in [k for k in o if k[:2] == "p@" and k[2:].isdigit()]:
+                n, m = int(k[2:]), o.get(f"n@{k[2:]}")
+                if isinstance(m, int) and m < n:
+                    o[k] = o[k] * m / n
+        for v in o.values():
+            per_n(v)
+    elif isinstance(o, list):
+        for v in o:
+            per_n(v)
+    return o
+
+
 def mean_over_queries(rows, key):
     return float(np.mean([r[key] for r in rows]))
 
@@ -24,7 +41,7 @@ def load(target, region="sub"):
     """Merge test2_<target>*.json runs over the same region (c2f rows from all of them;
     brute force and sampling from the first). region 'sub' = subvolume, 'full' = whole volume."""
     files = sorted(RESULTS.glob(f"test2_{target}*.json"))
-    runs = [json.loads(f.read_text()) for f in files]
+    runs = [per_n(json.loads(f.read_text())) for f in files]
     full = lambda r: r["region_s0"][0] == [0, 0, 0] and r["region_s0"][1] == [6368, 1600, 12000]
     runs = [r for r in runs if full(r) == (region == "full")]
     if not runs:

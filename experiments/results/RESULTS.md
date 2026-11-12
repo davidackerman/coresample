@@ -99,12 +99,19 @@ costed from the listing's real chunk sizes: as stored (whole 64^3 chunks), as if
 with 32^3 inner chunks, and as the voxels actually needed. Fractions are of the working
 level over the searched region.
 
+p@N is the share of the first N places that hold a target, a list shorter than N counting
+its missing places as misses. Until 2026-11-12 `evaluate()` divided by the list's length
+instead, which raised K=25 (its descent often ends with fewer than 25 places: about 16 on
+vesicles) and the smallest sampling budgets; the tables here are corrected from each run's stored list lengths (`report.py`),
+nothing re-run. The vesicle pass moved from K=25 at 3.4% of the bytes to K=50 at 5.0%.
+
 ### Vesicles: pass
 
 | method | p@10 | p@25 | r@100 | bytes as stored | 32^3 inner | voxels |
 |---|---|---|---|---|---|---|
 | brute force | 0.82 | 0.85 | 0.07 | 100% | 100% | 100% |
-| c2f s3, K=25, hist+tex | 0.88 | 0.89 | 0.01 | **3.4%** | 2.1% | 1.7% |
+| c2f s3, K=25, hist+tex | 0.88 | 0.57 | 0.01 | 3.4% | 2.1% | 1.7% |
+| c2f s3, K=50, hist+tex | 0.92 | 0.90 | 0.02 | **5.0%** | 2.8% | 1.9% |
 | c2f s3, K=100, hist+tex | 0.96 | 0.95 | 0.04 | 7.7% | 4.0% | 2.1% |
 | c2f s3, K=400, hist+tex | 0.92 | 0.92 | 0.08 | 22.3% | 10.9% | 3.5% |
 | c2f s4, K=100, hist+tex | 0.98 | 0.91 | 0.03 | 6.8% | 3.1% | 0.8% |
@@ -135,7 +142,7 @@ Subvolume:
 | c2f s4, K=100, ncc+hist+tex | 0.46 | 0.41 | 0.21 | 29.7% | 16.4% | 4.7% |
 | c2f s4, K=100, hist+tex | 0.40 | 0.31 | 0.16 | 36.4% | 17.5% | 5.8% |
 | c2f s4, K=100, tex | 0.50 | 0.32 | 0.17 | 38.6% | 18.9% | 5.7% |
-| c2f s4, K=25, hist+tex | 0.40 | 0.39 | 0.10 | 14.8% | 7.3% | 2.7% |
+| c2f s4, K=25, hist+tex | 0.40 | 0.21 | 0.10 | 14.8% | 7.3% | 2.7% |
 | c2f s3, K=100, hist+tex | 0.50 | 0.34 | 0.16 | 30.7% | 18.3% | 12.8% |
 | random sampling, 10% of chunks | 0.50 | 0.30 | 0.15 | 10% | | |
 | adaptive sampling, 20% of chunks | 0.48 | 0.45 | 0.44 | 20% | | |
@@ -145,7 +152,7 @@ Whole volume:
 | method | p@10 | p@25 | r@100 | bytes as stored | 32^3 inner | voxels |
 |---|---|---|---|---|---|---|
 | brute force | 0.48 | 0.44 | 0.13 | 100% | 100% | 100% |
-| c2f s4, K=25, hist+tex | 0.38 | 0.33 | 0.02 | 3.6% | 2.2% | 1.7% |
+| c2f s4, K=25, hist+tex | 0.38 | 0.21 | 0.02 | 3.6% | 2.2% | 1.7% |
 | c2f s4, K=100, hist+tex | 0.36 | 0.32 | 0.04 | 8.4% | 4.4% | 2.0% |
 | c2f s4, K=400, hist+tex | 0.44 | 0.39 | 0.10 | 24.6% | 12.1% | 3.4% |
 | random sampling, 5% of chunks | 0.56 | 0.40 | 0.06 | 5% | | |
@@ -621,7 +628,7 @@ the Legacy Surveys cutout service. Raw data only; nothing precomputed.
 
 | target | top hits matched | data needed (as stored / 32^3 inner / voxels) | verdict |
 |---|---|---|---|
-| vesicle | yes (p@10, p@25 at or above brute force) | 3.4% / 2.1% / 1.7% | pass |
+| vesicle | yes (p@10, p@25 at or above brute force), at K=50 | 5.0% / 2.8% / 1.9% | pass |
 | mito, subvolume | p@10 only; p@25 at most 0.41 vs 0.50 | not reached | fail |
 | mito, whole volume | at K=400 | 24.6% / 12.1% / 3.4% | fail (over 20% as stored) |
 | vesicle, Test 3 chunk-wise | yes (p@10 0.92 vs 0.82, p@25 0.86 vs 0.85) | 2.4% as stored, incl. coarse scan | pass |

@@ -39,6 +39,11 @@ _keys = re.compile(r"<Key>(.*?)</Key>.*?<Size>(\d+)</Size>", re.S)
 _token = re.compile(r"<NextContinuationToken>(.*?)</NextContinuationToken>")
 
 
+def cores() -> int:
+    """The cores this process may use: an LSF job's slots (its CPU affinity), not all the node's."""
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+
+
 def _get(url: str, timeout: float = 60.0, tries: int = 5) -> bytes:
     last = None
     for _ in range(tries):

@@ -165,18 +165,22 @@ def inside_point(mirror: Mirror, label: str, level: int, inst_id: int, centroid,
 
 
 def evaluate(centers, centroids, patch, ns=NS):
-    """precision@N and recall@N for ranked region centres (working voxels)."""
+    """precision@N and recall@N for ranked region centres (working voxels). p@N is the share of
+    the first N places that hold a target, N of them whatever was found: a list shorter than N
+    counts the missing places as misses (until 2026-11-12 it divided by the list's length,
+    which raised short lists; report.py corrects rows stored before from their n@N)."""
     half = patch / 2
     res = {}
     if len(centers) == 0:
-        return {f"p@{n}": 0.0 for n in ns} | {f"r@{n}": 0.0 for n in ns}
+        return {f"p@{n}": 0.0 for n in ns} | {f"r@{n}": 0.0 for n in ns} | {f"n@{n}": 0 for n in ns} | {"p_over_n": True}
     d = np.abs(centers[:, None, :] - centroids[None, :, :])  # (k, m, 3)
     contains = np.all(d < half, axis=2)
     for n in ns:
         c = contains[:n]
-        res[f"p@{n}"] = float(c.any(1).mean()) if len(c) else 0.0
+        res[f"p@{n}"] = float(c.any(1).sum() / n)
         res[f"r@{n}"] = float(c.any(0).mean())
         res[f"n@{n}"] = int(len(c))
+    res["p_over_n"] = True  # p@N divided by N (see above)
     return res
 
 

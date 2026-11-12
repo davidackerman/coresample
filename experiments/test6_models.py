@@ -43,7 +43,7 @@ from pathlib import Path
 import numpy as np
 
 import test2_coarse2fine as t2
-from common import CACHE, RESULTS, Mirror
+from common import CACHE, RESULTS, Mirror, cores
 
 ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
 os.environ.setdefault("HF_HOME", str(ROOT / ".hf"))
@@ -92,7 +92,7 @@ def timm_matcher(name, size=112):
 
 class Matcher:
     def __init__(self, name):
-        torch.set_num_threads(int(os.environ.get("TORCH_THREADS", os.cpu_count())))
+        torch.set_num_threads(int(os.environ.get("TORCH_THREADS", cores())))
         self.name, self.channels = name, 3
         if name.startswith("dinov2"):
             from transformers import AutoModel

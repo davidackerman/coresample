@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 import test2_coarse2fine as t2
-from common import RESULTS, Mirror
+from common import RESULTS, Mirror, cores
 
 ROOT = Path(__file__).resolve().parents[1]  # the repository (its .hf holds the model downloads)
 os.environ.setdefault("HF_HOME", str(ROOT / ".hf"))
@@ -47,7 +47,7 @@ class Tokens:
     def __init__(self):
         from transformers import AutoModel
 
-        torch.set_num_threads(int(os.environ.get("TORCH_THREADS", os.cpu_count())))
+        torch.set_num_threads(int(os.environ.get("TORCH_THREADS", cores())))
         self.m = AutoModel.from_pretrained("facebook/dinov2-small").eval()
 
     def plane(self, img: np.ndarray, f: float):
