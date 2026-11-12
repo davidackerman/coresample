@@ -9,6 +9,8 @@ coarse level decides what to read first, and DINOv2-small scores everything read
 your GPU through WebGPU; without it, on the CPU, about 10x slower. On the CPU the page loads
 twice the first time, to run the model in several threads: about 4x one thread; `?coi=0` keeps one).
 
+[![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
+
 ## Using it
 
 - **Search:** pick a dataset (or open your own with **Your data**, or drop a folder or an image
