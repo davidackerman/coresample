@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>coresample</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #151a21; --raise: #1c222b; --line: #262d37; --line2: #313946;
+    --text: #e7eaef; --dim: #8b95a3; --faint: #5f6977; --acc: #5ab0ff; --acc2: #ffd24a; --good: #4cc38a; --bad: #e5675e;
+    --r: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button, select, input { font: inherit; color: inherit; }
+  select, input[type=text], input:not([type]) { background: var(--raise); border: 1px solid var(--line2); border-radius: 6px; padding: 4px 8px; }
+  button { background: var(--raise); border: 1px solid var(--line2); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--acc); }
+  button:disabled { opacity: .4; cursor: default; }
+  a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
+  .lbl { color: var(--dim); }
+
+  /* header */
+  header { height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .brand { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+  .brand b { font-size: 15px; letter-spacing: .2px; }
+  .brand span { color: var(--faint); font-size: 12px; }
+  .spacer { flex: 1; }
+  .ds { display: flex; align-items: center; gap: 8px; max-width: 46vw; padding: 5px 10px; }
+  .ds #dsname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { color: var(--dim); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 0 7px; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .caret { width: 0; height: 0; border: 4px solid transparent; border-top-color: var(--dim); margin-top: 4px; }
+  .dpick { position: relative; }
+  .menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; width: min(520px, 92vw); background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 32px #000a; overflow: hidden; }
+  .menu[hidden] { display: none; }
+  .menu-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 3px 10px; background: transparent; color: var(--dim); }
+  .seg button + button { border-left: 1px solid var(--line2); }
+  .seg button.on { background: var(--raise); color: var(--text); }
+  #dslist { max-height: 56vh; overflow-y: auto; padding: 4px; }
+  .dsrow { display: grid; grid-template-columns: 1fr 76px; gap: 2px 12px; width: 100%; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 6px; }
+  .dsrow:hover, .dsrow.on { background: var(--raise); }
+  .dsrow.on .nm { color: var(--acc); }
+  .dsrow .meta { color: var(--dim); font-size: 12px; grid-column: 1; }
+  .dsrow .sz { grid-row: 1 / span 3; grid-column: 2; align-self: center; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .dsrow .sz small { color: var(--dim); }
+  .bar-size { height: 3px; background: var(--line); border-radius: 2px; margin-top: 3px; grid-column: 1; }
+  .bar-size i { display: block; height: 100%; background: var(--faint); border-radius: 2px; }
+  .own { padding: 10px 12px; }
+  .ownfoot { border-top: 1px solid var(--line); padding: 8px 12px; }
+  .ownfoot button.link { font-size: 12px; }
+  /* the datasets button shows the list, "+ Your data" only the box for your own */
+  .menu[data-mode="own"] .menu-head, .menu[data-mode="own"] #dslist, .menu[data-mode="own"] .ownfoot, .menu[data-mode="list"] .own { display: none; }
+  .own .row { display: flex; gap: 6px; margin: 6px 0; }
+  .own input { flex: 1; min-width: 0; }
+  .help { color: var(--faint); font-size: 11.5px; line-height: 1.5; }
+  .own ul.help { margin: 6px 0 0; padding-left: 16px; } .own ul.help li + li { margin-top: 4px; } .own .help b { color: var(--dim); font-weight: 500; }
+  .own .row .help { align-self: center; }
+  .dpick { display: flex; gap: 6px; }
+  #ownbtn { color: var(--acc); border-color: var(--acc); }
+  #ownbtn:hover { background: #5ab0ff1f; }
+  #status button.link { font-size: inherit; }
+  #drop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #0e1116cc; }
+  #drop[hidden] { display: none; }
+  #drop::before { content: ""; position: absolute; inset: 10px; border: 2px dashed var(--acc); border-radius: 12px; pointer-events: none; }
+  #drop > div { pointer-events: none; display: grid; gap: 6px; text-align: center; max-width: 420px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 18px 24px; }
+  #drop b { font-size: 16px; } #drop span { color: var(--dim); }
+  .model { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; white-space: nowrap; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+  .model i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .model.gpu i { background: var(--good); } .model.cpu i { background: var(--acc2); } .model.err i { background: var(--bad); }
+  .model.loading i { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  /* layout */
+  main { display: flex; height: calc(100% - 48px); }
+  #stage { position: relative; flex: 1; min-width: 0; background: #000; }
+  #view { width: 100%; height: 100%; display: block; cursor: crosshair; background: #000; }
+  #hover { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #hint { position: absolute; left: 12px; top: 12px; background: #000b; padding: 5px 10px; border-radius: 14px; color: var(--dim); max-width: 60%; pointer-events: none; font-size: 12px; transition: opacity .6s; }
+  #hint.gone { opacity: 0; }
+  #attrib { position: absolute; left: 12px; bottom: 8px; right: 12px; color: #aab; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }
+  #coords { position: absolute; right: 12px; bottom: 26px; display: flex; gap: 8px; align-items: center; background: #000b; padding: 3px 4px 3px 10px; border-radius: 14px; font-size: 11.5px; color: #cfd6df; font-variant-numeric: tabular-nums; }
+  #cursor:empty { display: none; }
+  #goto { width: 170px; padding: 2px 8px; font-size: 11.5px; border-radius: 10px; background: #0008; }
+  #zbar { position: absolute; right: 12px; top: 12px; display: none; align-items: center; gap: 6px; background: #000b; padding: 5px 10px; border-radius: 14px; }
+
+  /* side panel */
+  /* the panel scrolls when its sections outgrow it (Options open); the hits keep some room */
+  aside { width: 360px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+  aside > * { flex-shrink: 0; }
+  .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .title { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #psize { color: var(--dim); font-size: 12px; }
+  details { margin-top: 10px; }
+  summary { color: var(--dim); cursor: pointer; font-size: 12px; user-select: none; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary:focus:not(:focus-visible) { outline: none; }
+  summary::before { content: "\25B8"; display: inline-block; width: 12px; transition: transform .15s; }
+  details[open] summary::before { transform: rotate(90deg); }
+  .opts { display: grid; grid-template-columns: 64px 1fr; gap: 8px 10px; align-items: center; margin-top: 10px; }
+  .opts .lbl { font-size: 12px; }
+  .opts .row { gap: 6px 12px; }
+  .opts label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 12px; cursor: pointer; }
+  .opts select { padding: 3px 6px; font-size: 12px; }
+  #qwrap { display: flex; gap: 12px; align-items: flex-start; }
+  #qcanvas { width: 64px; height: 64px; flex: none; image-rendering: pixelated; border: 2px solid var(--acc); border-radius: 6px; background: #000; }
+  #qcanvas.none { border: 2px dashed var(--line2); background: transparent; }
+  #phase { font-weight: 600; }
+  #chnote { color: var(--acc2); font-size: 12px; margin-top: 2px; }
+  #chnote[hidden] { display: none; }
+  #status { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: pre-line; margin-top: 2px; }
+  #stages { margin: 8px 0; display: grid; gap: 3px; font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  #stages:empty { margin: 4px 0; }
+  .stage { display: flex; align-items: center; gap: 8px; cursor: default; }
+  .stage > span:first-child { width: 68px; flex: none; }
+  .stage > span:last-child { width: 44px; flex: none; text-align: right; }
+  .stage i { flex: 1; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .stage b { display: block; height: 100%; width: 0; background: var(--acc); border-radius: 3px; transition: width .3s; }
+  .actions { justify-content: space-between; }
+  .actions .row { gap: 6px; }
+  .hits-head { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 14px 0; }
+  /* the hits stand out from the panel's other titles: the colour of their boxes on the image */
+  .hits-head .title { margin: 0; color: var(--acc2); font-size: 12px; font-weight: 600; }
+  .hits-head { align-items: center; }
+  .seg.small button { padding: 1px 8px; font-size: 11px; }
+  #hitcount { color: var(--text); letter-spacing: 0; margin-left: 4px; font-variant-numeric: tabular-nums; }
+  #hithelp { padding: 6px 14px 0; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+  #hithelp .g { color: var(--good); } #hithelp .b { color: var(--bad); }
+  #hits { flex: 1 0 0; min-height: 260px; overflow-y: auto; padding: 8px 14px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 10px 8px; align-content: start; }
+  .hit { position: relative; }
+  .hit canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border-radius: 6px; border: 2px solid transparent; cursor: pointer; background: #000; display: block; }
+  .hit canvas:hover { border-color: var(--acc2); }
+  .hit.good canvas { border-color: var(--good); }
+  .hit.bad { opacity: .3; }
+  .hit.good .fb { opacity: 1; }
+  .hit.good .fb button[data-g="1"] { background: var(--good); border-color: var(--good); color: #0b0e12; }
+  #marks { padding: 0 14px 6px; font-size: 11px; color: var(--dim); }
+  button.link { background: none; border: 0; padding: 0; color: var(--acc); font-size: 11px; cursor: pointer; }
+  button.link:hover { text-decoration: underline; }
+  .hit .fb { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; opacity: 0; transition: opacity .15s; }
+  .hit:hover .fb { opacity: 1; }
+  @media (hover: none) { .hit .fb { opacity: 1; } }  /* a touch screen has no hover to show them */
+  .hit .fb button { width: 20px; height: 20px; padding: 0; border-radius: 50%; background: #000c; border-color: #fff3; font-size: 11px; line-height: 18px; }
+  .hit .fb button[data-g="1"]:hover { border-color: var(--good); color: var(--good); }
+  .hit .fb button[data-g="0"]:hover { border-color: var(--bad); color: var(--bad); }
+  .hit .cap { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .hit .cap b { color: var(--text); font-weight: 500; }
+  .hit .z { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .hit .z:empty { display: none; }
+  .hit canvas.map { position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 1; border-radius: 6px; pointer-events: none; display: none; image-rendering: auto; border: 2px solid transparent; background: transparent; }
+  body.why .hit canvas.map, body.match .hit canvas.map { display: block; }
+  body.match #qmap { display: block; opacity: 1; }
+  #matchhelp { padding: 0 14px 8px; font-size: 11px; color: var(--dim); line-height: 1.4; }
+  body.why.parts .hit canvas.map, #qmap { opacity: .7; }
+  #qbox { position: relative; flex: none; width: 64px; height: 64px; }
+  #qmap { position: absolute; left: 0; top: 0; width: 64px; height: 64px; border: 2px solid transparent; border-radius: 6px; pointer-events: none; display: none; }
+  body.why.parts #qmap { display: block; }
+  .hit .why { display: none; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.35; }
+  body.why .hit .why { display: block; }
+  button.tog { padding: 1px 8px; font-size: 11px; color: var(--dim); }
+  button.tog.on { color: var(--text); border-color: #21918c; background: #21918c22; }
+  #whyhelp { margin: 8px 14px 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim); background: var(--raise); border: 1px solid var(--line); border-radius: 8px; }
+  #whyhelp[hidden] { display: none; } #whyhelp b { color: var(--text); font-weight: 600; }
+  .empty { color: var(--faint); grid-column: 1 / -1; font-size: 12px; }
+  #where { width: 100%; display: block; cursor: pointer; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--faint); }
+  .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; vertical-align: -1px; border-radius: 50%; }
+  .legend .lq { border: 2px solid var(--acc); width: 6px; height: 6px; } .legend .lh { background: var(--acc2); }
+  .legend .lr { background: #5ab0ff66; border-radius: 2px; } .legend .lv { border: 1px solid #fff; border-radius: 1px; }
+  .legend .lg { width: 34px; height: 7px; border-radius: 2px; }
+  .legend .ls { border: 1px dashed #7ee0a0; border-radius: 1px; }
+  .heatrow { gap: 6px 8px; margin-top: 6px; font-size: 11.5px; }
+  .heatrow input[type=range] { width: 70px; accent-color: #21918c; }
+  .heatrow label { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
+  #heatimg { gap: 6px; } #heatimg[hidden] { display: none; }
+  .again { grid-column: 1 / -1; gap: 6px; font-size: 12px; } .again[hidden] { display: none; }
+  .again button { padding: 1px 8px; font-size: 11px; }
+  #heatval { color: var(--dim); min-width: 28px; font-variant-numeric: tabular-nums; }
+  #addex.on { border-color: var(--acc); color: var(--acc); }
+  #stage.adding #view, #stage.adding canvas { cursor: copy; }
+  #pad, #bpad { position: absolute; left: 12px; top: 12px; z-index: 15; width: 292px; padding: 10px 12px 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 32px #000a; }
+  #pad[hidden], #bpad[hidden] { display: none; }
+  #bpadcv { display: block; width: 266px; height: 266px; margin: 8px 0; border: 1px solid var(--line2); border-radius: 6px; cursor: crosshair; touch-action: none; background: #000; }
+  #brushbtn.on { color: var(--acc); border-color: var(--acc); }
+  .padhead { display: flex; justify-content: space-between; align-items: center; }
+  .padhead button { border: 0; background: transparent; color: var(--dim); padding: 0 4px; }
+  #padcv { display: block; width: 266px; height: 266px; margin: 8px 0; image-rendering: pixelated; border: 1px solid var(--line2); border-radius: 6px; cursor: crosshair; touch-action: none; background: #000; }
+  .padrow { margin-top: 6px; gap: 6px; font-size: 12px; }
+  .padrow .lbl { width: 34px; }
+  .padrow label { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
+  .padrow .seg button { padding: 3px 8px; }
+  #padcol { width: 28px; height: 24px; padding: 0 2px; border: 1px solid var(--line2); border-radius: 6px; background: transparent; cursor: pointer; }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #06121f; font-weight: 600; }
+  #layers { display: flex; flex-wrap: wrap; gap: 6px; }
+  #layers label { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border: 1px solid var(--line2); border-radius: 12px; cursor: pointer; font-size: 12px; color: var(--dim); user-select: none; }
+  #layers label i { width: 9px; height: 9px; border-radius: 50%; opacity: .35; }
+  #layers label:has(input:checked) { color: var(--text); border-color: var(--faint); }
+  #layers label:has(input:checked) i { opacity: 1; }
+  #layers input { display: none; }
+  @media (max-width: 860px) {
+    main { flex-direction: column; } aside { width: auto; height: 46%; border-left: 0; border-top: 1px solid var(--line); }
+    .brand span, .model span { display: none; }
+  }
+</style>
+  <script type="module" crossorigin src="./assets/index-gkHxlYwy.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/preload-helper-PPVm8Dsz.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-BtPuoxOl.css">
+</head>
+<body>
+<header>
+  <div class="brand"><b>coresample</b><span>find regions like this one, no precomputation</span></div>
+  <div class="dpick">
+    <button id="dsbtn" class="ds" aria-haspopup="listbox"><span id="dsname">datasets</span><span id="dssize" class="chip"></span><span class="caret"></span></button>
+    <button id="ownbtn" title="Search your own data: a link, or a folder on this computer (or drop one on the page)">+ Your data</button>
+    <div id="dsmenu" class="menu" data-mode="list" hidden>
+      <div class="menu-head">
+        <span class="lbl">Datasets</span>
+        <div class="seg" id="sort" title="Sort the list"><button data-k="size">size</button><button data-k="kind">type</button><button data-k="name">name</button></div>
+      </div>
+      <div id="dslist" role="listbox"></div>
+      <div class="ownfoot"><button id="ownlink" class="link">+ your own data: a link, or a folder on this computer</button></div>
+      <div class="own">
+        <div class="lbl">Your own data</div>
+        <div class="row"><input id="custom" placeholder="a link: OME-Zarr, precomputed://, map tiles, Zoomify, legacy:RA,Dec"><button id="open">Open</button></div>
+        <div class="row"><button id="pick" hidden>Choose a folder...</button><button id="pickimg">Choose an image...</button><span class="help" id="pickhelp">or drop either anywhere on the page</span>
+          <input type="file" id="imgfile" hidden accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.tif,.tiff,image/*"></div>
+        <ul class="help">
+          <li><b>A link</b> to a host that allows reads from web pages (CORS): OME-Zarr v2/v3, 2-D or 3-D
+            (<code>https://</code>, <code>s3://</code>, <code>gs://</code>); Neuroglancer <code>precomputed://gs://...</code>;
+            map tiles <code>.../{z}/{x}/{y}.png</code> (add <code>#maxZoom=12</code>); Zoomify <code>.../ImageProperties.xml</code>;
+            a Legacy Surveys field <code>legacy:245.43,37.996</code>. The address bar then holds a link to it.</li>
+          <li><b>A folder on this computer:</b> an OME-Zarr (or a folder with some inside: it opens the first) or a
+            precomputed volume. <b>Or an image:</b> PNG, JPEG, WebP, or TIFF (multi-page: z planes and channels, as
+            its OME or ImageJ description says), read whole into memory. Either is read where it is, nothing is
+            uploaded; there is no link to it.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <button id="globe" style="display:none" title="Switch between the globe and the flat map (the search runs on the flat mosaic either way)">globe</button>
+  <div class="spacer"></div>
+  <span id="model" class="model" title="The model (DINOv2-small) loads once the view has its first data, or at your first click"><i></i><span>model loads after the view</span></span>
+  <a href="https://github.com/davidackerman/coresample" target="_blank">How it works</a>
+</header>
+<main>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <canvas id="hover"></canvas>
+    <div id="hint">Drag to pan, scroll to zoom. Click to search for what is in the dashed box.</div>
+    <div id="pad" hidden>
+      <div class="padhead"><b>Draw what to find</b><button id="padx" title="Close">&#10005;</button></div>
+      <div class="help" id="padhelp">One box at the search level, in this data's own greys.</div>
+      <canvas id="padcv" title="Draw here"></canvas>
+      <div class="row padrow"><span class="lbl">pen</span>
+        <div class="seg" id="padtone"><button data-t="dark" class="on">dark</button><button data-t="mid">grey</button><button data-t="light">light</button><button data-t="any" title="Any colour: pick it on the right">colour</button></div>
+        <input type="color" id="padcol" value="#ffffff" title="The colour pen's colour"></div>
+      <div class="row padrow"><span class="lbl">size</span>
+        <div class="seg" id="padsize"><button data-r="1">thin</button><button data-r="2" class="on">medium</button><button data-r="5">thick</button></div></div>
+      <div class="row padrow"><span class="lbl">start</span><button id="padblank">blank</button><button id="padview" title="The box at the centre of the view, to draw over">the view</button><button id="padfill" title="Fill the box with the pen, as a background to draw on">fill</button></div>
+      <div class="row padrow"><label title="Turn every colour into the data's own by brightness (black: its darkest, white: its brightest), soften the drawing and give it the data's grain before the model sees it"><input type="checkbox" id="padtex" checked> look like the data</label></div>
+      <div class="row padrow"><button id="padgo" class="primary">Search for this</button></div>
+    </div>
+    <div id="bpad" hidden>
+      <div class="padhead"><b>What matters in your box</b><button id="bpadx" title="Close">&#10005;</button></div>
+      <div class="help">Drag over the parts that matter; a drag that starts on a marked part unmarks. The match then compares only those parts, where they sit in the box. The search starts again.</div>
+      <canvas id="bpadcv" title="Drag to mark the parts that matter"></canvas>
+      <div class="row padrow"><button id="bpadall">mark all</button><button id="bpadnone">clear</button></div>
+      <div class="row padrow"><button id="bpadgo" class="primary">Search with this</button><button id="bpadoff" title="Every part of the box alike again">without marks</button></div>
+    </div>
+    <div id="zbar"><span class="lbl">z</span><input id="z" type="range" min="0" max="0" step="1"><span id="zval"></span></div>
+    <div id="attrib"></div>
+    <div id="coords"><span id="cursor" title="Under the cursor: full-resolution pixels (and longitude/latitude or physical position)"></span>
+      <input id="goto" placeholder="go to: x, y[, z] or lat, lon" title="Pixels of the full-resolution image (x, y, and z for a volume); on Mars, the Moon and Earth also latitude, longitude in degrees; on the sky, RA, Dec in degrees"></div>
+  </div>
+  <aside>
+    <div class="sec">
+      <div class="title">Search for</div>
+      <div class="row">
+        <div class="seg" id="patchseg" title="The size of the box a click searches for, in pixels of the search level"><button>32</button><button>64</button><button>96</button><button>128</button></div>
+        <select id="patch" hidden><option>32</option><option selected>64</option><option>96</option><option>128</option></select>
+        <span id="psize"></span>
+        <button id="drawbtn" title="Draw what you are looking for instead of clicking an example">draw</button>
+      </div>
+      <details id="options">
+        <summary>Options</summary>
+        <div class="opts">
+          <span class="lbl">level</span>
+          <select id="level" title="The resolution level the search runs at: auto = the level on screen"><option value="auto" selected>auto (as viewed)</option></select>
+          <span class="lbl">region</span>
+          <select id="region" title="Where to search: auto = the largest area the quick first pass can cover around the click (the whole dataset when it fits), then the quick pass spreads to the areas around it, nearest first, while the reads go to the best places of every area it has covered, until the whole dataset is read or you pause">
+            <option value="auto" selected>auto (everywhere, nearest first)</option><option value="whole">whole dataset</option><option value="8">8x the view</option><option value="1">the view</option></select>
+          <span class="lbl">method</span>
+          <select id="method" title="patches: every patch through the model on its own (the measured baseline). tiles + tokens: the Mars CTX explorer's way: each tile through the model once, every window of the box's size (at 1/8 of it) matched by its mean token; as accurate on labelled EM, places hits more finely">
+            <option value="patches" selected>patches</option><option value="tokens">tiles + tokens (Mars CTX explorer)</option></select>
+          <span class="lbl">model</span>
+          <div class="row"><select id="detail" title="The model that compares patches. DINOv2-small (the default): detailed (224 px) sees finer texture at 4x the compute; on labelled EM neither won consistently. MorphEm (grey; trained on fluorescence channels): found more on labelled HeLa EM, 6.4 of its top 10 right on average to DINOv2's 5.7. PE-Core-T: 4.6x as fast on a CPU (without WebGPU), 5.1 of the top 10 right there; it turns on adapt to data. The tiles + tokens method always uses DINOv2-small at 224 px. A search keeps the model it began with: choosing another asks whether to search again"></select><a href="models/NOTICE.txt" target="_blank" rel="noopener" style="font-size:12px" title="Where each model comes from, its licence, and what was changed to run it here">licences</a></div>
+          <div id="again" class="row again" hidden><span>Search again with <b id="againwhat"></b>?</span><button id="againyes">Search</button><button id="againno" title="Keep this search on what it began with; the next click uses the new choice">Not now</button></div>
+          <span class="lbl">compare</span>
+          <select id="focus" title="Compare the whole box, or the object at its centre (where you clicked): useful when the surroundings vary">
+            <option value="whole" selected>whole box</option><option value="center">object at the centre</option></select>
+          <span class="lbl">spacing</span>
+          <div class="row">
+            <select id="far" title="Leave out hits closer than this to the query: its own surroundings are usually the easiest matches">
+              <option value="0" selected>hits anywhere</option><option value="2">at least 2 boxes from the query</option><option value="5">at least 5 boxes away</option>
+              <option value="10">at least 10 boxes away</option><option value="25">at least 25 boxes away</option></select>
+            <select id="between" title="How far apart hits must be from each other (in boxes): larger spreads them over more places">
+              <option value="1" selected>hits may touch</option><option value="2">2 boxes apart</option><option value="5">5 boxes apart</option><option value="10">10 boxes apart</option></select>
+          </div>
+          <span class="lbl">examples</span>
+          <select id="combine" title="With several examples (shift-click adds one): match their mean, or each hit's best match among them. On labelled EM the mean gained with more examples on vesicles; matching any did better on mito">
+            <option value="mean" selected>match their mean</option><option value="any">match any one of them</option></select>
+          <span class="lbl">allow</span>
+          <div class="row">
+            <label title="Also match the query rotated and mirrored (8 ways): for things with no fixed orientation (craters, galaxies)"><input type="checkbox" id="rot"> any rotation</label>
+            <label title="Also match the query at half and double the size (the levels above and below)"><input type="checkbox" id="scl"> any size</label>
+            <label title="Compare after removing what all patches here have in common (helps when everything looks alike). Choosing PE-Core-T turns it on: its look (class token) is nearly the same for every patch, so its scores would otherwise all sit near 1"><input type="checkbox" id="adapt"> adapt to data</label>
+          </div>
+        </div>
+      </details>
+    </div>
+    <div class="sec" id="layersec" hidden>
+      <div class="title">Layers</div>
+      <div id="layers"></div>
+    </div>
+    <div class="sec">
+      <div id="qwrap">
+        <div id="qbox"><canvas id="qcanvas" class="none" width="64" height="64"></canvas><canvas id="qmap" width="128" height="128"></canvas></div>
+        <div style="min-width:0"><div id="phase">Click on the image to search</div><div id="status">It reads the most promising tiles first and keeps going until it has covered the region or you pause it.</div><div id="chnote" hidden>The channels changed in the viewer: click again to search with them.</div></div>
+      </div>
+      <div id="stages"></div>
+      <div class="row actions">
+        <div class="row"><button id="stop" disabled>Pause</button><button id="clear" disabled>Clear</button>
+          <button id="addex" disabled title="Add another example of the same thing: press, then click it on the image (or shift-click any time). The query becomes the mean of the examples.">+ example</button>
+          <button id="brushbtn" disabled title="Mark which parts of your box matter: the match then compares only those parts">what matters</button></div>
+        <a id="link" target="_blank" style="display:none">open hit in its viewer &#8599;</a>
+      </div>
+    </div>
+    <div class="sec" id="wheresec" hidden>
+      <div class="title">Where it has looked</div>
+      <canvas id="where" title="Click to go there"></canvas>
+      <div class="legend"><span><i class="lq"></i>query</span><span><i class="lh"></i>hits</span><span><i class="lr"></i>read (darker: more of that column)</span><span><i class="lv"></i>view</span><span id="lsearched" hidden><i class="ls"></i>searched so far</span>
+        <span title="How well each place compared matched (scored when read; the best few thousand are re-scored after feedback)"><i id="heatgrad" class="lg"></i>match <span id="heatlo"></span>&ndash;<span id="heathi"></span></span></div>
+      <div class="row heatrow">
+        <span class="lbl">heat: best</span>
+        <input type="range" id="heattop" min="1" max="100" value="25" title="Colour only the best share of the places compared">
+        <span id="heatval">25%</span>
+        <span id="heatimg" class="row" title="Lay the heat over the image too (on a volume: the places compared at the slice's depth)"><label><input type="checkbox" id="heaton"> over the image</label>
+          <input type="range" id="heatop" min="10" max="100" value="50" title="Opacity of the heat over the image"></span>
+      </div>
+    </div>
+    <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
+      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where in each hit the thing you clicked is: the parts that look like the middle of your box bright, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
+      <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
+    <div id="hithelp" hidden><span id="hitspread"></span> Click a hit to go there; on a hit, <b class="g">&#10003;</b> more like this,
+      <b class="b">&#10005;</b> fewer like this: the hits re-rank.</div>
+    <div id="marks" hidden><span id="markstext"></span> · <button id="undomark" class="link" title="Undo the last mark">undo last</button> · <button id="clearmarks" class="link" title="Undo every mark: the query goes back to the examples alone">clear marks</button></div>
+    <div id="matchhelp" hidden>Bright: the parts of each hit that look most like the middle of your box; the dimmer, the less alike. What every box has (plain background, the usual texture) does not count. On your box: the middle part it looks for.</div>
+    <div id="whyhelp" hidden>
+      <div id="whytext"></div></div>
+    <div id="hits"><div class="empty">Hits appear here as tiles are read, best first.</div></div>
+  </aside>
+</main>
+<div id="drop" hidden><div><b>Drop a folder or an image to search it</b><span>An OME-Zarr or Neuroglancer precomputed folder, or a PNG, JPEG, WebP or TIFF. It is read where it is: nothing is uploaded.</span></div></div>
+</body>
+</html>
