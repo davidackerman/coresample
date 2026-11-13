@@ -134,14 +134,13 @@
   .hit canvas:hover { border-color: var(--acc2); }
   .hit.good canvas { border-color: var(--good); }
   .hit.bad { opacity: .3; }
-  .hit.good .fb { opacity: 1; }
   .hit.good .fb button[data-g="1"] { background: var(--good); border-color: var(--good); color: #0b0e12; }
   #marks { padding: 0 14px 6px; font-size: 11px; color: var(--dim); }
   button.link { background: none; border: 0; padding: 0; color: var(--acc); font-size: 11px; cursor: pointer; }
   button.link:hover { text-decoration: underline; }
   .hit .fb { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; opacity: 0; transition: opacity .15s; }
   .hit:hover .fb { opacity: 1; }
-  @media (hover: none) { .hit .fb { opacity: 1; } }  /* a touch screen has no hover to show them */
+  @media (any-hover: none) { .hit .fb { opacity: 1; } }  /* a phone or tablet: nothing that can hover to show them */
   .hit .fb button { width: 20px; height: 20px; padding: 0; border-radius: 50%; background: #000c; border-color: #fff3; font-size: 11px; line-height: 18px; }
   .hit .fb button[data-g="1"]:hover { border-color: var(--good); color: var(--good); }
   .hit .fb button[data-g="0"]:hover { border-color: var(--bad); color: var(--bad); }
