@@ -1,20 +1,16 @@
 # coresample
 
+[![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
+
 Click something in a huge image or volume (EM, slides, planetary maps, sky surveys, satellite
 imagery) and find more regions like it, in the browser, with **no precomputation**: no
 embedding pass, no index. The data's own multiscale pyramid is the index: a quick pass over a
-coarse level decides what to read first, and DINOv2-small scores everything read.
+coarse level decides what to read first, and a model (DINOv2-small unless you pick another)
+scores everything read.
 
 **Try it: https://davidackerman.github.io/coresample/** (Chrome recommended: the model runs on
 your GPU through WebGPU; without it, on the CPU, about 10x slower. On the CPU the page loads
 twice the first time, to run the model in several threads: about 4x one thread; `?coi=0` keeps one).
-
-[![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
-
-Inspired by [Clio](https://clio.janelia.org)'s image search ([Huang et al. 2020](https://arxiv.org/abs/2012.12175)),
-which learns each dataset's features and precomputes their signatures. coresample is a much
-simpler, rougher take: an off-the-shelf model run on the raw data as it is read, which is what
-lets it work on any dataset in the browser without any precompute.
 
 ## Using it
 
@@ -57,13 +53,15 @@ lets it work on any dataset in the browser without any precompute.
 
 1. **Quick pass:** brightness and texture statistics over a coarse level rank where similar
    things might be (no model; a few MB).
-2. **Rough pass** (GPU): the model looks two levels coarser (a sixteenth of the download) and
-   picks what to read in full detail: the most promising 10% of what it has looked over (on EM,
-   the top 5% already matched reading everything). **Read the rest** reads the others.
-3. **Score:** every patch in the tiles read goes through DINOv2-small (112 px); the score
-   under each hit is the cosine of its embedding with your click's (the mean of **look**, the
-   CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
-   candidates are kept for re-ranking.
+2. **Rough pass** (GPU): to choose what to download in full, the model (DINOv2-small, 112 px,
+   or the one picked in **Options > model**) looks at a 4x-shrunk copy of the same areas (a
+   sixteenth of the download, in 2-D), in the quick pass's order. Its scores only rank the
+   tiles; the best 10% go on to stage 3 (on some tests, the top 5% already matched reading
+   everything). **Read the rest** reads the others.
+3. **Detail:** those tiles are read at the level on screen and every patch goes through the
+   same model. These scores are the hits: the score under each hit is the cosine of its
+   embedding with your click's (the mean of **look**, the CLS token, and **parts**, the average
+   piece token). Memory stays bounded: the best 3,000 candidates are kept for re-ranking.
 
 Nothing is uploaded. The live site counts dataset views and searches with GoatCounter (no
 cookies; your own data counts only as its format, never its address). The **Options** (detailed 224 px input, centre object, any rotation, any
@@ -134,3 +132,10 @@ uv run experiments/chunkmap.py zarr://s3://janelia-cosem-datasets/jrc_hela-2/jrc
 | `web/` | the browser tool (TypeScript): readers, the search, DINOv2 through ONNX Runtime Web, the viewers |
 | `experiments/` | the Python side: search logic, CLI, chunk-size maps, and the ten feasibility tests ([README](experiments/README.md)) |
 | `experiments/results/` | the tests' numbers and write-up ([RESULTS.md](experiments/results/RESULTS.md)) |
+
+## Inspiration
+
+Inspired by [Clio](https://clio.janelia.org)'s image search ([Huang et al. 2020](https://arxiv.org/abs/2012.12175)),
+which learns each dataset's features and precomputes their signatures. coresample is a much
+simpler, rougher take: an off-the-shelf model run on the raw data as it is read, which is what
+lets it work on any dataset in the browser without any precompute.
