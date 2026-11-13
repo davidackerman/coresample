@@ -26,6 +26,7 @@ Robbins & Hynek (2012) crater catalogue from USGS Astrogeology.
 | [11](test11_context.py) | Can coarser levels rule out regions by their surroundings? | At 4x the box, three quarters at no loss (half the model's work); wider loses on mito |
 | [12](test12_brush.py) | Does marking what matters in the box find more? | A rough brush on its own: +0.04 in the top 10, nothing in the top 25 |
 | [13](test13_craters.py) | Do the page's models rank the same on Mars craters? | MorphEm ahead on the plains (+0.05 p@10 overall), PE-Core-T behind; adapt to data helps every model (+0.06 for DINOv2-small) |
+| [14](test14_rough_tokens.py) | Can the rough pass take its places from the model's tokens, one run per crop? | 30-40x fewer model runs, the same bytes; a few hundredths behind at 1-2% read, level by 5% |
 
 ## Run
 

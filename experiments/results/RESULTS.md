@@ -573,6 +573,37 @@ except with PE-Core-T): two labelled datasets now lean towards MorphEm, and Mars
 data a candidate default for maps, both to be confirmed on a second labelled set of each kind.
 Two regions, one catalogue, greyscale imagery only.
 
+## Test 14: the rough pass from tokens (follow-up)
+
+The page's rough pass runs the model once per place: the box two levels up (16 px for a 64 px
+box) enlarged to 112 px. Here the model runs once per 112 px crop of that level instead, and each
+place takes the tokens under its box (DINOv2-small's tokens are 14 px, so about one per place;
+"enlarged": the level scaled 2x or 4x first, a place then covering 2 x 2 or 4 x 4 tokens, or a
+5 x 5 window). Tiles are ordered by their best place, as in test 8, with the same 30 queries
+(`test14_rough_tokens.py`). p@10 after reading a share of the tiles; the model runs and CPU time
+(8 threads) to rank the whole region. Patches and tokens at one level download the same bytes:
+
+| order | mito: runs (CPU) | mito: 2% / 5% read | whole volume: runs (CPU) | whole volume: 1% / 2% / 5% / 10% read |
+|---|---|---|---|---|
+| every tile read | | 0.48 | | 0.44 |
+| no rough pass (the quick pass's order) | | 0.37 / 0.41 | | 0.35 / 0.32 / 0.34 / 0.39 |
+| **model, two levels up (the page)** | 768 (3.1 s) | 0.49 / 0.53 | 6,624 (31.5 s) | 0.41 / 0.44 / 0.43 / 0.44 |
+| **tokens, two levels up** | 24 (0.1 s) | 0.41 / 0.46 | 168 (0.8 s) | 0.39 / 0.40 / 0.43 / 0.41 |
+| tokens, enlarged 2x, 2 x 2 | 80 (0.4 s) | 0.40 / 0.49 | 672 (3.1 s) | 0.35 / 0.38 / 0.42 / 0.46 |
+| tokens, enlarged 4x, 5 x 5 | 320 (1.3 s) | 0.49 / 0.50 | 2,592 (11.7 s) | 0.41 / 0.40 / 0.43 / 0.40 |
+| model, one level up (4x the bytes) | 768 (3.3 s) | 0.45 / 0.51 | 6,624 (31.0 s) | 0.43 / 0.47 / 0.48 / 0.47 |
+| tokens, one level up | 80 (0.3 s) | 0.45 / 0.51 | 672 (3.2 s) | 0.41 / 0.42 / 0.43 / 0.46 |
+
+**Tokens rank the tiles with 30-40x fewer model runs and the same downloads, a few hundredths
+behind while only 1-2% of the tiles are read (0.04-0.08 p@10 on mito) and level by 5%;** both
+stay ahead of no rough pass. Enlarging the level first recovers the page's precision on the mito
+subvolume at 2.4x fewer runs but not on the whole volume. On vesicles every order scores
+0.79-0.84 (random reaches 0.76 at 1%), so they cannot tell orders apart. With 30 queries,
+differences under about 0.05 are noise. The `experiment/fast-reads` branch tries it in the page
+(`?roughtok=1`): a crop per level-L chunk plane, scaled up to the model's input when smaller (a
+64 px plane 1.75x, close to "enlarged 2x"), each place's tokens weighted by how much of them its
+box covers.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +

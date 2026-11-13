@@ -60,6 +60,8 @@ export interface Options {
   keep?: number;              // candidates kept for re-ranking (the rest are dropped as read)
   spread?: Spread;
   roughPass?: boolean;        // the model on a coarser level picks the tiles read in detail (GPU only; default on)
+  roughTokens?: boolean;      // the rough pass from the model's tokens over whole level-L chunk planes, not a run per place (test 14)
+  lazyNeighbours?: LazyPolicy; // 3-D: a tile's neighbour chunks downloaded only when its own patches look promising (test 15)
   method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
@@ -68,6 +70,12 @@ export interface Options {
   expand?: boolean;           // once the region is read, go on to the areas around it, nearest first, until the whole level is read
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims; norm?: ScanNorm }>;
 }
+
+/** When a 3-D tile's patches that cross into the chunks before it are read too (their chunks
+ * downloaded): its best patch inside it reaches the `top`-th best score compared so far, or the
+ * `quantile` of the tiles read so far. Crossing patches whose chunks came down anyway are read
+ * whatever the policy. */
+export interface LazyPolicy { top?: number; quantile?: number }
 
 const MARGIN = 4;
 const KEEP = 3000;
@@ -86,6 +94,7 @@ const placed = (c: Vec3) => c.every(Number.isFinite);
  * them too). */
 interface Rough {
   L: number; p: number; stride: number; k: number;
+  tok: boolean;                                  // tokens mode (Options.roughTokens)
   q0: Float32Array; q: Float32Array;             // the query at level L (and after feedback)
   goods: Mark[]; bads: Mark[];                   // marked hits seen at level L
   pool: { t: Vec3; s: number; embs: Float32Array[] }[];  // scored tiles not read yet (best first when !dirty)
@@ -99,7 +108,11 @@ interface Rough {
   ranked: Set<number>;                           // every tile of the order (tileKey)
 }
 /** One round of the rough pass downloaded: its tiles and their places at level L. */
-interface RoughBatch { tiles: Vec3[]; cells: { ti: number; c: Vec3 }[]; patches: (Patch | null)[] }
+interface RoughBatch { tiles: Vec3[]; cells: { ti: number; c: Vec3 }[]; patches: (Patch | null)[]; prep?: RoughPrep }
+/** Tokens mode: crops over the level-L chunk planes the places lie in, at the model's input
+ * size, and for each place the crop and its tokens under the place's box, with their overlaps
+ * (null: no data there). */
+interface RoughPrep { crops: Patch[]; at: ({ crop: number; w: { t: number; w: number }[] } | null)[] }
 /** The share of the tiles looked at that is read in detail (test 8: after the model two levels
  * up has ordered them, reading 5% of the tiles reached the precision of reading all). */
 export const DETAIL = 0.1;
@@ -192,7 +205,7 @@ export class Search {
   private embedded = 0;              // patches embedded so far (kept or not)
   private order: Vec3[] = [];       // tiles (working-level tile indices) in read order
   private orderS: number[] = [];    // their cheap scores (the part not taken yet stays sorted by them)
-  private queue: { c: Vec3; pri: number; patch: Patch }[] = [];
+  private queue: { c: Vec3; pri: number; patch: Patch; tile?: number }[] = [];
   skipped = 0;  // patches not embedded: no data or blank
   private scans: { score: Float32Array | null; dims: Dims; clo: Vec3; f: number; w: Dims; lo: Vec3; hi: Vec3 }[] = [];
   private tileS = new Map<number, number>();  // each ranked tile's cheap score (its best window)
@@ -545,6 +558,35 @@ export class Search {
       if (!this.atExample(c)) cs.push(c);
     }
     if (!cs.length) return;
+    if (!d3 || !this.opt.lazyNeighbours) { await this.queuePatches(cs); return; }
+    // lazy: the patches inside the tile first (its own chunk); those crossing into a neighbour,
+    // grouped by the neighbours they need, wait for the tile's score (decide)
+    const key = tileKey(t), inside: Vec3[] = [], groups = new Map<string, LazyGroup>();
+    for (const c of cs) {
+      const dy = c[1] - h < lo[1] ? -1 : c[1] + h > hi[1] ? 1 : 0, dx = c[2] - h < lo[2] ? -1 : c[2] + h > hi[2] ? 1 : 0;
+      if (!dy && !dx) { inside.push(c); continue; }
+      let g = groups.get(`${dy},${dx}`);
+      if (!g) {
+        const need: number[] = [];
+        for (const ay of dy ? [0, dy] : [0]) for (const ax of dx ? [0, dx] : [0]) if (ay || ax) need.push(tileKey([t[0], t[1] + ay, t[2] + ax]));
+        groups.set(`${dy},${dx}`, (g = { cs: [], need }));
+      }
+      g.cs.push(c);
+    }
+    const st: LazyTile = { left: 0, best: -Infinity, groups: [...groups.values()], parked: [], done: false };
+    this.lazyT.set(key, st);
+    this.lazy.tiles++;
+    this.haveAdd(key);
+    await this.queuePatches(inside, key, st);
+    if (!st.left) this.decide(key);
+  }
+
+  /** Read the patches at centres `cs` (one box around them) and queue them; `tile`/`st`: lazy
+   * bookkeeping (the tile they belong to, counted until each is scored). */
+  private async queuePatches(cs: Vec3[], tile?: number, st?: LazyTile) {
+    if (!cs.length) return;
+    const P = this.opt.patch, h = P / 2, W = this.opt.working, d3 = this.src.dims === 3;
+    const step = this.opt.stride ?? (d3 ? P / 2 : P);
     const ext = (a: number) => cs.reduce(([m, M], c) => [Math.min(m, c[a]), Math.max(M, c[a])], [Infinity, -Infinity]);
     const [z0, zl] = ext(0), [y0, y1] = ext(1), [x0, x1] = ext(2), z1 = zl + 1;
     const blo: Vec3 = [z0, y0 - h, x0 - h], bhi: Vec3 = [z1, y1 + h, x1 + h];  // just the patches
@@ -561,8 +603,73 @@ export class Search {
         d.set(r.data.subarray(row * C, (row + P) * C), y * P * C);
       }
       if (!informative(d)) { this.skipped++; continue; }  // no data or blank: nothing to match
-      this.queue.push({ c, pri: this.priorAt(c), patch: { data: d, size: P, channels: C } });
+      this.queue.push({ c, pri: this.priorAt(c), patch: { data: d, size: P, channels: C }, tile });
+      if (st) st.left++;
     }
+  }
+
+  // ---- lazy neighbours (Options.lazyNeighbours, 3-D) ----
+  private lazyT = new Map<number, LazyTile>();  // tiles read lazily, until decided with nothing parked
+  private have = new Set<number>();             // tiles whose working-level chunk was downloaded
+  private cutTop = -Infinity;                   // the policy's top-th best score (rank)
+  private bests: number[] = [];                 // tiles' best inside scores, sorted (quantile policy)
+  /** Tiles read lazily, crossing groups read (neighbours downloaded), read free (their chunks
+   * were there), parked (waiting for their chunks), and parked groups read later. */
+  lazy = { tiles: 0, fetched: 0, free: 0, parked: 0, unparked: 0 };
+
+  /** Run a read in the background as the tile reads run (the read loop waits for it). */
+  private spawn(job: Promise<void>) {
+    const p: Promise<void> = job.catch(() => {}).finally(() => { this.inflight.delete(p); this.queueDirty = true; });
+    this.inflight.add(p);
+  }
+  /** A tile's chunk is there: parked groups next to it that now have every chunk are read. */
+  private haveAdd(k: number) {
+    if (this.have.has(k)) return;
+    this.have.add(k);
+    const t0 = Math.floor(k / 2 ** 40), t1 = Math.floor(k / 2 ** 20) % 2 ** 20, t2 = k % 2 ** 20;
+    for (const ay of [-1, 0, 1]) for (const ax of [-1, 0, 1]) {
+      if (!ay && !ax) continue;
+      const v = tileKey([t0, t1 + ay, t2 + ax]), st = this.lazyT.get(v);
+      if (!st?.done || !st.parked.length) continue;
+      st.parked = st.parked.filter((g) => {
+        if (!g.need.every((n) => this.have.has(n))) return true;
+        this.lazy.unparked++;
+        this.spawn(this.queuePatches(g.cs));
+        return false;
+      });
+      if (!st.parked.length) this.lazyT.delete(v);
+    }
+  }
+  /** A lazy tile's inside patches are all scored: its crossing groups are read when their chunks
+   * are there, or when the tile looks promising (then their chunks are downloaded); else parked. */
+  private decide(key: number) {
+    const st = this.lazyT.get(key), pol = this.opt.lazyNeighbours;
+    if (!st || st.done || !pol) return;
+    st.done = true;
+    let go: boolean;
+    if (pol.quantile !== undefined) {
+      const b = this.bests;
+      go = !b.length || st.best >= b[Math.min(b.length - 1, Math.floor(pol.quantile * b.length))];
+      let i = 0, j = b.length;  // insert sorted
+      while (i < j) { const m = (i + j) >> 1; if (b[m] < st.best) i = m + 1; else j = m; }
+      b.splice(i, 0, st.best);
+    } else go = st.best >= this.cutTop;
+    for (const g of st.groups) {
+      if (g.need.every((n) => this.have.has(n))) { this.lazy.free++; this.spawn(this.queuePatches(g.cs)); }
+      else if (go) { this.lazy.fetched++; this.spawn(this.queuePatches(g.cs)); for (const n of g.need) this.haveAdd(n); }
+      else { this.lazy.parked++; st.parked.push(g); }
+    }
+    if (!st.parked.length) this.lazyT.delete(key);
+  }
+  /** After a batch is scored: the lazy tiles' best inside scores, and the tiles now decided. */
+  private lazyScored(batch: { tile?: number }[], ids: number[]) {
+    batch.forEach((q, k) => {
+      if (q.tile === undefined) return;
+      const st = this.lazyT.get(q.tile), it = this.items.get(ids[k]);
+      if (!st || st.done) return;
+      if (it) st.best = Math.max(st.best, it.s);
+      if (--st.left <= 0) this.decide(q.tile);
+    });
   }
 
   /** Read tiles until every ranked tile is read (with the rough pass: every tile it picks) or
@@ -630,6 +737,7 @@ export class Search {
         });
         this.embedded += batch.length;
         this.rank(fresh);
+        if (this.opt.lazyNeighbours) this.lazyScored(batch, fresh);
         this.prune();
         await new Promise((r) => setTimeout(r, 0));  // let the page draw
         this.emit({ tilesRead: this.next, patches: this.embedded, queued: this.queue.length, ...this.roughCounts(),
@@ -708,12 +816,18 @@ export class Search {
     if (!k) return;
     const L = W + k, p = P / 2 ** k, f = 2 ** k;
     const q = this.query, c: Vec3 = [d3 ? Math.floor(q[0] / f) : 0, Math.floor(q[1] / f), Math.floor(q[2] / f)];
-    const base = this.opt.sketch ? shrink(this.opt.sketch, p) : (await this.readAt(L, [c], p))[0];
-    if (!base || !informative(base.data)) return;
-    const q0 = (await this.emb.embed([base], undefined, undefined, this.spec))[0];
+    const tok = !!this.opt.roughTokens && !this.opt.sketch;  // a drawing has no chunk plane around it
+    let q0: Float32Array | null;
+    if (tok) q0 = (await this.roughDescs(L, [c], p))[0];
+    else {
+      const base = this.opt.sketch ? shrink(this.opt.sketch, p) : (await this.readAt(L, [c], p))[0];
+      if (!base || !informative(base.data)) return;
+      q0 = (await this.emb.embed([base], undefined, undefined, this.spec))[0];
+    }
+    if (!q0) return;
     this.examples[0].rough = q0;
     // 2-D grids are not overlapping (stride P at the working level): sample every other place
-    this.rough = { L, p, stride: d3 ? p : 2 * p, k, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], dirty: false, withEmbs: 0,
+    this.rough = { L, p, stride: d3 ? p : 2 * p, k, tok, q0, q: Float32Array.from(q0), goods: [], bads: [], pool: [], dirty: false, withEmbs: 0,
                    scores: [], ahead: null, cursor: 0, cells: 0, scored: new Set(), ranked: this.allTiles };
   }
 
@@ -742,8 +856,15 @@ export class Search {
     const cur = await (r.ahead ?? this.roughFetch());
     r.ahead = r.cursor < this.order.length ? this.roughFetch() : null;
     const { tiles, cells, patches } = cur;
-    const keep = cells.map((_, i) => i).filter((i) => patches[i] && informative(patches[i]!.data));
-    const embs = keep.length ? await this.emb.embed(keep.map((i) => patches[i]!), undefined, undefined, this.spec) : [];
+    let keep: number[], embs: Float32Array[];
+    if (cur.prep) {
+      const d = await this.roughFinish(cur.prep);
+      keep = cells.map((_, i) => i).filter((i) => d[i]);
+      embs = keep.map((i) => d[i]!);
+    } else {
+      keep = cells.map((_, i) => i).filter((i) => patches[i] && informative(patches[i]!.data));
+      embs = keep.length ? await this.emb.embed(keep.map((i) => patches[i]!), undefined, undefined, this.spec) : [];
+    }
     const per = tiles.map(() => ({ s: -Infinity, embs: [] as Float32Array[] }));
     keep.forEach((i, j) => {
       const t = per[cells[i].ti];
@@ -802,7 +923,109 @@ export class Search {
       return out;
     };
     tiles.forEach((t, ti) => { for (const z of axis(0, t)) for (const y of axis(1, t)) for (const x of axis(2, t)) cells.push({ ti, c: [z, y, x] }); });
+    if (r.tok) return { tiles, cells, patches: [], prep: await this.roughPrep(r.L, cells.map((c) => c.c), r.p) };
     return { tiles, cells, patches: await this.readAt(r.L, cells.map((c) => c.c), r.p) };
+  }
+
+  /** Tokens mode, the reads: for places `centers` (level L, p-boxes), the level-L chunk planes
+   * they lie in, each scaled up to the model's input when smaller (a 64 px plane to 112: 1.75x)
+   * and cut into crops of that size inside it; each place gets the crop that holds most of its
+   * box and the tokens under the box, weighted by how much of each the box covers. One model run
+   * per crop scores every place in it (in 3-D ~16), where a run per place scores one. */
+  private async roughPrep(L: number, centers: Vec3[], p: number): Promise<RoughPrep> {
+    const sp = this.spec, S = sp.input, g = sp.grid, tp = S / g, h = p / 2;
+    const lv = this.src.levels[L], ch = lv.chunk, sh = lv.shape;
+    const groups = new Map<string, number[]>();
+    centers.forEach((c, i) => {
+      const k = `${c[0]},${Math.floor(c[1] / ch[1])},${Math.floor(c[2] / ch[2])}`;
+      let a = groups.get(k);
+      if (!a) groups.set(k, (a = []));
+      a.push(i);
+    });
+    const crops: Patch[] = [], at: RoughPrep["at"] = centers.map(() => null);
+    await Promise.all([...groups.values()].map(async (idx) => {
+      const c0 = centers[idx[0]], z = c0[0];
+      const y0 = Math.floor(c0[1] / ch[1]) * ch[1], x0 = Math.floor(c0[2] / ch[2]) * ch[2];
+      const y1 = Math.min(y0 + ch[1], sh[1]), x1 = Math.min(x0 + ch[2], sh[2]), H = y1 - y0, X = x1 - x0;
+      if (H < 2 || X < 2 || z < 0 || z >= sh[0]) return;
+      let r: Region;
+      try { r = await this.src.read(L, [z, y0, x0], [z + 1, y1, x1]); } catch { return; }
+      const C = r.channels, k = Math.min(8, Math.max(1, S / Math.min(H, X)));
+      const Hs = Math.max(S, Math.round(H * k)), Xs = Math.max(S, Math.round(X * k));
+      const origins = (n: number) => { const o: number[] = []; for (let v = 0; v + S < n; v += S) o.push(v); o.push(n - S); return o; };
+      const oys = origins(Hs), oxs = origins(Xs);
+      // the crop along an axis holding most of [lo, hi) (ties: the one centred nearest)
+      const pick = (os: number[], lo: number, hi: number) => {
+        let best = os[0], bv = -Infinity;
+        for (const o of os) {
+          const v = Math.min(hi, o + S) - Math.max(lo, o) - 1e-6 * Math.abs(o + S / 2 - (lo + hi) / 2);
+          if (v > bv) { bv = v; best = o; }
+        }
+        return best;
+      };
+      const weights = (o: number, lo: number, hi: number) => {
+        const out: { t: number; w: number }[] = [];
+        for (let t = Math.max(0, Math.floor((lo - o) / tp)); t < g && o + t * tp < hi; t++) {
+          const w = Math.min(hi, o + (t + 1) * tp) - Math.max(lo, o + t * tp);
+          if (w > 0) out.push({ t, w });
+        }
+        return out;
+      };
+      const made = new Map<string, number>();
+      for (const i of idx) {
+        const c = centers[i];
+        const by0 = Math.max(y0, c[1] - h), by1 = Math.min(y1, c[1] + h), bx0 = Math.max(x0, c[2] - h), bx1 = Math.min(x1, c[2] + h);
+        if (by1 - by0 < 1 || bx1 - bx0 < 1) continue;
+        const box = new Float32Array((by1 - by0) * (bx1 - bx0) * C);
+        for (let y = by0; y < by1; y++) box.set(r.data.subarray(((y - y0) * X + (bx0 - x0)) * C, ((y - y0) * X + (bx1 - x0)) * C), (y - by0) * (bx1 - bx0) * C);
+        if (!informative(box)) continue;
+        const ylo = (by0 - y0) * k, yhi = (by1 - y0) * k, xlo = (bx0 - x0) * k, xhi = (bx1 - x0) * k;
+        const oy = pick(oys, ylo, yhi), ox = pick(oxs, xlo, xhi), key = `${oy},${ox}`;
+        let ci = made.get(key);
+        if (ci === undefined) {
+          const crop = cropScaled(r, H, X, C, k, oy, ox, S);
+          if (missingFraction(crop.data) > 0.5) { made.set(key, -1); continue; }
+          crop.data = fillMissing(crop.data);
+          made.set(key, (ci = crops.length));
+          crops.push(crop);
+        }
+        if (ci < 0) continue;
+        const wy = weights(oy, ylo, yhi), wx = weights(ox, xlo, xhi), w: { t: number; w: number }[] = [];
+        for (const a of wy) for (const b of wx) w.push({ t: a.t * g + b.t, w: a.w * b.w });
+        at[i] = { crop: ci, w };
+      }
+    }));
+    return { crops, at };
+  }
+
+  /** Tokens mode, the model: every crop through it once, each place's tokens pooled (unit length). */
+  private async roughFinish(prep: RoughPrep): Promise<(Float32Array | null)[]> {
+    if (!prep.crops.length) return prep.at.map(() => null);
+    const grids = await this.emb.gridTokens(prep.crops, this.spec);
+    return prep.at.map((a) => {
+      if (!a) return null;
+      const G = grids[a.crop], D = G.D, v = new Float32Array(D);
+      for (const { t, w } of a.w) for (let d = 0; d < D; d++) v[d] += w * G.tokens[t * D + d];
+      let n = 0;
+      for (let d = 0; d < D; d++) n += v[d] * v[d];
+      n = Math.sqrt(n) || 1;
+      for (let d = 0; d < D; d++) v[d] /= n;
+      return v;
+    });
+  }
+
+  /** Tokens mode: the rough view of places at level L (the query, an example, a marked hit). */
+  private async roughDescs(L: number, centers: Vec3[], p: number): Promise<(Float32Array | null)[]> {
+    return this.roughFinish(await this.roughPrep(L, centers, p));
+  }
+
+  /** The rough view of one place: tokens, or the model's run on its p-box. */
+  private async roughAt(c: Vec3): Promise<Float32Array | null> {
+    const r = this.rough!;
+    if (r.tok) return (await this.roughDescs(r.L, [c], r.p))[0];
+    const p = (await this.readAt(r.L, [c], r.p))[0];
+    if (!p || !informative(p.data)) return null;
+    return (await this.emb.embed([p], undefined, undefined, this.spec))[0];
   }
 
   /** Feedback reaches the rough pass too: the marked hit seen at level L moves the rough query,
@@ -811,9 +1034,8 @@ export class Search {
     const r = this.rough, it = this.items.get(id);
     if (!r || !it) return;
     const f = 2 ** r.k, c: Vec3 = [this.src.dims === 3 ? Math.floor(it.c[0] / f) : 0, Math.floor(it.c[1] / f), Math.floor(it.c[2] / f)];
-    const p = (await this.readAt(r.L, [c], r.p))[0];
-    if (!p || !informative(p.data)) return;
-    const e = (await this.emb.embed([p], undefined, undefined, this.spec))[0];
+    const e = await this.roughAt(c);
+    if (!e) return;
     if (!(good ? this.good : this.bad).includes(id)) return;  // undone meanwhile
     (good ? r.goods : r.bads).push({ id, e });
     this.roughRequery();
@@ -850,8 +1072,7 @@ export class Search {
     const r = this.rough;
     if (r) {
       const f = 2 ** r.k, rc: Vec3 = [this.src.dims === 3 ? Math.floor(c[0] / f) : 0, Math.floor(c[1] / f), Math.floor(c[2] / f)];
-      const p = (await this.readAt(r.L, [rc], r.p))[0];
-      if (p && informative(p.data)) ex.rough = (await this.emb.embed([p], undefined, undefined, this.spec))[0];
+      ex.rough = await this.roughAt(rc);
       r.q0 = unitMean(this.examples.flatMap((e) => (e.rough ? [e.rough] : [])));
       this.roughRequery();
     }
@@ -1153,6 +1374,8 @@ export class Search {
     }
     this.hv++;
     const scored = [...this.items.entries()].sort((a, b) => b[1].s - a[1].s);
+    const top = this.opt.lazyNeighbours?.top;
+    if (top) this.cutTop = scored.length >= top ? scored[top - 1][1].s : -Infinity;
     const hits: Hit[] = [];
     const bad = new Set(this.bad);
     const sp = this.opt.spread ?? DEFAULT_SPREAD, gap = sp.between * P, far = sp.fromQuery * P;
@@ -1167,6 +1390,33 @@ export class Search {
     }
     this.state.hits = hits;
   }
+}
+
+/** An S x S crop of a level-L chunk plane (`r`: H x X, C channels) scaled up `k` times
+ * (bilinear, half-pixel centres), its corner at (oy, ox) of the scaled plane; NaN where the data is. */
+function cropScaled(r: Region, H: number, X: number, C: number, k: number, oy: number, ox: number, S: number): Patch {
+  const d = new Float32Array(S * S * C), src = r.data;
+  const ax = (o: number, n: number) => {
+    const i0 = new Int32Array(S), i1 = new Int32Array(S), w = new Float32Array(S);
+    for (let u = 0; u < S; u++) {
+      const f = Math.min(n - 1, Math.max(0, (o + u + 0.5) / k - 0.5)), a = Math.floor(f);
+      i0[u] = a; i1[u] = Math.min(n - 1, a + 1); w[u] = f - a;
+    }
+    return { i0, i1, w };
+  };
+  const ay = ax(oy, H), axx = ax(ox, X);
+  for (let y = 0; y < S; y++) {
+    const r0 = ay.i0[y] * X, r1 = ay.i1[y] * X, wy = ay.w[y];
+    for (let x = 0; x < S; x++) {
+      const x0 = axx.i0[x], x1 = axx.i1[x], wx = axx.w[x], o = (y * S + x) * C;
+      for (let c = 0; c < C; c++) {
+        const a = src[(r0 + x0) * C + c], b = src[(r0 + x1) * C + c], e = src[(r1 + x0) * C + c], f = src[(r1 + x1) * C + c];
+        const top = a + wx * (b - a), bot = e + wx * (f - e);
+        d[o + c] = top + wy * (bot - top);
+      }
+    }
+  }
+  return { data: d, size: S, channels: C };
 }
 
 /** The median of the defined values of `a`. */
@@ -1197,6 +1447,11 @@ function sketchWindow(sk: Patch, w: Dims, m: Dims): Region {
     d.set(s.data.subarray(y * w[2], (y + 1) * w[2]), (z * shape[1] + y + m[1]) * shape[2] + m[2]);
   return { data: d, shape, channels: 1 };
 }
+
+/** Lazy neighbours: a tile's patches crossing into the same neighbour chunks (`need`: their
+ * tiles), and a tile read lazily (inside patches still to score, its best, groups parked). */
+interface LazyGroup { cs: Vec3[]; need: number[] }
+interface LazyTile { left: number; best: number; groups: LazyGroup[]; parked: LazyGroup[]; done: boolean }
 
 /** Token mode: one plane of a tile, its crops and where its windows may be centred. */
 interface TokPlane {

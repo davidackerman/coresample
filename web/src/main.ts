@@ -14,6 +14,7 @@ import { OlViewer } from "./olviewer.ts";
 import { OmeZarrSource, TileSource, legacySurvey, openZoomify, type Source, type Vec3 } from "./sources.ts";
 import { countEvent, countOpen } from "./count.ts";
 import { PrecomputedSource } from "./precomputed.ts";
+import type { LazyPolicy } from "./search.ts";
 import { canPick, entryFolder, findImages, handleFolder, pickFolder, serveFolder, unserve, type Folder } from "./local.ts";
 import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { TIFF_URL, tiffSource } from "./remotetiff.ts";
@@ -34,6 +35,16 @@ const COARSE_BUDGET = 4e6;  // voxels of the coarse level scanned whole (the sca
 let src: Source | null = null;
 let preset: Preset | null = null;
 const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale = full-res px per screen px
+
+/** Two read fixes on trial (experiment/fast-reads), each on unless the address turns it off:
+ * the rough pass from the model's tokens over whole chunk planes (?roughtok=0: one run per place,
+ * as main), lazy neighbour chunks in 3-D (?nbr=0: every tile with its neighbours, as main), and
+ * a precomputed volume's downloaded chunks kept as downloaded (?rawcache=0: decoded only, as
+ * main). ?bench=60 runs main's way and these from the same click (bench below). */
+const fastParams = new URL(location.href).searchParams;
+const fast = { roughTokens: fastParams.get("roughtok") !== "0", lazy: fastParams.get("nbr") !== "0", rawCache: fastParams.get("rawcache") !== "0" };
+/** When a tile's crossing patches are read (test 15). */
+const LAZY: LazyPolicy = { top: 200 };
 let search: Search | null = null;
 let olv: OlViewer | null = null;  // OpenLayers for tile pyramids
 let ngv: NgViewer | null = null;
@@ -577,6 +588,7 @@ async function setSource(s: Source, v: Preset["view"], p: Preset | null, current
   clearSearch();
   if (src && src !== s) release(src);
   src = s;
+  if (s instanceof PrecomputedSource) s.setKeepRaw(fast.rawCache);
   backdrop = null;  // the where-map's picture of the dataset before
   preset = p;
   Object.assign(view, { cx: v.cx, cy: v.cy, z: v.z ?? Math.floor(s.levels[0].shape[0] / 2), scale: v.scale });
@@ -925,7 +937,8 @@ function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorkers, topN: 60,
                                    match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
                                    expand: $<HTMLSelectElement>("region").value === "auto", brush: brushW ?? undefined,
-                                   roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""] });
+                                   roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""],
+                                   roughTokens: fast.roughTokens, lazyNeighbours: fast.lazy ? LAZY : undefined });
   $<HTMLButtonElement>("clear").disabled = false;
   $<HTMLButtonElement>("addex").disabled = false;
   const tok = $<HTMLSelectElement>("method").value === "tokens", bb = $<HTMLButtonElement>("brushbtn");
@@ -1819,8 +1832,86 @@ $("bpadoff").addEventListener("click", () => againWithBrush(null));
 (window as any).coresample = { get src() { return src; }, get emb() { return emb; }, get ngv() { return ngv; }, get olv() { return olv; }, get gv() { return gv; }, get search() { return search; },
   local: { open: openLocal, handleFolder, entryFolder } };
 
+// ---------------------------------------------------------------------------------------
+// The bench (?bench=60): the same click searched main's way and with the read fixes, each run
+// for that many seconds from cold (caches emptied, downloads past the browser's cache), then a
+// table: tiles read, places the rough pass ranked, patches compared, MB downloaded, the model's
+// busy time, the first hit and the top 10 hits' mean score (the same query and model: higher
+// = closer matches found). ?benchruns=main,new picks the runs; ?benchauto=1 starts after 20 s.
+// ---------------------------------------------------------------------------------------
+const BENCH_RUNS: Record<string, typeof fast> = {
+  main: { roughTokens: false, lazy: false, rawCache: false },
+  new: { roughTokens: true, lazy: true, rawCache: true },
+  tokens: { roughTokens: true, lazy: false, rawCache: false },
+  reads: { roughTokens: false, lazy: true, rawCache: true },
+};
+function benchPanel(secs: number, names: string[]) {
+  const el = document.createElement("div");
+  el.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:99999;background:#0d1117ee;color:#e6edf3;font:12px ui-monospace,monospace;" +
+    "padding:8px 10px;max-width:min(96vw,1100px);max-height:60vh;overflow:auto;border:1px solid #30363d;border-radius:6px";
+  el.innerHTML = `<div style="margin-bottom:6px">Bench: ${names.join(", ")}, ${secs} s each, from the box at the middle of the view. ` +
+    `Wait until the data shows, then <button id="benchgo">Start</button> <button id="benchcopy" disabled>Copy</button></div><pre id="benchout" style="margin:0;white-space:pre"></pre>`;
+  document.body.appendChild(el);
+  const go = el.querySelector<HTMLButtonElement>("#benchgo")!, copy = el.querySelector<HTMLButtonElement>("#benchcopy")!, out = el.querySelector("pre")!;
+  copy.addEventListener("click", () => navigator.clipboard.writeText(out.textContent ?? "").catch(() => {}));
+  const start = () => { go.disabled = true; void runBench(secs, names, out).then(() => (copy.disabled = false)); };
+  go.addEventListener("click", start);
+  if (fastParams.get("benchauto") === "1") setTimeout(start, 20000);
+}
+async function runBench(secs: number, names: string[], out: HTMLElement) {
+  const s = src;
+  if (!s) { out.textContent = "no dataset open"; return; }
+  const lines: string[] = [], show = (extra = "") => { out.textContent = lines.join("\n") + (extra ? "\n" + extra : ""); };
+  lines.push(`${s.name}, level ${searchLevel()}, box ${$<HTMLSelectElement>("patch").value} px, ${emb.spec.name}, ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] ?? ""}`);
+  show("loading the model...");
+  await warm();
+  await emb.gridTokens([{ data: new Float32Array(emb.spec.input * emb.spec.input), size: emb.spec.input, channels: 1 }]);  // its tokens export too
+  lines.push(`model on ${emb.provider}`);
+  const at = { x: view.cx, y: view.cy, z: view.z };
+  const marks = [10, 20, 30, 45, 60, 90, 120, 180, 240, 300].filter((t) => t < secs).concat([secs]);
+  lines.push("run      t s  tiles  ranked  patches     MB  model s  runs   hits top10  1st hit  quick pass");
+  const results: Record<string, unknown>[] = [];
+  for (const name of names) {
+    const cfg = BENCH_RUNS[name];
+    if (!cfg) { lines.push(`${name}: no such run`); continue; }
+    Object.assign(fast, cfg);
+    s.flush?.();
+    emb.clearCache();
+    if (s instanceof PrecomputedSource) s.setKeepRaw(fast.rawCache);
+    await new Promise((r) => setTimeout(r, 1000));
+    const b0 = s.bytesRead, m0 = emb.seconds, n0 = emb.count;
+    queryAt(at.x, at.y, at.z);
+    const me = search;
+    if (!me) { lines.push(`${name}: the search did not start`); continue; }
+    const t0 = performance.now();
+    for (const m of marks) {
+      while ((performance.now() - t0) / 1000 < m) {
+        await new Promise((r) => setTimeout(r, 250));
+        show(`${name}: ${((performance.now() - t0) / 1000).toFixed(0)} s, ${me.state.phase}, ${me.state.tilesRead} tiles`);
+      }
+      const st = me.state, top = st.hits.slice(0, 10), mean = top.length ? top.reduce((a, h) => a + h.score, 0) / top.length : NaN;
+      const row = { run: name, t: m, tiles: st.tilesRead, ranked: st.rough?.places ?? 0, patches: st.patches, mb: (s.bytesRead - b0) / 1e6,
+                    modelS: emb.seconds - m0, runs: emb.count - n0, hits: st.hits.length, top10: mean, first: st.firstHitSeconds, quick: st.scanSeconds, phase: st.phase };
+      results.push(row);
+      lines.push(`${name.padEnd(7)} ${String(m).padStart(4)} ${String(row.tiles).padStart(6)} ${String(row.ranked).padStart(7)} ${String(row.patches).padStart(8)} ` +
+        `${row.mb.toFixed(0).padStart(6)} ${row.modelS.toFixed(1).padStart(8)} ${String(row.runs).padStart(6)} ${String(row.hits).padStart(5)} ${Number.isFinite(mean) ? mean.toFixed(3) : "  -  "} ` +
+        `${row.first == null ? "    -" : row.first.toFixed(1).padStart(7)}  ${row.quick ? row.quick.toFixed(1) : "-"}${row.phase === "done" ? " (done)" : ""}`);
+      show();
+    }
+    me.stop();
+    const lz = (me as unknown as { lazy?: Record<string, number> }).lazy;
+    if (lz && cfg.lazy) lines.push(`        lazy neighbours: ${lz.tiles} tiles; crossing groups read ${lz.fetched} (neighbours downloaded), ${lz.free} free, ${lz.unparked} later, ${lz.parked - lz.unparked} left`);
+    show();
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  (window as any).coresampleBench = results;
+  console.log("[bench]", JSON.stringify(results));
+  show("done: Copy puts the table on the clipboard");
+}
+
 // start
 const params = new URL(location.href).searchParams, want = params.get("d"), own = params.get("url");
+if (Number(params.get("bench"))) benchPanel(Number(params.get("bench")), (params.get("benchruns") ?? "main,new,tokens,reads").split(","));
 if (own) { $<HTMLInputElement>("custom").value = own; openCustom(own); }
 else {
   const first = PRESETS.find((p) => p.id === want) ?? PRESETS.find((p) => p.id === DEFAULT_PRESET) ?? PRESETS[0];

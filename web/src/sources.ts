@@ -30,6 +30,16 @@ export interface Source {
   look?(): string;
   /** A link that opens the original data at a place, when there is a viewer for it. */
   link?(level: number, center: Vec3): string | null;
+  /** Forget every chunk kept (the bench: each run starts cold). */
+  flush?(): void;
+}
+
+/** How the readers fetch. `noStore`: past the browser's HTTP cache too (the bench, `?bench=`,
+ * so a run does not read what the run before it downloaded). */
+export const net = { noStore: typeof location !== "undefined" && new URL(location.href).searchParams.has("bench") };
+/** fetch's options for a read (with `init`, e.g. a range header). */
+export function readInit(init?: RequestInit): RequestInit | undefined {
+  return net.noStore ? { ...init, cache: "no-store" } : init;
 }
 
 export function normalizeUrl(url: string): string {
@@ -70,6 +80,11 @@ export class Lru<V> {
   private total = 0;
   private limit: number;
   constructor(limit: number) { this.limit = limit; }
+  /** Bytes kept now. */
+  get size() { return this.total; }
+  /** A new bound (the least recently used go until the rest fit). */
+  setLimit(limit: number) { this.limit = limit; this.evict(); }
+  clear() { this.map.clear(); this.total = 0; }
   get(k: string): V | undefined {
     const e = this.map.get(k);
     if (!e) return undefined;
@@ -114,7 +129,8 @@ class CountingStore {
   private first: { key: string; n: number } | null = null;  // a file read, to check other addresses with
   private cache = new Lru<Uint8Array | null>(768 << 20);
   private pending = new Map<string, Promise<Uint8Array | undefined>>();
-  constructor(url: string) { this.inners = [new zarr.FetchStore(url)]; }
+  constructor(url: string) { this.inners = [new zarr.FetchStore(url, { overrides: readInit() })]; }
+  flush() { this.cache.clear(); }
   /** Addresses in use. */
   get addresses() { return this.inners.length; }
   /** Each key always to the same address (so the browser's cache works); retries to the first. */
@@ -131,7 +147,7 @@ class CountingStore {
     const ok = await Promise.all(urls.map(async (u) => {
       try { const r = await fetch(u + f.key); return r.ok && (await r.arrayBuffer()).byteLength === f.n; } catch { return false; }
     }));
-    urls.forEach((u, i) => { if (ok[i]) this.inners.push(new zarr.FetchStore(u)); });
+    urls.forEach((u, i) => { if (ok[i]) this.inners.push(new zarr.FetchStore(u, { overrides: readInit() })); });
   }
   async get(key: zarr.AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
     try { return await this.getOnce(key, key, (s) => s.get(key, opts), true); } finally { this.chunks++; }
@@ -221,6 +237,7 @@ export class OmeZarrSource implements Source {
   get bytesRead() { return this.netBytes ? this.netBytes() : this.store.bytes; }
   private netBytes: (() => number) | null = null;
   get chunksRead() { return this.store.chunks; }
+  flush() { this.store.flush(); }
 
   static async open(url: string, name?: string, { mirrors = true, bytes }: { mirrors?: boolean; bytes?: () => number } = {}): Promise<OmeZarrSource> {
     const s = new OmeZarrSource(normalizeUrl(url), name);
@@ -507,6 +524,7 @@ export class TileSource implements Source {
   }
 
   private blobs = new Lru<Promise<Blob | null>>(256 << 20);
+  flush() { this.cache.clear(); this.blobs.clear(); }
 
   /** The tile's image file (cached), as the viewer draws it and the search decodes it. Some
    * caches serve cut-off images (Esri's Mars CTX, at every zoom here and there; drawn, the
@@ -533,7 +551,7 @@ export class TileSource implements Source {
     for (let attempt = 0, slowed = 0; attempt < 5; attempt++) {
       const wait = 300 * 2 ** attempt;
       try {
-        const r = await this.slot(() => fetch(this.spec.url(zoom, x, y)));
+        const r = await this.slot(() => fetch(this.spec.url(zoom, x, y), readInit()));
         if (r.status === 404 || r.status === 400) return null;  // no tile there
         if (r.status >= 500 && r.status !== 503 && attempt >= 1) return null;  // a broken tile (some caches have gaps)
         if (r.status === 429 || r.status === 503) {

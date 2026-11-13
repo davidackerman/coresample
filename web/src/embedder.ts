@@ -224,7 +224,19 @@ export class Embedder {
    * tile-token mode, whatever the model), or with `own` the model in use's when it has its own
    * (MorphEm's, PE-Core-T's 7 x 7 at 112 px: the why / match maps); `model`, as embed's. */
   async tokens(crops: Patch[], own = false, model: ModelSpec = this.spec): Promise<TokenGrid[]> {
-    const sp = own && model.ownTokens ? model : TOKENS_MODEL, size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size;
+    const sp = own && model.ownTokens ? model : TOKENS_MODEL;
+    return this.runTokens(crops, sp, sp.file);
+  }
+  /** Each crop's grid of unit-length patch tokens from model `sp` itself at its input size
+   * (DINOv2-small's 8 x 8 at 112 px from its tokens export, MorphEm's and PE-Core-T's 7 x 7,
+   * DINOv2 224's 16 x 16): the rough pass's tokens (Options.roughTokens). */
+  async gridTokens(crops: Patch[], sp: ModelSpec = this.spec): Promise<TokenGrid[]> {
+    return this.runTokens(crops, sp, sp.brushFile ?? sp.file);
+  }
+  /** Drop the embeddings kept for the session (the bench: each run starts cold). */
+  clearCache() { this.cache.clear(); }
+  private async runTokens(crops: Patch[], sp: ModelSpec, file: string): Promise<TokenGrid[]> {
+    const size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size;
     const out: TokenGrid[] = [];
     for (let s = 0; s < crops.length;) {
       await new Promise((r) => setTimeout(r, 0));
@@ -233,7 +245,7 @@ export class Embedder {
       const x = new Float32Array(part.length * n);
       part.forEach((p, j) => prepare(p, x, j * n, size, sp));
       const t0 = performance.now();
-      const r = await this.onnx.run(this.file(sp.file), x, [part.length, ch, size, size]);
+      const r = await this.onnx.run(this.file(file), x, [part.length, ch, size, size]);
       this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
       this.count += part.length;
       this.provider = this.onnx.provider;
