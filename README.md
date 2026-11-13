@@ -59,9 +59,9 @@ twice the first time, to run the model in several threads: about 4x one thread; 
    tiles; the best 10% go on to stage 3 (on some tests, the top 5% already matched reading
    everything). **Read the rest** reads the others.
 3. **Detail:** those tiles are read at the level on screen and every patch goes through the
-   same model. These scores are the hits: the score under each hit is the cosine of its embedding with your click's (the mean of **look**, the
-   CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
-   candidates are kept for re-ranking.
+   same model. These scores are the hits: the score under each hit is the cosine of its
+   embedding with your click's (the mean of **look**, the CLS token, and **parts**, the average
+   piece token). Memory stays bounded: the best 3,000 candidates are kept for re-ranking.
 
 Nothing is uploaded. The live site counts dataset views and searches with GoatCounter (no
 cookies; your own data counts only as its format, never its address). The **Options** (detailed 224 px input, centre object, any rotation, any
