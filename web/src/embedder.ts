@@ -152,6 +152,16 @@ export class Embedder {
   batch = 32;
   seconds = 0;
   count = 0;
+  /** Crops a pass for the token grids (runTokens) on the GPU: ?tokbatch=, the bench's tok32. */
+  tokBatch = 16;
+  /** Passes by path, for the bench: per-patch embeddings (embed) and token grids (runTokens). */
+  passes = { pooled: { n: 0, images: 0, s: 0 }, tokens: { n: 0, images: 0, s: 0 } };
+  private tally(kind: "pooled" | "tokens", images: number, s: number) {
+    const p = this.passes[kind];
+    p.n++;
+    p.images += images;
+    p.s += s;
+  }
   private cache = new Map<string, Float32Array>();
   private files = new Map<string, OnnxModel>();
   private url: (file: string) => string;
@@ -203,8 +213,10 @@ export class Embedder {
       // the next batch's pixels made while the GPU runs this one (on the CPU it changes nothing)
       const nextS = s + idx.length, nextIdx = todo.slice(nextS, nextS + this.batch), nextX = nextIdx.length ? prep(nextIdx) : null;
       const r = await pass;
-      this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
+      const sec = (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
+      this.seconds += sec;
       this.count += idx.length;
+      this.tally("pooled", idx.length, sec);
       this.provider = this.onnx.provider;
       const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens: pool them here
       idx.forEach((i, j) => {
@@ -236,18 +248,28 @@ export class Embedder {
   /** Drop the embeddings kept for the session (the bench: each run starts cold). */
   clearCache() { this.cache.clear(); }
   private async runTokens(crops: Patch[], sp: ModelSpec, file: string): Promise<TokenGrid[]> {
-    const size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size;
+    const size = sp.input, ch = sp.grey ? 1 : 3, n = ch * size * size, model = this.file(file);
     const out: TokenGrid[] = [];
-    for (let s = 0; s < crops.length;) {
-      await new Promise((r) => setTimeout(r, 0));
-      const B = this.provider === "wasm" ? 2 : 16, part = crops.slice(s, s + B);
-      s += part.length;
+    if (!crops.length) return out;
+    // where the model runs before the first pass sets the batch size, as embed does
+    if (!this.provider && typeof this.onnx.session === "function") { await this.onnx.session(model); this.provider = this.onnx.provider; }
+    const B = this.provider === "wasm" ? 2 : this.tokBatch;
+    const prep = (part: Patch[]) => {
       const x = new Float32Array(part.length * n);
       part.forEach((p, j) => prepare(p, x, j * n, size, sp));
-      const t0 = performance.now();
-      const r = await this.onnx.run(this.file(file), x, [part.length, ch, size, size]);
-      this.seconds += (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
+      return x;
+    };
+    let part = crops.slice(0, B), x = prep(part);
+    for (let s = 0; part.length;) {
+      await new Promise((r) => setTimeout(r, 0));
+      const t0 = performance.now(), pass = this.onnx.run(model, x, [part.length, ch, size, size]);
+      // the next batch's pixels made while the GPU runs this one, as embed does
+      const next = crops.slice(s + part.length, s + part.length + B), nextX = next.length ? prep(next) : null;
+      const r = await pass;
+      const sec = (r.ms ?? performance.now() - t0) / 1000;  // the pass alone, not its wait for a turn
+      this.seconds += sec;
       this.count += part.length;
+      this.tally("tokens", part.length, sec);
       this.provider = this.onnx.provider;
       const data = r.data as Float32Array, T = r.dims[1], D = r.dims[2], g = Math.round(Math.sqrt(T - 1));
       part.forEach((_, j) => {
@@ -255,6 +277,9 @@ export class Embedder {
         for (let t = 0; t < g * g; t++) unitPart(tok, t * D, D);
         out.push({ tokens: tok, g, D });
       });
+      s += part.length;
+      part = next;
+      if (nextX) x = nextX;
     }
     return out;
   }

@@ -85,6 +85,16 @@ test("lazy neighbours that never look promising still read every crossing patch 
   assert.equal(b.lazy.parked, b.lazy.unparked, JSON.stringify(b.lazy));
 });
 
+test("token passes take tokBatch crops each, the next made while one runs, the grids in order", async () => {
+  const one = stand("webgpu"), many = stand("webgpu");
+  many.emb.tokBatch = 4;
+  const S = many.emb.spec.input;
+  const crops = Array.from({ length: 10 }, (_, i) => ({ data: Float32Array.from({ length: S * S }, (_, j) => (i * 31 + j * 7) % 255), size: S, channels: 1 }));
+  const got = await many.emb.gridTokens(crops);
+  assert.deepEqual([many.emb.passes.tokens.n, many.emb.passes.tokens.images, many.emb.passes.pooled.n], [3, 10, 0]);
+  for (let i = 0; i < crops.length; i++) assert.deepEqual(got[i].tokens, (await one.emb.gridTokens([crops[i]]))[0].tokens, `crop ${i}`);
+});
+
 test("the rough pass from tokens ranks the tiles with a model run per crop, not per place", async () => {
   const pa = stand("webgpu"), pb = stand("webgpu");
   const a = new Search(await OmeZarrSource.open(base, "a", { mirrors: false }), pa.emb, [36, 80, 80], opt({ roughPass: true }));

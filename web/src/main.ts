@@ -42,7 +42,8 @@ const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale
  * a precomputed volume's downloaded chunks kept as downloaded (?rawcache=0: decoded only, as
  * main). ?bench=60 runs main's way and these from the same click (bench below). */
 const fastParams = new URL(location.href).searchParams;
-const fast = { roughTokens: fastParams.get("roughtok") !== "0", lazy: fastParams.get("nbr") !== "0", rawCache: fastParams.get("rawcache") !== "0" };
+const fast = { roughTokens: fastParams.get("roughtok") !== "0", lazy: fastParams.get("nbr") !== "0", rawCache: fastParams.get("rawcache") !== "0",
+               tokBatch: Number(fastParams.get("tokbatch")) || 16 };  // crops a pass for the rough pass's tokens
 /** When a tile's crossing patches are read: its best inside score reaches the 60th best so far
  * (?nbrtop=200: later; test 15, 90 queries: top 60 within 0.014 p@10 at 0.5-0.7x the bytes,
  * top 200 no loss at 0.6-0.85x). */
@@ -122,6 +123,7 @@ async function cachedBytes(url: string): Promise<ArrayBuffer> {
 try { for (const v of ["v2", "v3"]) caches.delete(`coresample-models-${v}`).catch(() => {}); } catch { /* no Cache Storage here */ }  // the previous models
 const emb = new Embedder((file) => new URL(`models/${file}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
+emb.tokBatch = fast.tokBatch;
 const modelEl = $("model");
 function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title = "") {
   modelEl.className = `model ${kind}`;
@@ -1840,13 +1842,52 @@ $("bpadoff").addEventListener("click", () => againWithBrush(null));
 // table: tiles read, places the rough pass ranked, patches compared, MB downloaded, the model's
 // busy time, the first hit and the top 10 hits' mean score (the same query and model: higher
 // = closer matches found). ?benchruns=main,new picks the runs; ?benchauto=1 starts after 20 s.
+// First, each model file's passes timed alone (modelTiming); after each run, its model time by
+// path (per-place passes, token passes). tok32: tokens with 32 crops a pass (?tokbatch=32).
 // ---------------------------------------------------------------------------------------
 const BENCH_RUNS: Record<string, typeof fast> = {
-  main: { roughTokens: false, lazy: false, rawCache: false },
-  new: { roughTokens: true, lazy: true, rawCache: true },
-  tokens: { roughTokens: true, lazy: false, rawCache: false },
-  reads: { roughTokens: false, lazy: true, rawCache: true },
+  main: { roughTokens: false, lazy: false, rawCache: false, tokBatch: 16 },
+  new: { roughTokens: true, lazy: true, rawCache: true, tokBatch: 16 },
+  tokens: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 16 },
+  tok32: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 32 },
+  reads: { roughTokens: false, lazy: true, rawCache: true, tokBatch: 16 },
 };
+/** The bench's first lines: each model file's passes, warm, the view still, at a few batch sizes
+ * (ms a pass / ms an image; first: the first pass at that size, its shaders built), and the two
+ * files taking turns as a tokens search has them (a per-place pass between token passes). */
+async function modelTiming(): Promise<string[]> {
+  const S = emb.spec.input, P = emb.passes, batch0 = emb.batch, tok0 = emb.tokBatch;
+  const crops = (n: number) => Array.from({ length: n }, () => ({ data: Float32Array.from({ length: S * S }, () => Math.random()), size: S, channels: 1 }));
+  const pass = async (kind: "pooled" | "tokens", B: number) => {  // one pass of B: its ms
+    const p = P[kind], s0 = p.s, n0 = p.n;
+    if (kind === "pooled") { emb.batch = B; await emb.embed(crops(B)); } else { emb.tokBatch = B; await emb.gridTokens(crops(B)); }
+    return p.n > n0 ? ((p.s - s0) / (p.n - n0)) * 1000 : NaN;
+  };
+  const out = ["model passes alone (ms a pass / ms an image; first: the first pass of that size):"];
+  try {
+    for (const kind of ["pooled", "tokens"] as const) {
+      const cells: string[] = [];
+      for (const B of [1, 16, 32, 64]) {
+        const first = await pass(kind, B);
+        let ms = 0;
+        for (let i = 0; i < 5; i++) ms += await pass(kind, B);
+        ms /= 5;
+        cells.push(`B${B} ${ms.toFixed(1)}/${(ms / B).toFixed(2)} (first ${first.toFixed(0)})`);
+      }
+      out.push(`  ${kind.padEnd(7)} ${cells.join("  ")}`);
+    }
+    let a = 0, b = 0;
+    for (let i = 0; i < 6; i++) {
+      const x = await pass("pooled", 32), y = await pass("tokens", 16);
+      if (i) { a += x; b += y; }
+    }
+    out.push(`  taking turns, pooled B32 then tokens B16: pooled ${(a / 5).toFixed(1)} ms, tokens ${(b / 5).toFixed(1)} ms a pass`);
+  } finally {
+    emb.batch = batch0;
+    emb.tokBatch = tok0;
+  }
+  return out;
+}
 function benchPanel(secs: number, names: string[]) {
   const el = document.createElement("div");
   el.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:99999;background:#0d1117ee;color:#e6edf3;font:12px ui-monospace,monospace;" +
@@ -1869,6 +1910,9 @@ async function runBench(secs: number, names: string[], out: HTMLElement) {
   await warm();
   await emb.gridTokens([{ data: new Float32Array(emb.spec.input * emb.spec.input), size: emb.spec.input, channels: 1 }]);  // its tokens export too
   lines.push(`model on ${emb.provider}`);
+  show("timing the model files...");
+  lines.push(...(await modelTiming()));
+  show();
   const at = { x: view.cx, y: view.cy, z: view.z };
   const marks = [10, 20, 30, 45, 60, 90, 120, 180, 240, 300].filter((t) => t < secs).concat([secs]);
   lines.push("run      t s  tiles  ranked  patches     MB  model s  runs   hits top10  1st hit  quick pass");
@@ -1877,11 +1921,12 @@ async function runBench(secs: number, names: string[], out: HTMLElement) {
     const cfg = BENCH_RUNS[name];
     if (!cfg) { lines.push(`${name}: no such run`); continue; }
     Object.assign(fast, cfg);
+    emb.tokBatch = fast.tokBatch;
     s.flush?.();
     emb.clearCache();
     if (s instanceof PrecomputedSource) s.setKeepRaw(fast.rawCache);
     await new Promise((r) => setTimeout(r, 1000));
-    const b0 = s.bytesRead, m0 = emb.seconds, n0 = emb.count;
+    const b0 = s.bytesRead, m0 = emb.seconds, n0 = emb.count, q0 = structuredClone(emb.passes);
     queryAt(at.x, at.y, at.z);
     const me = search;
     if (!me) { lines.push(`${name}: the search did not start`); continue; }
@@ -1900,8 +1945,13 @@ async function runBench(secs: number, names: string[], out: HTMLElement) {
         `${row.first == null ? "    -" : row.first.toFixed(1).padStart(7)}  ${row.quick ? row.quick.toFixed(1) : "-"}${row.phase === "done" ? " (done)" : ""}`);
       show();
     }
+    const by = (k: "pooled" | "tokens") => {
+      const p = emb.passes[k], n = p.n - q0[k].n, im = p.images - q0[k].images, sec = p.s - q0[k].s;
+      return n ? `${k} ${im} images in ${n} passes (${(im / n).toFixed(1)} a pass), ${sec.toFixed(1)} s = ${((1000 * sec) / im).toFixed(2)} ms an image` : `${k} none`;
+    };
+    lines.push(`        model time: ${by("pooled")}; ${by("tokens")}`);
     me.stop();
-    const lz = (me as unknown as { lazy?: Record<string, number> }).lazy;
+    const lz =(me as unknown as { lazy?: Record<string, number> }).lazy;
     if (lz && cfg.lazy) lines.push(`        lazy neighbours: ${lz.tiles} tiles; crossing groups read ${lz.fetched} (neighbours downloaded), ${lz.free} free, ${lz.unparked} later, ${lz.parked - lz.unparked} left`);
     show();
     await new Promise((r) => setTimeout(r, 2000));
