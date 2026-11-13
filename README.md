@@ -55,9 +55,9 @@ twice the first time, to run the model in several threads: about 4x one thread; 
    things might be (no model; a few MB).
 2. **Rough pass** (GPU): DINOv2-small (112 px), or the model picked in **Options > model**,
    reads the same areas two levels coarser (a sixteenth of the download, in 2-D), in the quick
-   pass's order, and scores every place there against your click at that level. The most promising 10% of the tiles it has scored are then read in full
-   detail (on EM, the top 5% already matched reading everything). **Read the rest** reads the
-   others.
+   pass's order, and scores every place there against your click at that level. The most
+   promising 10% of the tiles it has scored are then read in full detail (on EM, the top 5%
+   already matched reading everything). **Read the rest** reads the others.
 3. **Score:** every patch in the tiles read in detail goes through the same model; the score
    under each hit is the cosine of its embedding with your click's (the mean of **look**, the
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
