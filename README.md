@@ -11,6 +11,11 @@ twice the first time, to run the model in several threads: about 4x one thread; 
 
 [![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
 
+Inspired by [Clio](https://clio.janelia.org)'s image search ([Huang et al. 2020](https://arxiv.org/abs/2012.12175)),
+which learns each dataset's features and precomputes their signatures. coresample is a much
+simpler, rougher take: an off-the-shelf model run on the raw data as it is read, which is what
+lets it work on any dataset in the browser without any precompute.
+
 ## Using it
 
 - **Search:** pick a dataset (or open your own with **Your data**, or drop a folder or an image
