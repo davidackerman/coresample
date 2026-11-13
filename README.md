@@ -1,5 +1,7 @@
 # coresample
 
+[![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
+
 Click something in a huge image or volume (EM, slides, planetary maps, sky surveys, satellite
 imagery) and find more regions like it, in the browser, with **no precomputation**: no
 embedding pass, no index. The data's own multiscale pyramid is the index: a quick pass over a
@@ -9,8 +11,6 @@ scores everything read.
 **Try it: https://davidackerman.github.io/coresample/** (Chrome recommended: the model runs on
 your GPU through WebGPU; without it, on the CPU, about 10x slower. On the CPU the page loads
 twice the first time, to run the model in several threads: about 4x one thread; `?coi=0` keeps one).
-
-[![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
 
 ## Using it
 
@@ -53,13 +53,12 @@ twice the first time, to run the model in several threads: about 4x one thread; 
 
 1. **Quick pass:** brightness and texture statistics over a coarse level rank where similar
    things might be (no model; a few MB).
-2. **Rough pass** (GPU): in the quick pass's order, the model reads the same areas two levels
-   coarser (a sixteenth of the download, in 2-D) and scores every place there against your
-   click at that level. The most promising 10% of the tiles it has scored are then read in full
+2. **Rough pass** (GPU): DINOv2-small (112 px), or the model picked in **Options > model**,
+   reads the same areas two levels coarser (a sixteenth of the download, in 2-D), in the quick
+   pass's order, and scores every place there against your click at that level. The most promising 10% of the tiles it has scored are then read in full
    detail (on EM, the top 5% already matched reading everything). **Read the rest** reads the
    others.
-3. **Score:** every patch in the tiles read in detail goes through the model (DINOv2-small,
-   112 px, unless you pick another in **Options > model**); the score
+3. **Score:** every patch in the tiles read in detail goes through the same model; the score
    under each hit is the cosine of its embedding with your click's (the mean of **look**, the
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
    candidates are kept for re-ranking.
