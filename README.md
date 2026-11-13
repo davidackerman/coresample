@@ -53,13 +53,13 @@ twice the first time, to run the model in several threads: about 4x one thread; 
 
 1. **Quick pass:** brightness and texture statistics over a coarse level rank where similar
    things might be (no model; a few MB).
-2. **Rough pass** (GPU): DINOv2-small (112 px), or the model picked in **Options > model**,
-   reads the same areas two levels coarser (a sixteenth of the download, in 2-D), in the quick
-   pass's order, and scores every place there against your click at that level. The most
-   promising 10% of the tiles it has scored are then read in full detail (on EM, the top 5%
-   already matched reading everything). **Read the rest** reads the others.
-3. **Score:** every patch in the tiles read in detail goes through the same model; the score
-   under each hit is the cosine of its embedding with your click's (the mean of **look**, the
+2. **Rough pass** (GPU): to choose what to download in full, the model (DINOv2-small, 112 px,
+   or the one picked in **Options > model**) looks at a 4x-shrunk copy of the same areas (a
+   sixteenth of the download, in 2-D), in the quick pass's order. Its scores only rank the
+   tiles; the best 10% go on to stage 3 (on some tests, the top 5% already matched reading
+   everything). **Read the rest** reads the others.
+3. **Detail:** those tiles are read at the level on screen and every patch goes through the
+   same model. These scores are the hits: the score under each hit is the cosine of its embedding with your click's (the mean of **look**, the
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
    candidates are kept for re-ranking.
 
