@@ -11,10 +11,8 @@ twice the first time, to run the model in several threads: about 4x one thread; 
 
 [![A search on Earth (Sentinel-2): one irrigation circle clicked, and more like it found across the map as tiles are read](docs/media/coresample-demo.gif)](https://davidackerman.github.io/coresample/)
 
-Inspired by [Clio](https://clio.janelia.org) ([code](https://github.com/clio-janelia/clio_website)),
-Janelia's connectomics site, whose image search finds places like a clicked one from signatures
-precomputed for each dataset: fast, and over all of it. coresample trades that for working on
-any dataset at once, reading as it searches.
+Inspired by [Clio](https://clio.janelia.org)'s image search, which learns and precomputes
+signatures for each dataset; coresample works on any dataset at once, from the raw data alone.
 
 ## Using it
 
