@@ -3,7 +3,8 @@
 Click something in a huge image or volume (EM, slides, planetary maps, sky surveys, satellite
 imagery) and find more regions like it, in the browser, with **no precomputation**: no
 embedding pass, no index. The data's own multiscale pyramid is the index: a quick pass over a
-coarse level decides what to read first, and DINOv2-small scores everything read.
+coarse level decides what to read first, and a model (DINOv2-small unless you pick another)
+scores everything read.
 
 **Try it: https://davidackerman.github.io/coresample/** (Chrome recommended: the model runs on
 your GPU through WebGPU; without it, on the CPU, about 10x slower. On the CPU the page loads
@@ -52,10 +53,13 @@ twice the first time, to run the model in several threads: about 4x one thread; 
 
 1. **Quick pass:** brightness and texture statistics over a coarse level rank where similar
    things might be (no model; a few MB).
-2. **Rough pass** (GPU): the model looks two levels coarser (a sixteenth of the download) and
-   picks what to read in full detail: the most promising 10% of what it has looked over (on EM,
-   the top 5% already matched reading everything). **Read the rest** reads the others.
-3. **Score:** every patch in the tiles read goes through DINOv2-small (112 px); the score
+2. **Rough pass** (GPU): in the quick pass's order, the model reads the same areas two levels
+   coarser (a sixteenth of the download, in 2-D) and scores every place there against your
+   click at that level. The most promising 10% of the tiles it has scored are then read in full
+   detail (on EM, the top 5% already matched reading everything). **Read the rest** reads the
+   others.
+3. **Score:** every patch in the tiles read in detail goes through the model (DINOv2-small,
+   112 px, unless you pick another in **Options > model**); the score
    under each hit is the cosine of its embedding with your click's (the mean of **look**, the
    CLS token, and **parts**, the average piece token). Memory stays bounded: the best 3,000
    candidates are kept for re-ranking.
