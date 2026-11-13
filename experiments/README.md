@@ -27,6 +27,7 @@ Robbins & Hynek (2012) crater catalogue from USGS Astrogeology.
 | [12](test12_brush.py) | Does marking what matters in the box find more? | A rough brush on its own: +0.04 in the top 10, nothing in the top 25 |
 | [13](test13_craters.py) | Do the page's models rank the same on Mars craters? | MorphEm ahead on the plains (+0.05 p@10 overall), PE-Core-T behind; adapt to data helps every model (+0.06 for DINOv2-small) |
 | [14](test14_rough_tokens.py) | Can the rough pass take its places from the model's tokens, one run per crop? | 30-40x fewer model runs, the same bytes; a few hundredths behind at 1-2% read, level by 5% |
+| [15](test15_lazy_neighbours.py) | In 3-D, download a tile's neighbour chunks only when it looks promising? | Top-60 rule: the same precision (within 0.014) at 0.5-0.7x the bytes; inside patches alone lose 0.04 |
 
 ## Run
 

@@ -43,8 +43,10 @@ const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale
  * main). ?bench=60 runs main's way and these from the same click (bench below). */
 const fastParams = new URL(location.href).searchParams;
 const fast = { roughTokens: fastParams.get("roughtok") !== "0", lazy: fastParams.get("nbr") !== "0", rawCache: fastParams.get("rawcache") !== "0" };
-/** When a tile's crossing patches are read (test 15). */
-const LAZY: LazyPolicy = { top: 200 };
+/** When a tile's crossing patches are read: its best inside score reaches the 60th best so far
+ * (?nbrtop=200: later; test 15, 90 queries: top 60 within 0.014 p@10 at 0.5-0.7x the bytes,
+ * top 200 no loss at 0.6-0.85x). */
+const LAZY: LazyPolicy = { top: Number(fastParams.get("nbrtop")) || 60 };
 let search: Search | null = null;
 let olv: OlViewer | null = null;  // OpenLayers for tile pyramids
 let ngv: NgViewer | null = null;

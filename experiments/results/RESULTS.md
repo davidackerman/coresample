@@ -604,6 +604,33 @@ differences under about 0.05 are noise. The `experiment/fast-reads` branch tries
 64 px plane 1.75x, close to "enlarged 2x"), each place's tokens weighted by how much of them its
 box covers.
 
+## Test 15: a tile's neighbour chunks only when it looks promising (follow-up)
+
+In 3-D the page's patches lie half a box apart, so 3 in 4 reach into the chunk before (in y, x
+or both) and reading a tile downloads up to 4 chunks. On hemibrain (headless, a stand-in model,
+2,600 tiles read) two thirds of the working level's bytes (579 of 864 MB) were such neighbours,
+never read as tiles themselves. Here tiles are read in the rough pass's order on labelled HeLa
+and each policy decides which patches are compared (`test15_lazy_neighbours.py`): every patch
+(the page: neighbours downloaded), only those inside the tile (one chunk each), or the inside
+ones first and the crossing ones too when the tile's best inside score reaches the 60th (200th)
+best score compared so far, or the median (upper quartile) of the tiles read. A crossing patch
+whose chunks all came down anyway is compared too. Bytes count every chunk downloaded. Paired
+over all 90 queries against every patch:
+
+| policy | p@10, 2% / 5% / 10% of the tiles read | bytes | whole volume's bytes |
+|---|---|---|---|
+| inside only | -0.044 / -0.037 / -0.013 (+/- 0.014-0.017) | 0.33-0.46x | 0.35-0.48x |
+| inside, then top 60 | -0.001 / -0.014 / +0.003 (+/- 0.007-0.009) | 0.60-0.71x | 0.52-0.58x |
+| inside, then top 200 | -0.003 / +0.006 / +0.007 (+/- 0.004-0.006) | 0.70-0.85x | 0.61-0.76x |
+| inside, then upper quartile | -0.023 / -0.022 / +0.001 (+/- 0.009-0.011) | 0.52-0.59x | 0.50-0.59x |
+
+**Reading a tile's neighbours only when its own patches reach the top 60 keeps the precision
+(within 0.014, under 2 standard errors) at half to two thirds of the bytes;** top 200 loses
+nothing at 0.6-0.85x. Reading only the inside patches is a third of the bytes but loses 0.04 p@10
+early: the crossing patches are 3 in 4 of the places, and per byte they are worth their
+neighbours. The `experiment/fast-reads` branch reads this way in the page (`?nbr=1`, `?nbrtop=`).
+One labelled volume.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +
