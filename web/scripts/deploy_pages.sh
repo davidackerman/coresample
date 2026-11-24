@@ -10,7 +10,7 @@ REPO="${REPO:-davidackerman/coresample}"
 URL="https://github.com/${REPO}.git"
 cd "$(dirname "$0")/.."
 for f in models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx models/morphem-112-tokens.onnx \
-         models/pecore-t16-112-tokens.onnx models/NOTICE.txt models/LICENSE-Apache-2.0.txt models/LICENSE-MIT-MorphEm.txt ng/index.html; do
+         models/pecore-t16-112-tokens.onnx models/pecore-s16-112-clip.onnx models/pecore-s16-text.part0.onnx models/pecore-s16-text.part1.onnx models/clip-bpe-merges.txt models/NOTICE.txt models/LICENSE-Apache-2.0.txt models/LICENSE-MIT-MorphEm.txt ng/index.html; do
   [ -f "public/$f" ] || { echo "public/$f is missing (models: npm run model; ng/: as pages.yml builds it)"; exit 1; }
 done
 npx vite build

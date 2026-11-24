@@ -573,6 +573,64 @@ except with PE-Core-T): two labelled datasets now lean towards MorphEm, and Mars
 data a candidate default for maps, both to be confirmed on a second labelled set of each kind.
 Two regions, one catalogue, greyscale imagery only.
 
+## Test 14: the rough pass from tokens (follow-up)
+
+The page's rough pass runs the model once per place: the box two levels up (16 px for a 64 px
+box) enlarged to 112 px. Here the model runs once per 112 px crop of that level instead, and each
+place takes the tokens under its box (DINOv2-small's tokens are 14 px, so about one per place;
+"enlarged": the level scaled 2x or 4x first, a place then covering 2 x 2 or 4 x 4 tokens, or a
+5 x 5 window). Tiles are ordered by their best place, as in test 8, with the same 30 queries
+(`test14_rough_tokens.py`). p@10 after reading a share of the tiles; the model runs and CPU time
+(8 threads) to rank the whole region. Patches and tokens at one level download the same bytes:
+
+| order | mito: runs (CPU) | mito: 2% / 5% read | whole volume: runs (CPU) | whole volume: 1% / 2% / 5% / 10% read |
+|---|---|---|---|---|
+| every tile read | | 0.48 | | 0.44 |
+| no rough pass (the quick pass's order) | | 0.37 / 0.41 | | 0.35 / 0.32 / 0.34 / 0.39 |
+| **model, two levels up (the page)** | 768 (3.1 s) | 0.49 / 0.53 | 6,624 (31.5 s) | 0.41 / 0.44 / 0.43 / 0.44 |
+| **tokens, two levels up** | 24 (0.1 s) | 0.41 / 0.46 | 168 (0.8 s) | 0.39 / 0.40 / 0.43 / 0.41 |
+| tokens, enlarged 2x, 2 x 2 | 80 (0.4 s) | 0.40 / 0.49 | 672 (3.1 s) | 0.35 / 0.38 / 0.42 / 0.46 |
+| tokens, enlarged 4x, 5 x 5 | 320 (1.3 s) | 0.49 / 0.50 | 2,592 (11.7 s) | 0.41 / 0.40 / 0.43 / 0.40 |
+| model, one level up (4x the bytes) | 768 (3.3 s) | 0.45 / 0.51 | 6,624 (31.0 s) | 0.43 / 0.47 / 0.48 / 0.47 |
+| tokens, one level up | 80 (0.3 s) | 0.45 / 0.51 | 672 (3.2 s) | 0.41 / 0.42 / 0.43 / 0.46 |
+
+**Tokens rank the tiles with 30-40x fewer model runs and the same downloads, a few hundredths
+behind while only 1-2% of the tiles are read (0.04-0.08 p@10 on mito) and level by 5%;** both
+stay ahead of no rough pass. Enlarging the level first recovers the page's precision on the mito
+subvolume at 2.4x fewer runs but not on the whole volume. On vesicles every order scores
+0.79-0.84 (random reaches 0.76 at 1%), so they cannot tell orders apart. With 30 queries,
+differences under about 0.05 are noise. The `experiment/fast-reads` branch tries it in the page
+(`?roughtok=1`): a crop per level-L chunk plane, scaled up to the model's input when smaller (a
+64 px plane 1.75x, close to "enlarged 2x"), each place's tokens weighted by how much of them its
+box covers.
+
+## Test 15: a tile's neighbour chunks only when it looks promising (follow-up)
+
+In 3-D the page's patches lie half a box apart, so 3 in 4 reach into the chunk before (in y, x
+or both) and reading a tile downloads up to 4 chunks. On hemibrain (headless, a stand-in model,
+2,600 tiles read) two thirds of the working level's bytes (579 of 864 MB) were such neighbours,
+never read as tiles themselves. Here tiles are read in the rough pass's order on labelled HeLa
+and each policy decides which patches are compared (`test15_lazy_neighbours.py`): every patch
+(the page: neighbours downloaded), only those inside the tile (one chunk each), or the inside
+ones first and the crossing ones too when the tile's best inside score reaches the 60th (200th)
+best score compared so far, or the median (upper quartile) of the tiles read. A crossing patch
+whose chunks all came down anyway is compared too. Bytes count every chunk downloaded. Paired
+over all 90 queries against every patch:
+
+| policy | p@10, 2% / 5% / 10% of the tiles read | bytes | whole volume's bytes |
+|---|---|---|---|
+| inside only | -0.044 / -0.037 / -0.013 (+/- 0.014-0.017) | 0.33-0.46x | 0.35-0.48x |
+| inside, then top 60 | -0.001 / -0.014 / +0.003 (+/- 0.007-0.009) | 0.60-0.71x | 0.52-0.58x |
+| inside, then top 200 | -0.003 / +0.006 / +0.007 (+/- 0.004-0.006) | 0.70-0.85x | 0.61-0.76x |
+| inside, then upper quartile | -0.023 / -0.022 / +0.001 (+/- 0.009-0.011) | 0.52-0.59x | 0.50-0.59x |
+
+**Reading a tile's neighbours only when its own patches reach the top 60 keeps the precision
+(within 0.014, under 2 standard errors) at half to two thirds of the bytes;** top 200 loses
+nothing at 0.6-0.85x. Reading only the inside patches is a third of the bytes but loses 0.04 p@10
+early: the crossing patches are 3 in 4 of the places, and per byte they are worth their
+neighbours. The `experiment/fast-reads` branch reads this way in the page (`?nbr=1`, `?nbrtop=`).
+One labelled volume.
+
 ## The browser tool (`web/`)
 
 The test 3 search runs in the page: a TypeScript port of the cheap scan (histogram EMD +

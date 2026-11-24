@@ -6,7 +6,7 @@ name: Pages
 #   /           the page, its worker and assets (web/dist)
 #   /ng/        Neuroglancer, built from source: the page drives it in a same-origin iframe
 #               (reads clicks and zoom, adds hit annotations), which an appspot iframe cannot do
-#   /models/    DINOv2-small, MorphEm and PE-Core-T as ONNX (web/scripts/export_model.py), run in the page by ONNX
+#   /models/    DINOv2-small, MorphEm, PE-Core-T and PE-Core-S (image and text) as ONNX (web/scripts/export_model.py), run in the page by ONNX
 #               Runtime Web through chunkmirage's wrapper
 #   /ort/       ONNX Runtime Web's WebAssembly runtime (copied by chunkmirage's Vite plugin)
 #
@@ -92,7 +92,7 @@ jobs:
       # not as a blank viewer on the site
       - name: Check the site
         run: |
-          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx models/morphem-112-tokens.onnx models/pecore-t16-112-tokens.onnx models/NOTICE.txt models/LICENSE-Apache-2.0.txt models/LICENSE-MIT-MorphEm.txt ort/ort-wasm-simd-threaded.asyncify.wasm; do
+          for f in index.html ng/index.html models/dinov2-small-112.onnx models/dinov2-small-224.onnx models/dinov2-small-112-tokens.onnx models/morphem-112-tokens.onnx models/pecore-t16-112-tokens.onnx models/pecore-s16-112-clip.onnx models/pecore-s16-text.part0.onnx models/pecore-s16-text.part1.onnx models/clip-bpe-merges.txt models/NOTICE.txt models/LICENSE-Apache-2.0.txt models/LICENSE-MIT-MorphEm.txt ort/ort-wasm-simd-threaded.asyncify.wasm; do
             [ -f "web/dist/$f" ] || { echo "::error::web/dist/$f is missing"; exit 1; }
           done
           touch web/dist/.nojekyll

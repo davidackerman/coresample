@@ -7,7 +7,7 @@ import {
   chunkName, compressedMorton, compressedSegmentation, Shards, type Fetch, type PrecomputedInfo, type PrecomputedScale,
 } from "../../../chunkmirage/web/src/precomputed.ts";
 import { decodeOff } from "./decode.ts";
-import { Lru, normalizeUrl, type Level, type Region, type Source, type Vec3 } from "./sources.ts";
+import { Lru, normalizeUrl, readInit, type Level, type Region, type Source, type Vec3 } from "./sources.ts";
 
 type Typed = Uint8Array | Uint16Array | Uint32Array | Int8Array | Int16Array | Int32Array | Float32Array | Float64Array | BigUint64Array;
 const TYPED: Record<string, any> = {
@@ -28,6 +28,16 @@ export class PrecomputedSource implements Source {
   info!: PrecomputedInfo;
   private scales: Scale[] = [];
   private cache = new Lru<{ data: Typed; size: number[] }>(768 << 20);
+  /** The chunks as downloaded (JPEG chunks are ~2.5x smaller than decoded), so ~2.5x as many are
+   * kept and a chunk dropped from `cache` is decoded again, not downloaded again: a 3-D search
+   * touches more chunks than 768 MB of decoded ones hold (hemibrain: ~8,400 for ~2,900). */
+  private raw = new Lru<ArrayBuffer | null>(0);
+  /** Keep the downloaded chunks too (decoded 256 MB + downloaded 768 MB), or decoded only (768 MB). */
+  setKeepRaw(on: boolean) {
+    this.raw.setLimit(on ? 768 << 20 : 0);
+    this.cache.setLimit(on ? 256 << 20 : 768 << 20);
+  }
+  flush() { this.cache.clear(); this.raw.clear(); }
   private pending = new Map<string, Promise<{ data: Typed; size: number[] }>>();
   private window: [number, number] | null = null;  // intensity window for data that is not uint8
 
@@ -80,7 +90,7 @@ export class PrecomputedSource implements Source {
     let err: unknown;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        const r = await fetch(url, range ? { headers: { range: `bytes=${range[0]}-${range[1] - 1}` } } : {});
+        const r = await fetch(url, readInit(range ? { headers: { range: `bytes=${range[0]}-${range[1] - 1}` } } : {}));
         if (r.status === 404 || r.status === 403) return null;  // a bucket without listing answers 403 for a missing file, ranges too
         if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
         const buf = await r.arrayBuffer();
@@ -105,9 +115,14 @@ export class PrecomputedSource implements Source {
       const { s, encoding, chunk, off, dir, shards } = this.scales[li], T = TYPED[this.info.data_type], C = this.info.num_channels ?? 1;
       const lo = g.map((v, a) => v * chunk[a]), hi = lo.map((v, a) => Math.min(v + chunk[a], s.size[a]));
       const size = hi.map((v, a) => v - lo[a]), n = size[0] * size[1] * size[2];
-      const bytes = shards
-        ? await shards.chunk(compressedMorton(g, s.size.map((v, a) => Math.ceil(v / chunk[a]))))
-        : await this.fetchBytes(`${dir}/${chunkName(lo.map((v, a) => v + off[a]), hi.map((v, a) => v + off[a]))}`);
+      let bytes = this.raw.get(key);
+      if (bytes === undefined) {
+        bytes = shards
+          ? await shards.chunk(compressedMorton(g, s.size.map((v, a) => Math.ceil(v / chunk[a]))))
+          : await this.fetchBytes(`${dir}/${chunkName(lo.map((v, a) => v + off[a]), hi.map((v, a) => v + off[a]))}`);
+        this.raw.set(key, bytes, bytes ? bytes.byteLength : 64);
+      }
+      if (bytes && encoding === "jpeg") bytes = bytes.slice(0);  // the decoder takes (detaches) its copy
       let data: Typed;
       if (!bytes) data = new T(n * C);
       else if (encoding === "jpeg") data = await jpeg(bytes, size[0], size[1] * size[2], C);
@@ -141,8 +156,10 @@ export class PrecomputedSource implements Source {
             const [sx, sy, sz] = cs, n = sx * sy * sz, z0 = cz * ch[0], y0 = cy * ch[1], x0 = cx * ch[2];
             const zlo = Math.max(a[0], z0), zhi = Math.min(b[0], z0 + sz), ylo = Math.max(a[1], y0), yhi = Math.min(b[1], y0 + sy);
             const xlo = Math.max(a[2], x0), xhi = Math.min(b[2], x0 + sx);
+            const rows = C === 1 && !(data instanceof BigUint64Array) ? data : null;
             for (let z = kept(zlo); z < zhi; z += st) for (let y = ylo; y < yhi; y++) {
               const src = ((z - z0) * sy + (y - y0)) * sx, dst = (((z - lo[0]) / st) * shape[1] + (y - lo[1])) * shape[2];
+              if (rows) { out.set(rows.subarray(src + xlo - x0, src + xhi - x0), dst + xlo - lo[2]); continue; }  // a row at a time
               for (let x = xlo; x < xhi; x++)
                 for (let c = 0; c < C; c++) out[(dst + x - lo[2]) * C + c] = Number(data[Math.min(c, Cin - 1) * n + src + x - x0]);
             }

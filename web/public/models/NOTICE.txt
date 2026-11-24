@@ -20,6 +20,21 @@ pecore-t16-112-tokens.onnx
   Changed: converted to ONNX at 112 px input (timm resizes its position embeddings to the 7 x 7
   grid); outputs the last layer's tokens, each 192-d token followed by 192 zeros (384-d).
 
+pecore-s16-112-clip.onnx, pecore-s16-text.onnx
+  Perception Encoder PE-Core-S16-384: https://huggingface.co/facebook/PE-Core-S16-384
+  (https://github.com/facebookresearch/perception_models), loaded through open_clip
+  (https://huggingface.co/timm/PE-Core-S-16-384, Apache License 2.0)
+  Copyright (c) Meta Platforms, Inc. and affiliates. Apache License 2.0: LICENSE-Apache-2.0.txt
+  Changed: converted to ONNX, the image tower at 112 px input (its position embeddings resized to
+  the 7 x 7 grid) and the text tower at its 32 tokens, taken as float32 and rounded in the graph;
+  each outputs its 512-d embedding at unit length.
+
+clip-bpe-merges.txt
+  The byte-pair merges of CLIP's tokenizer (bpe_simple_vocab_16e6.txt.gz), as open_clip ships
+  them: https://github.com/openai/CLIP and https://github.com/mlfoundations/open_clip
+  Copyright (c) 2021 OpenAI. MIT License: https://github.com/openai/CLIP/blob/main/LICENSE
+  Changed: only the 48,894 merges the vocabulary is built from, uncompressed.
+
 morphem-112-tokens.onnx
   MorphEm ViT-S/16: https://huggingface.co/CaicedoLab/MorphEm
   (https://github.com/CaicedoLab/CHAMMI-75), by Vidit Agrawal, John Peters and Juan Caicedo

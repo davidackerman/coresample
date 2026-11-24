@@ -15,7 +15,10 @@ const chunkmirage = resolve(process.env.CHUNKMIRAGE_WEB ?? resolve(__dirname, ".
 // NG_URL=https://davidackerman.github.io/coresample/ng npx vite
 // (behind an HTTPS proxy, as in a sandbox, the relay goes through it)
 const outbound = process.env.HTTPS_PROXY ? new HttpsProxyAgent(process.env.HTTPS_PROXY) : undefined;
-const ng = { "/ng": { target: process.env.NG_URL ?? "https://neuroglancer-demo.appspot.com", changeOrigin: true, agent: outbound, rewrite: (p: string) => p.replace(/^\/ng/, "") } };
+const ng: Record<string, object> = { "/ng": { target: process.env.NG_URL ?? "https://neuroglancer-demo.appspot.com", changeOrigin: true, agent: outbound, rewrite: (p: string) => p.replace(/^\/ng/, "") } };
+// MODELS_URL relays the models too, so a checkout runs without exporting them (npm run model), e.g.
+// MODELS_URL=https://davidackerman.github.io/coresample/models npx vite
+if (process.env.MODELS_URL) ng["/models"] = { target: process.env.MODELS_URL, changeOrigin: true, agent: outbound, rewrite: (p: string) => p.replace(/^\/models/, "") };
 
 export default defineConfig({
   base: "./",
