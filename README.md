@@ -44,6 +44,13 @@ lets it work on any dataset in the browser without any precompute.
 - **draw:** sketch what to find, in the data's tones or any colour (**look like the data** turns
   colours into the data's own by brightness, white its brightest, and adds its grain). It finds bold shapes such
   as craters; on EM it finds nothing, so add real examples there.
+- **type it:** name what to find (a lake, an airport, a crater) instead of clicking. It runs on
+  PE-Core-S (Apache-2.0), a model that reads words as well as pictures (48 MB, and 127 MB more
+  for the words, the first time). Made for photographs: on Sentinel-2 at 19 m/px it found
+  runways, lakes, interchanges and fields, not golf courses or forest; "a crater" had a crater in
+  9 or 10 of the top 10 boxes on three of four Mars CTX targets and no better than chance on the
+  fourth. With no example to look for there is no quick pass: the tiles go from the middle of
+  the view outward. The tick and cross and **+ example** steer it as any search.
 - **Channels:** an image with several channels (fluorescence, say) opens as one Neuroglancer
   layer per channel, each with its colour and range in the layer's controls (from its metadata,
   else the first three on, in red, green and blue). The search sees what the viewer shows when you
@@ -111,7 +118,7 @@ the page also reads through their other addresses for the same data.
 ## Run locally
 
 ```bash
-cd web && npm install && npm run model   # exports the models to ONNX (188 MB, gitignored)
+cd web && npm install && npm run model   # exports the models to ONNX (363 MB, gitignored)
 npm run build && npx vite preview        # http://localhost:5180
 ```
 

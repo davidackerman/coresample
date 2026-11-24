@@ -6,7 +6,7 @@
 // (and any marked good or bad) are kept, so feedback (Rocchio) re-ranks among those. More
 // examples can join the query at any time (it becomes their mean), and every place compared
 // leaves its score in a compact list for the similarity heat map.
-import { GRID, PART, similarity, type Embedder, type Focus, type ModelSpec, type Patch, type TokenGrid } from "./embedder.ts";
+import { GRID, PART, similarity, single, type Embedder, type Focus, type ModelSpec, type Patch, type TokenGrid } from "./embedder.ts";
 import { scan as scanSync, type Dims, type ScanInput, type ScanNorm } from "./scan.ts";
 import { fillMissing, informative, luminance, missingFraction, type Region, type Source, type Vec3 } from "./sources.ts";
 
@@ -61,15 +61,22 @@ export interface Options {
   spread?: Spread;
   roughPass?: boolean;        // the model on a coarser level picks the tiles read in detail (GPU only; default on)
   roughTokens?: boolean;      // the rough pass from the model's tokens over whole level-L chunk planes, not a run per place (test 14)
+  roughFit?: boolean;         // roughTokens: a chunk plane just over a whole number of crops shrunk (up to 15%) to fit them
   lazyNeighbours?: LazyPolicy; // 3-D: a tile's neighbour chunks downloaded only when its own patches look promising (test 15)
   method?: Method;
   match?: MatchOptions;
   stride?: number;            // patch grid step (default P/2 in 3-D, P in 2-D)
   sketch?: Patch;             // a drawing (P x P at the working level) to search for instead of a place
+  text?: TextQuery;           // a typed query to search for instead of a place (a model with a text tower)
   brush?: Float32Array;       // which of the box's 8 x 8 parts matter (0-1): the query and every patch read get a brushed part
   expand?: boolean;           // once the region is read, go on to the areas around it, nearest first, until the whole level is read
   scanFn?: (inp: ScanInput) => Promise<{ score: Float32Array; dims: Dims; norm?: ScanNorm }>;
 }
+
+/** A typed query: its words and their embedding (Embedder.embedText), in the space of the
+ * search's model's image embeddings. Nothing to scan cheaply for, so the tiles are taken from
+ * the middle of the region outward (the rough pass, where there is one, then orders them). */
+export interface TextQuery { text: string; e: Float32Array }
 
 /** When a 3-D tile's patches that cross into the chunks before it are read too (their chunks
  * downloaded): its best patch inside it reaches the `top`-th best score compared so far, or the
@@ -129,7 +136,7 @@ interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number; h: number
 
 /** One example of what to find: its place, its embeddings (keyed by variant: "id", the
  * rotations "r1".."r7", the scales "s-1", "s+1"), its pixels and its view at the rough level. */
-interface Example { c: Vec3; vars: Map<string, Float32Array>; pix: Uint8Array; rough: Float32Array | null }
+interface Example { c: Vec3; vars: Map<string, Float32Array>; pix: Uint8Array; rough: Float32Array | null; text?: boolean }
 
 /** Every place compared, with its score (for the heat map): centres (z, y, x, working level)
  * and scores. Scores are set when a place is compared; the kept candidates' scores follow
@@ -144,11 +151,12 @@ function unitMean(vs: Float32Array[]): Float32Array {
   return unitParts(q);
 }
 function unitParts(q: Float32Array): Float32Array {
-  for (let o = 0; o < q.length; o += PART) {
+  const step = single(q) ? q.length : PART;  // an embedding of one part is unit length whole
+  for (let o = 0; o < q.length; o += step) {
     let n = 0;
-    for (let d = o; d < Math.min(q.length, o + PART); d++) n += q[d] * q[d];
+    for (let d = o; d < Math.min(q.length, o + step); d++) n += q[d] * q[d];
     n = Math.sqrt(n) || 1;
-    for (let d = o; d < Math.min(q.length, o + PART); d++) q[d] /= n;
+    for (let d = o; d < Math.min(q.length, o + step); d++) q[d] /= n;
   }
   return q;
 }
@@ -297,7 +305,7 @@ export class Search {
   patchPixels(i: number): Uint8Array { return i < 0 ? this.examples[0].pix : this.items.get(i)!.pix; }
   center(i: number): Vec3 { return this.items.get(i)!.c; }
 
-  private get tokenMode() { return this.opt.method === "tokens"; }
+  private get tokenMode() { return this.opt.method === "tokens" && !this.spec.clip; }  // (a one-part model has no tokens)
 
   /** What the query embeds from: its patch, or (token mode) the crop twice its size around it,
    * whose central window of tokens is the query. */
@@ -336,7 +344,8 @@ export class Search {
 
   async start() {
     try {
-      const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3, sk = this.opt.sketch;
+      const P = this.opt.patch, W = this.opt.working, d3 = this.src.dims === 3, sk = this.opt.sketch, tx = this.opt.text;
+      if (tx) { await this.startText(tx); return; }
       let pix: Uint8Array;
       if (sk) pix = Uint8Array.from(sk.data);
       else {
@@ -384,6 +393,49 @@ export class Search {
     }
   }
 
+  /** A typed query's start: no place and no picture, so no quick pass; the region's tiles from
+   * its middle outward, then the reads (the rough pass ordering them where there is one). */
+  private async startText(tx: TextQuery) {
+    if (tx.e.length !== (await this.embedWidth())) throw new Error(`${this.spec.name} cannot be searched with text`);
+    this.live();
+    const P = this.opt.patch;
+    this.examples = [{ c: NOWHERE, vars: new Map([["id", Float32Array.from(tx.e)]]), pix: new Uint8Array(P * P * this.src.channels), rough: null, text: true }];
+    this.combine();
+    this.qvars = this.q0vars.map((v) => Float32Array.from(v));
+    ({ tiles: this.order, scores: this.orderS } = this.unscanned(this.region));
+    await this.setupRough();
+    this.live();
+    this.setReady();
+    this.emit({ phase: "read", tilesTotal: this.order.length, tilesBudget: this.order.length, message: "reading tiles, from the middle outward" });
+    await this.resume();
+  }
+  /** The width of this search's model's embeddings (one blank patch through it tells). */
+  private async embedWidth(): Promise<number> {
+    const S = 16;
+    return (await this.emb.embed([{ data: new Float32Array(S * S).fill(128), size: S, channels: 1 }], undefined, undefined, this.spec))[0].length;
+  }
+  /** Without a quick pass (a typed query): an area's tiles not ranked before, nearest the first
+   * region's middle first (their "score": minus that distance, so areas merge in that order). */
+  private unscanned([rlo, rhi]: [Vec3, Vec3]): { tiles: Vec3[]; scores: number[] } {
+    const W = this.opt.working, L = this.src.levels[W], ch = L.chunk, d3 = this.src.dims === 3, [qlo, qhi] = this.region;
+    const mid = [0, 1, 2].map((a) => (qlo[a] + qhi[a]) / 2), out: { t: Vec3; s: number }[] = [];
+    for (let z = Math.floor(rlo[0] / ch[0]); z * ch[0] < rhi[0]; z++)
+      for (let y = Math.floor(rlo[1] / ch[1]); y * ch[1] < rhi[1]; y++)
+        for (let x = Math.floor(rlo[2] / ch[2]); x * ch[2] < rhi[2]; x++) {
+          const t: Vec3 = [z, y, x], k = tileKey(t);
+          if (this.allTiles.has(k)) continue;
+          const s = -Math.hypot(d3 ? (z + 0.5) * ch[0] - mid[0] : 0, (y + 0.5) * ch[1] - mid[1], (x + 0.5) * ch[2] - mid[2]);
+          this.allTiles.add(k);
+          this.tileS.set(k, s);
+          out.push({ t, s });
+        }
+    out.sort((a, b) => b.s - a.s);
+    this.scans.push({ score: null, dims: [0, 0, 0], clo: [0, 0, 0], f: 1, w: [1, 1, 1], lo: rlo, hi: rhi });
+    const cov = (rhi[0] - rlo[0]) * (rhi[1] - rlo[1]) * (rhi[2] - rlo[2]) / (L.shape[0] * L.shape[1] * L.shape[2]);
+    this.emit({ scanned: Math.min(1, this.state.scanned + cov) });
+    return { tiles: out.map((o) => o.t), scores: out.map((o) => o.s) };
+  }
+
   /** Chunks of coarse level C (with the scan's margin) under an area of the working level. */
   private chunksIn(C: number, [rlo, rhi]: [Vec3, Vec3]): number {
     const { f, m } = this.qscan!, L = this.src.levels[C], d3 = this.src.dims === 3;
@@ -397,6 +449,7 @@ export class Search {
   /** The cheap scan of one area (working-level voxels [lo, hi)) at the coarse level, and the
    * working level's tiles in it not ranked before, ranked by their best window. */
   private async scanRegion([rlo, rhi]: [Vec3, Vec3]): Promise<{ tiles: Vec3[]; scores: number[] }> {
+    if (this.opt.text) return this.unscanned([rlo, rhi]);
     const q = this.qscan!, { C, f, w, m } = q, d3 = this.src.dims === 3, W = this.opt.working;
     const clo: Vec3 = [d3 ? Math.floor(rlo[0] / f) : 0, Math.floor(rlo[1] / f), Math.floor(rlo[2] / f)];
     const chi: Vec3 = [d3 ? Math.ceil(rhi[0] / f) : 1, Math.ceil(rhi[1] / f), Math.ceil(rhi[2] / f)];
@@ -816,9 +869,10 @@ export class Search {
     if (!k) return;
     const L = W + k, p = P / 2 ** k, f = 2 ** k;
     const q = this.query, c: Vec3 = [d3 ? Math.floor(q[0] / f) : 0, Math.floor(q[1] / f), Math.floor(q[2] / f)];
-    const tok = !!this.opt.roughTokens && !this.opt.sketch;  // a drawing has no chunk plane around it
+    const tok = !!this.opt.roughTokens && !this.opt.sketch && !this.spec.clip;  // a drawing has no chunk plane around it; a one-part model no tokens
     let q0: Float32Array | null;
-    if (tok) q0 = (await this.roughDescs(L, [c], p))[0];
+    if (this.opt.text) q0 = Float32Array.from(this.opt.text.e);  // the words mean the same at every level
+    else if (tok) q0 = (await this.roughDescs(L, [c], p))[0];
     else {
       const base = this.opt.sketch ? shrink(this.opt.sketch, p) : (await this.readAt(L, [c], p))[0];
       if (!base || !informative(base.data)) return;
@@ -950,7 +1004,11 @@ export class Search {
       if (H < 2 || X < 2 || z < 0 || z >= sh[0]) return;
       let r: Region;
       try { r = await this.src.read(L, [z, y0, x0], [z + 1, y1, x1]); } catch { return; }
-      const C = r.channels, k = Math.min(8, Math.max(1, S / Math.min(H, X)));
+      const C = r.channels, m = Math.min(H, X);
+      let k = Math.min(8, Math.max(1, S / m));
+      // a plane a little over a whole number of crops is shrunk to fit them (256 px to 224: 4
+      // crops, not 9 overlapping ones), by at most 15%
+      if (this.opt.roughFit && m > S && m % S) { const fit = (Math.floor(m / S) * S) / m; if (fit >= 0.85) k = fit; }
       const Hs = Math.max(S, Math.round(H * k)), Xs = Math.max(S, Math.round(X * k));
       const origins = (n: number) => { const o: number[] = []; for (let v = 0; v + S < n; v += S) o.push(v); o.push(n - S); return o; };
       const oys = origins(Hs), oxs = origins(Xs);
@@ -1259,7 +1317,7 @@ export class Search {
     const old = this.opt.match ?? DEFAULT_MATCH;
     this.opt.match = m;
     if (m.rotations !== old.rotations || m.scales !== old.scales) {
-      for (const e of this.examples) e.vars = await this.queryVariants(await this.queryBase(e.c), e.c);
+      for (const e of this.examples) if (!e.text) e.vars = await this.queryVariants(await this.queryBase(e.c), e.c);
       this.combine();
       this.applyFeedback();
     } else if (m.combine !== old.combine) {
@@ -1334,7 +1392,8 @@ export class Search {
 
   /** The candidates' mean embedding, when "adapt to data" subtracts it. */
   private adaptMean(): Float32Array | undefined {
-    if (!(this.opt.match ?? DEFAULT_MATCH).adapt || !this.sum || this.embedded <= 16) return undefined;
+    // (not for a typed query: text sits apart from every image, so the images' mean is not its background)
+    if (this.opt.text || !(this.opt.match ?? DEFAULT_MATCH).adapt || !this.sum || this.embedded <= 16) return undefined;
     const mu = new Float32Array(this.sum.length);
     for (let d = 0; d < mu.length; d++) mu[d] = this.sum[d] / this.embedded;
     return mu;
@@ -1350,10 +1409,10 @@ export class Search {
     const m = this.opt.match ?? DEFAULT_MATCH, mu = this.adaptMean();
     let best = 0, bs = -Infinity;
     this.qvars.forEach((q, j) => { const v = similarity(it.e, q, m.focus, mu); if (v > bs) { bs = v; best = j; } });
-    const q = this.qvars[best], tok = it.e.length === PART;
-    const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]]
+    const q = this.qvars[best], one = single(it.e), tok = it.e.length === PART;
+    const ps: [Explain["parts"][number]["name"], number][] = tok ? [["tokens", 0]] : one ? [["look", 0]] : m.focus === "center" ? [["look", 0], ["centre", 2]]
       : m.focus === "brush" ? [["brushed", 3]] : [["look", 0], ["parts", 1]];
-    const part = (p: number) => { const o = p * PART, sl = (a: Float32Array) => a.subarray(o, o + PART); return similarity(sl(it.e), sl(q), "whole", mu && sl(mu)); };
+    const part = (p: number) => { const o = p * PART, sl = (a: Float32Array) => (one ? a : a.subarray(o, o + PART)); return similarity(sl(it.e), sl(q), "whole", mu && sl(mu)); };
     let s0 = -Infinity;
     for (const q0 of this.q0vars) s0 = Math.max(s0, similarity(it.e, q0, m.focus, mu));
     return { score: bs, parts: ps.map(([name, p]) => ({ name, value: part(p) })), variant: this.qlabels[best]?.key ?? "id",

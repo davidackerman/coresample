@@ -1,9 +1,9 @@
 // coresample's page: a pan/zoom viewer over any multiscale source, click to search, hits stream
 // into the side panel. Raw data only; nothing is precomputed.
 import { DEFAULT_PRESET, PRESETS, type Layer, type Preset } from "./datasets.ts";
-import { Embedder, MODELS, type Focus } from "./embedder.ts";
+import { Embedder, MODELS, TEXT_MODEL, type Focus } from "./embedder.ts";
 import { scanInWorkers } from "./scanpool.ts";
-import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State } from "./search.ts";
+import { DETAIL, NOWHERE, Search, coarseLevelFor, type MatchOptions, type Method, type Spread, type State, type TextQuery } from "./search.ts";
 import type { Patch, TokenGrid } from "./embedder.ts";
 import { SketchPad, tonesOf, type Tone } from "./sketchpad.ts";
 import { BrushPad } from "./brushpad.ts";
@@ -20,6 +20,7 @@ import { IMAGE_FILE, imageFolder } from "./imagefile.ts";
 import { TIFF_URL, tiffSource } from "./remotetiff.ts";
 import { HEAT_GRADIENT, heatCanvas, heatGrid, heatRange } from "./heat.ts";
 import { isolate } from "./local.ts";
+import { hitsCsv, type HitRow } from "./exporthits.ts";
 
 // threads for the model on the CPU: may load the page again once, before anything else starts
 await isolate();
@@ -43,7 +44,9 @@ const view = { cx: 0, cy: 0, z: 0, scale: 1 };  // full-resolution pixels; scale
  * main). ?bench=60 runs main's way and these from the same click (bench below). */
 const fastParams = new URL(location.href).searchParams;
 const fast = { roughTokens: fastParams.get("roughtok") !== "0", lazy: fastParams.get("nbr") !== "0", rawCache: fastParams.get("rawcache") !== "0",
-               tokBatch: Number(fastParams.get("tokbatch")) || 16 };  // crops a pass for the rough pass's tokens
+               tokBatch: Number(fastParams.get("tokbatch")) || 16,  // crops a pass for the rough pass's tokens
+               tokFit: fastParams.get("tokfit") !== "0",   // a chunk plane just over a whole number of crops shrunk to fit them (?tokfit=0: overlapping crops)
+               tokPad: fastParams.get("tokpad") === "1" };  // token passes always full, the last filled with blank crops
 /** When a tile's crossing patches are read: its best inside score reaches the 60th best so far
  * (?nbrtop=200: later; test 15, 90 queries: top 60 within 0.014 p@10 at 0.5-0.7x the bytes,
  * top 200 no loss at 0.6-0.85x). */
@@ -124,6 +127,7 @@ try { for (const v of ["v2", "v3"]) caches.delete(`coresample-models-${v}`).catc
 const emb = new Embedder((file) => new URL(`models/${file}.onnx`, document.baseURI).href,
                          (l) => console.log("[onnx]", l), cachedBytes);
 emb.tokBatch = fast.tokBatch;
+emb.tokPad = fast.tokPad;
 const modelEl = $("model");
 function setModel(kind: "loading" | "gpu" | "cpu" | "err", text: string, title = "") {
   modelEl.className = `model ${kind}`;
@@ -812,6 +816,8 @@ function clearSearch() {
   $("hits").innerHTML = '<div class="empty">Hits appear here as tiles are read, best first.</div>';
   $("hitcount").textContent = "";
   $("hithelp").hidden = true;
+  $<HTMLButtonElement>("savecsv").disabled = true;
+  $("saveng").hidden = true;
   const stopBtn = $<HTMLButtonElement>("stop");
   stopBtn.disabled = true; stopBtn.textContent = "Pause";
   $<HTMLButtonElement>("clear").disabled = true;
@@ -927,29 +933,37 @@ setInterval(() => {  // channels changed in the viewer while a search runs: say 
 
 /** Which of the query box's 8 x 8 parts matter (the brush), or null: every part alike. */
 let brushW: Float32Array | null = null;
-let started: { c: Vec3; W: number; P: number; sketch?: Patch } | null = null;  // the search's start, to start it again with a brush
+let started: { c: Vec3; W: number; P: number; sketch?: Patch; text?: TextQuery } | null = null;  // the search's start, to start it again with a brush
 
 /** A new search for the box at `c` (level W, side P), or for a drawing. */
-function begin(c: Vec3, W: number, P: number, sketch?: Patch) {
+function begin(c: Vec3, W: number, P: number, sketch?: Patch, text?: TextQuery) {
   const s = src!;
   clearSearch();
-  started = { c, W, P, sketch };
+  started = { c, W, P, sketch, text };
   if (!sketch) takeChannels();  // a drawing took them when the pad opened
+  // a one-part model (PE-Core-S) has no tokens: every patch on its own, no brush
+  const meth = $<HTMLSelectElement>("method"), clip = !!emb.spec.clip;
+  if (clip && meth.value === "tokens") meth.value = "patches";
+  if (clip) brushW = null;
   warm();
   $("hint").classList.add("gone");
   const region = regionFor(W, P, c);
   search = new Search(s, emb, c, { working: W, patch: P, region, maxCoarseVoxels: COARSE_BUDGET, scanFn: scanInWorkers, topN: 60,
-                                   match: matchOptions(), method: $<HTMLSelectElement>("method").value as Method, spread: spread(), sketch,
+                                   match: matchOptions(), method: meth.value as Method, spread: spread(), sketch, text,
                                    expand: $<HTMLSelectElement>("region").value === "auto", brush: brushW ?? undefined,
                                    roughPass: ({ "1": true, "0": false } as Record<string, boolean>)[params.get("rough") ?? ""],
-                                   roughTokens: fast.roughTokens, lazyNeighbours: fast.lazy ? LAZY : undefined });
+                                   roughTokens: fast.roughTokens, roughFit: fast.tokFit, lazyNeighbours: fast.lazy ? LAZY : undefined });
   $<HTMLButtonElement>("clear").disabled = false;
   $<HTMLButtonElement>("addex").disabled = false;
   const tok = $<HTMLSelectElement>("method").value === "tokens", bb = $<HTMLButtonElement>("brushbtn");
-  bb.disabled = tok;
+  bb.disabled = tok || clip;
   bb.classList.toggle("on", !!brushW);
   bb.textContent = brushW ? `what matters: ${brushW.reduce((n, v) => n + (v > 0 ? 1 : 0), 0)} parts` : "what matters";
   if (tok) bb.title = "Not with Options > tiles + tokens";
+  else if (clip) bb.title = `Not with ${emb.spec.name}: it sums a box up as one thing`;
+  // match / why colour a hit by the pieces it shares with the query's picture: words have none
+  if (text) { if (whyOn) $("why").click(); if (matchOn) $("match").click(); }
+  for (const id of ["why", "match"]) $<HTMLButtonElement>(id).disabled = !!text;
   let queued = false;
   const me = search;
   search.on(() => {  // at most one panel update per frame, always with the latest state
@@ -993,8 +1007,9 @@ function cropTo(size: number, w: number, h: number): [number, number, number, nu
   const sw = w < h ? (size * w) / h : size, sh = h < w ? (size * h) / w : size;
   return [(size - sw) / 2, (size - sh) / 2, sw, sh];
 }
-function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: number) {
-  const n = pixs.length, S = Math.ceil(Math.sqrt(n)) * P;
+function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: number, words?: string) {
+  // (typed words are drawn at the screen's own pixels: the canvas is shown 64 px wide)
+  const n = pixs.length, S = words ? Math.max(Math.ceil(Math.sqrt(n)) * P, Math.round(64 * (window.devicePixelRatio || 1))) : Math.ceil(Math.sqrt(n)) * P;
   cv.width = S; cv.height = S;
   const ctx2 = cv.getContext("2d")!, one = document.createElement("canvas");
   one.width = P; one.height = P;
@@ -1004,7 +1019,26 @@ function drawExamples(cv: HTMLCanvasElement, pixs: Uint8Array[], P: number, C: n
     one.getContext("2d")!.putImageData(patchImage(pixs[i], P, C), 0, 0);
     ctx2.drawImage(one, ...cropTo(P, r.w, r.h), r.x, r.y, r.w - (r.x + r.w < S ? gap : 0), r.h - (r.y + r.h < S ? gap : 0));
   });
-  cv.title = n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
+  if (words) {  // the first example is what was typed: its words, wrapped to fit its cell
+    const r = mosaic(n, S)[0], pad = Math.max(2, Math.round(r.w / 16));
+    ctx2.fillStyle = "#10151c"; ctx2.fillRect(r.x, r.y, r.w - (n > 1 ? gap : 0), r.h - (n > 1 ? gap : 0));
+    ctx2.fillStyle = "#e6edf3"; ctx2.textBaseline = "top";
+    for (let size = Math.round(r.h / 3); size >= 6; size--) {
+      ctx2.font = `600 ${size}px system-ui, sans-serif`;
+      const lines: string[] = [];
+      for (const w of words.split(/\s+/)) {
+        const last = lines[lines.length - 1];
+        if (last !== undefined && ctx2.measureText(`${last} ${w}`).width <= r.w - 2 * pad) lines[lines.length - 1] = `${last} ${w}`; else lines.push(w);
+      }
+      const lh = Math.round(size * 1.2);
+      if (size > 6 && (lines.length * lh > r.h - 2 * pad || lines.some((l) => ctx2.measureText(l).width > r.w - 2 * pad))) continue;
+      const y0 = r.y + Math.max(pad, Math.round((r.h - lines.length * lh) / 2));
+      lines.forEach((l, i) => ctx2.fillText(l, r.x + pad, y0 + i * lh, r.w - 2 * pad));
+      break;
+    }
+  }
+  cv.title = words ? `you typed: ${words}` + (n > 1 ? ` (with ${n - 1} example${n > 2 ? "s" : ""}: hits match ${combineText()})` : " (shift-click on the image adds an example of it)")
+    : n > 1 ? `${n} examples: hits match ${combineText()}` : "the query (shift-click on the image to add another example)";
   if (brushW && n === 1) {  // the parts that do not matter, dimmed
     const c = S / BRUSH;
     ctx2.fillStyle = "#000000a0";
@@ -1060,7 +1094,7 @@ function panel(st: State) {
   const s = search, C = src.channels, P = st.patch;
   liveRate();
   if (st.phase !== "query" && qDrawn !== `${st.examples}`) {
-    drawExamples($<HTMLCanvasElement>("qcanvas"), s.examplePixels(), P, C);
+    drawExamples($<HTMLCanvasElement>("qcanvas"), s.examplePixels(), P, C, s.opt.text?.text);
     $("qcanvas").classList.remove("none");
     qDrawn = `${st.examples}`;
   }
@@ -1081,7 +1115,7 @@ function panel(st: State) {
          + "so far, nearest first, more while the search goes on; the reads go to the best places of all of them." : "."))]);
   if (!scanning && st.tilesTotal) {
     if (st.rough) rows.push(["model", total ? st.looked / total : 0,
-      `${modelName()} looks over the quick pass's best places at level ${st.rough.level}, ${2 ** (st.rough.level - W)}x coarser: `
+      `${modelName()} looks over ${s.opt.text ? "the tiles, from the middle of the search area outward," : "the quick pass's best places"} at level ${st.rough.level}, ${2 ** (st.rough.level - W)}x coarser: `
       + `${num(st.rough.places)} places in ${num(st.looked)} of ${num(total)} tiles. The best ${100 * DETAIL}% of them are read in detail.`]);
     rows.push(["detail", total ? (st.tilesRead / total) * (st.patches / Math.max(1, st.patches + st.queued)) : 0,
       `Read at level ${W} (the level on screen) and compared by ${modelName()}${tok ? ", windows of its tokens" : ""}: `
@@ -1098,11 +1132,11 @@ function panel(st: State) {
     : [`${abbr(st.patches)} ${items} in ${abbr(st.tilesRead)} tiles` + (st.phase === "done" && st.ruledOut ? `, ${abbr(st.ruledOut)} ruled out` : ""),
        `${fmt(st.bytes)} in ${dur(st.seconds)}` + (st.firstHitSeconds ? `, first hits ${st.firstHitSeconds.toFixed(1)} s` : ""),
        outward ? finishIn(st, total, st.rough && st.looked ? st.looked : st.tilesRead) : ""];
-  lines.push(st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " with the drawing" : ""}: hits match ${combineText()}`
-             : s.opt.sketch ? "your drawing" : "");
+  lines.push(st.examples > 1 ? `${st.examples} examples${s.opt.sketch ? " with the drawing" : s.opt.text ? ` with "${s.opt.text.text}"` : ""}: hits match ${combineText()}`
+             : s.opt.sketch ? "your drawing" : s.opt.text ? `"${s.opt.text.text}"` : "");
   $("status").textContent = lines.filter(Boolean).join("\n");
   $("status").title = outward ? "Searching outward from the query at the level on screen. Zooming out before clicking searches a coarser level: faster, for bigger things." : "";
-  if (st.examples === 1 && !s.opt.sketch)
+  if (st.examples === 1 && !s.opt.sketch && !s.opt.text)
     $("qcanvas").title = `the query, at ${coordText(s.query[2] * 2 ** W, s.query[1] * 2 ** W, s.query[0] * 2 ** W)} (shift-click on the image adds another example)`;
   const stopBtn = $<HTMLButtonElement>("stop");
   const rest = st.phase === "done" && st.ruledOut > 0;  // the tiles the model ruled out can still be read
@@ -1116,6 +1150,9 @@ function panel(st: State) {
   $("hitspread").textContent = (sp.between > 1 ? `${sp.between} boxes apart` : "No overlaps")
     + (sp.fromQuery > 0 ? `, ${sp.fromQuery}+ boxes from the ${st.examples > 1 ? "examples" : "query"}` : "") + ".";
   $("hithelp").hidden = !st.hits.length;
+  $<HTMLButtonElement>("savecsv").disabled = !st.hits.length;
+  // (a folder on this computer is served by this page alone: no other Neuroglancer can read it)
+  $("saveng").hidden = !ngv || !st.hits.length || !!(src as { url?: string } | null)?.url?.startsWith(location.origin + "/");
   if (!st.hits.length) {  // none yet, or none left (each marked fewer like this): no tiles from before
     for (const el of hitEls) el.remove();
     hitEls = [];
@@ -1217,12 +1254,42 @@ function showWhyHelp() {
   $("whytext").innerHTML = `<b>${modelName()}</b>: cosine similarity to the query (1 = the same), `
     + (m?.adapt ? "after removing what every patch here shares (adapt to data), " : "")
     + (tok ? "of the window's average token. "
+       : specNow().clip ? `of its one summary of the box (the one its words are matched to${search.opt.text ? ": words and pictures score lower than two pictures do, so compare the hits with each other" : ""}). `
        : m?.focus === "brush" ? "of <b>marked</b>: the mean of the pieces you marked as mattering, at the same places in the box. "
        : `the mean of <b>look</b> (its summary of the box) and <b>${m?.focus === "center" ? "centre" : "parts"}</b> `
          + `(${m?.focus === "center" ? "its pieces, weighted to the centre" : `its ${specNow().grid} x ${specNow().grid} pieces`}). `)
     + (matchOn ? "" : "Colours: pieces the model sees alike share a colour, in the query and every hit. ")
     + (specNow().input === 224 || specNow().ownTokens ? "" : `(The colours: the 224 px model, ${MODELS.find((s) => s.id === "224")!.mb} MB the first time.)`);
 }
+// The hits to take elsewhere: a CSV file, and (Neuroglancer data) every hit as a box in a
+// Neuroglancer of one's own.
+function saveFile(name: string, text: string, type: string) {
+  const a = document.createElement("a"), url = URL.createObjectURL(new Blob([text], { type }));
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+$("savecsv").addEventListener("click", () => {
+  const s = search;
+  if (!s || !src || !s.state.hits.length) return;
+  const st = s.state, f = 2 ** st.working, d3 = src.dims === 3, off = (src as { ngOffset?: Vec3 }).ngOffset ?? [0, 0, 0];
+  const rows: HitRow[] = st.hits.map((h, k) => {
+    const fx = h.center[2] * f, fy = h.center[1] * f, ll = lonLat(fx, fy), m = s.markOf(h.index);
+    return { rank: k + 1, score: h.score, x: fx + off[2], y: fy + off[1], z: d3 ? h.center[0] * f + off[0] : undefined,
+             lon: ll?.[0], lat: ll?.[1], link: src!.link?.(st.working, h.center), mark: m === "good" ? "more" : m === "bad" ? "fewer" : undefined };
+  });
+  const sc = src.levels[0].scale, name = src.name.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "hits";
+  saveFile(`${name}_hits.csv`, hitsCsv(rows, st.patch * f, preset?.geo ? undefined : { scale: [sc[2], sc[1], sc[0]], unit: src.unit }), "text/csv");
+});
+$("saveng").addEventListener("click", () => {
+  const s = search;
+  if (!s || !ngv || !src) return;
+  const st = s.state, f = 2 ** st.working, side = st.patch * f, d3 = src.dims === 3;
+  const box = (c: Vec3, lab?: string) => ({ fz: d3 ? c[0] * f : 0, fy: c[1] * f, fx: c[2] * f, side, label: lab });
+  const state = ngv.stateWith(queryBoxes(box), st.hits.map((h, k) => box(h.center, `#${k + 1} (${h.score.toFixed(3)})`)));
+  if (!state) return;
+  window.open("https://neuroglancer-demo.appspot.com/#!" + encodeURIComponent(JSON.stringify(state)), "_blank", "noopener");
+});
 $("why").addEventListener("click", () => {
   whyOn = !whyOn;
   $("why").classList.toggle("on", whyOn);
@@ -1672,7 +1739,12 @@ $("hitsort").addEventListener("click", (e) => {
   if (search) panel(search.state);
 });
 /** The same query again (same place or drawing, level and box), as a new search. */
-function again() { if (search) begin(search.query, search.state.working, search.state.patch, search.opt.sketch); }
+function again() {
+  if (!search) return;
+  const t = search.opt.text;
+  if (t && !emb.spec.textFile) { toast(`"${t.text}" was typed: only ${TEXT_MODEL.name} reads words. Click a place to search with ${emb.spec.name}.`); return; }
+  begin(search.query, search.state.working, search.state.patch, search.opt.sketch, t);
+}
 /** Another model or method is for the next search: the one running keeps what it began with
  * (its embeddings never mix), and this asks whether to search again with the new choice now. */
 function offerAgain() {
@@ -1807,6 +1879,45 @@ $("padgo").addEventListener("click", () => {
   begin(NOWHERE, padAt.W, padAt.P, sk);
 });
 
+// a typed query: the words through PE-Core-S's text tower, the search on its image side
+let typing = false;
+const mergesText = () => fetch(new URL("models/clip-bpe-merges.txt", document.baseURI).href).then((r) => {
+  if (!r.ok) throw new Error(`the tokenizer's vocabulary: HTTP ${r.status}`);
+  return r.text();
+});
+$("textform").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const text = $<HTMLInputElement>("textq").value.replace(/\s+/g, " ").trim();
+  if (!src || !text || typing) return;
+  typing = true;
+  $<HTMLButtonElement>("textgo").disabled = true;
+  const s = src, W = searchLevel(), P = Number(patchSel.value);
+  try {
+    clearSearch();
+    $("hint").classList.add("gone");
+    $("phase").textContent = "Reading the words";
+    $("status").textContent = `"${text}" through ${TEXT_MODEL.name}'s text side (${TEXT_MODEL.textMb} MB the first time, then cached by the browser)`;
+    const switched = emb.spec !== TEXT_MODEL;
+    if (switched) {  // the model that reads words, for this search and those after it
+      emb.use(TEXT_MODEL.id);
+      $<HTMLSelectElement>("detail").value = TEXT_MODEL.id;
+      $<HTMLInputElement>("adapt").checked = false;
+    }
+    const e = await emb.embedText(text, mergesText);
+    if (switched || modelNote) await warmUp();  // (the chip's note, left by the text side's download, ends with it)
+    if (src !== s) return;  // another dataset was opened meanwhile
+    $("pad").hidden = true;
+    begin(NOWHERE, W, P, undefined, { text, e });
+  } catch (err) {
+    modelNote = null;
+    $("phase").textContent = "The words could not be read";
+    $("status").textContent = String((err as Error).message ?? err);
+  } finally {
+    typing = false;
+    $<HTMLButtonElement>("textgo").disabled = false;
+  }
+});
+
 // the brush: which parts of the query box matter
 const bpad = new BrushPad($<HTMLCanvasElement>("bpadcv"), () => { $<HTMLButtonElement>("bpadgo").disabled = !bpad.marked; });
 $("brushbtn").addEventListener("click", () => {
@@ -1827,7 +1938,7 @@ $("bpadnone").addEventListener("click", () => bpad.fill(0));
 function againWithBrush(w: Float32Array | null) {
   brushW = w;
   $("bpad").hidden = true;
-  if (started && src) begin(started.c, started.W, started.P, started.sketch);
+  if (started && src) begin(started.c, started.W, started.P, started.sketch, started.text);
 }
 $("bpadgo").addEventListener("click", () => againWithBrush(bpad.marked ? Float32Array.from(bpad.w) : null));
 $("bpadoff").addEventListener("click", () => againWithBrush(null));
@@ -1843,14 +1954,17 @@ $("bpadoff").addEventListener("click", () => againWithBrush(null));
 // busy time, the first hit and the top 10 hits' mean score (the same query and model: higher
 // = closer matches found). ?benchruns=main,new picks the runs; ?benchauto=1 starts after 20 s.
 // First, each model file's passes timed alone (modelTiming); after each run, its model time by
-// path (per-place passes, token passes). tok32: tokens with 32 crops a pass (?tokbatch=32).
+// path (per-place passes, token passes). tok32: tokens with 32 crops a pass (?tokbatch=32);
+// nofit: tokens with overlapping crops (?tokfit=0); tokpad: token passes always full (?tokpad=1).
 // ---------------------------------------------------------------------------------------
 const BENCH_RUNS: Record<string, typeof fast> = {
-  main: { roughTokens: false, lazy: false, rawCache: false, tokBatch: 16 },
-  new: { roughTokens: true, lazy: true, rawCache: true, tokBatch: 16 },
-  tokens: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 16 },
-  tok32: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 32 },
-  reads: { roughTokens: false, lazy: true, rawCache: true, tokBatch: 16 },
+  main: { roughTokens: false, lazy: false, rawCache: false, tokBatch: 16, tokFit: true, tokPad: false },
+  new: { roughTokens: true, lazy: true, rawCache: true, tokBatch: 16, tokFit: true, tokPad: false },
+  tokens: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 16, tokFit: true, tokPad: false },
+  tok32: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 32, tokFit: true, tokPad: false },
+  nofit: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 16, tokFit: false, tokPad: false },
+  tokpad: { roughTokens: true, lazy: false, rawCache: false, tokBatch: 16, tokFit: true, tokPad: true },
+  reads: { roughTokens: false, lazy: true, rawCache: true, tokBatch: 16, tokFit: true, tokPad: false },
 };
 /** The bench's first lines: each model file's passes, warm, the view still, at a few batch sizes
  * (ms a pass / ms an image; first: the first pass at that size, its shaders built), and the two
@@ -1922,6 +2036,7 @@ async function runBench(secs: number, names: string[], out: HTMLElement) {
     if (!cfg) { lines.push(`${name}: no such run`); continue; }
     Object.assign(fast, cfg);
     emb.tokBatch = fast.tokBatch;
+    emb.tokPad = fast.tokPad;
     s.flush?.();
     emb.clearCache();
     if (s instanceof PrecomputedSource) s.setKeepRaw(fast.rawCache);

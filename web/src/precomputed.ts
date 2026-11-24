@@ -156,8 +156,10 @@ export class PrecomputedSource implements Source {
             const [sx, sy, sz] = cs, n = sx * sy * sz, z0 = cz * ch[0], y0 = cy * ch[1], x0 = cx * ch[2];
             const zlo = Math.max(a[0], z0), zhi = Math.min(b[0], z0 + sz), ylo = Math.max(a[1], y0), yhi = Math.min(b[1], y0 + sy);
             const xlo = Math.max(a[2], x0), xhi = Math.min(b[2], x0 + sx);
+            const rows = C === 1 && !(data instanceof BigUint64Array) ? data : null;
             for (let z = kept(zlo); z < zhi; z += st) for (let y = ylo; y < yhi; y++) {
               const src = ((z - z0) * sy + (y - y0)) * sx, dst = (((z - lo[0]) / st) * shape[1] + (y - lo[1])) * shape[2];
+              if (rows) { out.set(rows.subarray(src + xlo - x0, src + xhi - x0), dst + xlo - lo[2]); continue; }  // a row at a time
               for (let x = xlo; x < xhi; x++)
                 for (let c = 0; c < C; c++) out[(dst + x - lo[2]) * C + c] = Number(data[Math.min(c, Cin - 1) * n + src + x - x0]);
             }

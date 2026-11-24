@@ -112,3 +112,81 @@ test("the rough pass from tokens ranks the tiles with a model run per crop, not 
   assert.ok(pb.emb.count - b.state.patches <= (pa.emb.count - a.state.patches) / 1.8,
             `rough runs: tokens ${pb.emb.count - b.state.patches}, per place ${pa.emb.count - a.state.patches}`);
 });
+
+test("padded token passes are all of tokBatch crops and give the same grids", async () => {
+  const plain = stand("webgpu"), padded = stand("webgpu");
+  const shapes: number[] = [], run = (padded.emb as any).onnx.run;
+  (padded.emb as any).onnx.run = (m: any, x: Float32Array, dims: number[]) => { shapes.push(dims[0]); return run(m, x, dims); };
+  plain.emb.tokBatch = padded.emb.tokBatch = 4;
+  padded.emb.tokPad = true;
+  const S = plain.emb.spec.input;
+  const crops = Array.from({ length: 10 }, (_, i) => ({ data: Float32Array.from({ length: S * S }, (_, j) => (i * 31 + j * 7) % 255), size: S, channels: 1 }));
+  const a = await plain.emb.gridTokens(crops), b = await padded.emb.gridTokens(crops);
+  assert.deepEqual(shapes, [4, 4, 4]);
+  assert.equal(b.length, 10);
+  assert.equal(padded.emb.passes.tokens.images, 10);
+  for (let i = 0; i < 10; i++) assert.deepEqual(b[i].tokens, a[i].tokens, `crop ${i}`);
+});
+
+test("roughFit shrinks a 256 px chunk plane to 2 x 2 crops; without it 3 x 3 overlapping ones", async () => {
+  const plane = { name: "p", dims: 2, channels: 1, unit: "", bytesRead: 0,
+    levels: [0, 1, 2].map((k) => ({ shape: [1, 1024 >> k, 1024 >> k], chunk: [1, 256, 256], scale: [1, 2 ** k, 2 ** k] })),
+    async read(_l: number, lo: Vec3, hi: Vec3) {
+      const h = hi[1] - lo[1], w = hi[2] - lo[2], data = new Float32Array(h * w);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) data[y * w + x] = ((lo[1] + y) * 37 + (lo[2] + x) * 11) % 251;
+      return { data, shape: [1, h, w], channels: 1 };
+    } };
+  const centers: Vec3[] = [];
+  for (let y = 32; y < 256; y += 64) for (let x = 32; x < 256; x += 64) centers.push([0, y, x]);
+  const crops = async (roughFit: boolean) => {
+    const s = new Search(plane as any, stand("webgpu").emb, [0, 512, 512], opt({ patch: 128, region: [[0, 0, 0], [1, 1024, 1024]], roughFit }));
+    const prep = await (s as any).roughPrep(2, centers, 32);
+    assert.ok(prep.at.every((a: unknown) => a), "every place has its tokens");
+    for (const a of prep.at) assert.ok(Math.abs(a.w.reduce((t: number, v: { w: number }) => t + v.w, 0) - (32 * (roughFit ? 0.875 : 1)) ** 2) < 1e-6);
+    return prep.crops.length;
+  };
+  assert.equal(await crops(false), 9);
+  assert.equal(await crops(true), 4);
+});
+
+test("a typed query: no place and no quick pass, the hit is the place whose embedding the text's is", async () => {
+  // a one-part (512-d) stand-in model: its "text" embedding is made here from a place's own
+  const emb = stand().emb, W = 512;
+  (emb as any).onnx.run = async (_m: unknown, x: Float32Array, dims: number[]) => {
+    const n = dims[0], per = x.length / n, out = new Float32Array(n * W);
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      for (let d = 0; d < W; d++) { const v = x[i * per + ((d * 97) % per)]; out[i * W + d] = v; s += v * v; }
+      s = Math.sqrt(s) || 1;
+      for (let d = 0; d < W; d++) out[i * W + d] /= s;
+    }
+    return { data: out, dims: [n, W] };
+  };
+  emb.spec = { ...emb.spec, id: "clip-stand", clip: true };
+  const src = await OmeZarrSource.open(base, "t", { mirrors: false }), at: Vec3 = [32, 80, 80], P = 32;
+  const r = await src.read(0, [at[0], at[1] - P / 2, at[2] - P / 2], [at[0] + 1, at[1] + P / 2, at[2] + P / 2]);
+  const e = (await emb.embed([{ data: r.data, size: P, channels: 1 }]))[0];
+  assert.equal(e.length, W);
+  const s = new Search(src, emb, [NaN, NaN, NaN], opt({ text: { text: "that place", e }, method: "tokens", brush: new Float32Array(64).fill(1) }));
+  await s.start();
+  assert.equal(s.state.phase, "done", s.state.message);
+  assert.equal(s.state.coarse, -1, "no quick pass");
+  assert.deepEqual(s.state.hits[0].center, at);
+  assert.ok(Math.abs(s.state.hits[0].score - 1) < 1e-4, `score ${s.state.hits[0].score}`);
+  assert.equal(s.explain(s.state.hits[0].index)!.parts.length, 1);
+  // a mark and another example still work in the one space
+  s.mark(s.state.hits[1].index, true);
+  assert.equal(await s.addExample([32, 48, 48]), null);
+  assert.ok(s.state.hits.length > 0 && s.state.hits.every((h) => Number.isFinite(h.score)));
+  // with the rough pass (as on a GPU): the words are its query too, a run per place (no tokens)
+  const r2 = new Search(await OmeZarrSource.open(base, "r", { mirrors: false }), emb, [NaN, NaN, NaN],
+                        opt({ text: { text: "that place", e }, roughPass: true, roughTokens: true }));
+  await r2.start();
+  assert.equal(r2.state.phase, "done", r2.state.message);
+  assert.ok((r2.state.rough?.places ?? 0) > 20 && r2.state.hits.length > 0, `${r2.state.rough?.places} rough places, ${r2.state.hits.length} hits`);
+  assert.equal(emb.passes.tokens.n, 0);
+  // a model of three parts cannot take it
+  const plain = new Search(await OmeZarrSource.open(base, "p", { mirrors: false }), stand().emb, [NaN, NaN, NaN], opt({ text: { text: "x", e } }));
+  await plain.start();
+  assert.equal(plain.state.phase, "error");
+});

@@ -9,6 +9,7 @@
 // part, the brushed tokens' weighted mean: DINOv2 at 112 px from a second export that outputs its
 // raw tokens (n, 65, 384), fetched only then.
 import { Onnx, type OnnxModel } from "../../../chunkmirage/web/src/onnx.ts";
+import { CONTEXT, ClipTokenizer } from "./cliptok.ts";
 
 export const DIM = 1152;
 export const PART = 384;
@@ -35,6 +36,11 @@ export interface ModelSpec extends Prep {
   adapt?: boolean;     // "adapt to data" on when chosen: its CLS token is nearly the same for
                        // every patch (cosine 0.999), so raw scores all sit near 1 (test 6: no fewer found)
   mb: number;          // its download, the first time
+  clip?: boolean;      // its embedding is one part (any width): the image side of a text-and-image model,
+                       // matched whole; no tokens of its own, so no brush, token mode or rough pass from tokens
+  textFile?: string;   // its text tower (models/<textFile>.onnx): a typed query's embedding, in the same space
+  textMb?: number;     // the text tower's download, the first time something is typed
+  textParts?: number;  // the files it comes in (<textFile>.part0.onnx...; export_model.py: none over GitHub's 100 MB)
 }
 export const MODELS: ModelSpec[] = [
   { id: "112", name: "DINOv2-small", label: "DINOv2-small, fast (112 px)", input: 112, grid: 8, file: "dinov2-small-112",
@@ -44,7 +50,11 @@ export const MODELS: ModelSpec[] = [
     grey: true, norm: "standardize", ownTokens: true, mb: 43 },
   { id: "pecore-t", name: "PE-Core-T", label: "PE-Core-T: fastest on a CPU (112 px)", input: 112, grid: 7, file: "pecore-t16-112-tokens",
     norm: "half", ownTokens: true, adapt: true, mb: 12 },
+  { id: "pecore-s", name: "PE-Core-S", label: "PE-Core-S: finds what you type (112 px)", input: 112, grid: 7, file: "pecore-s16-112-clip",
+    norm: "half", clip: true, textFile: "pecore-s16-text", mb: 48, textMb: 127, textParts: 2 },
 ];
+/** The model a typed query runs on (the one with a text tower). */
+export const TEXT_MODEL = MODELS.find((m) => m.textFile)!;
 
 /** Where each output pixel samples along one axis (bilinear, half-pixel centres): the two source
  * indices and the weight of the second, per (source size, output size). */
@@ -154,6 +164,9 @@ export class Embedder {
   count = 0;
   /** Crops a pass for the token grids (runTokens) on the GPU: ?tokbatch=, the bench's tok32. */
   tokBatch = 16;
+  /** Token passes always of B crops, the last one filled with blank ones (?tokpad=1): one input
+   * shape, should a new one cost the GPU a setup. */
+  tokPad = false;
   /** Passes by path, for the bench: per-patch embeddings (embed) and token grids (runTokens). */
   passes = { pooled: { n: 0, images: 0, s: 0 }, tokens: { n: 0, images: 0, s: 0 } };
   private tally(kind: "pooled" | "tokens", images: number, s: number) {
@@ -176,9 +189,17 @@ export class Embedder {
       return r.arrayBuffer();
     }));
   }
-  private file(f: string): OnnxModel {
+  /** Model file `f`; in `parts` files (f.part0, f.part1...), they are fetched in turn and joined. */
+  private file(f: string, parts = 1): OnnxModel {
     let m = this.files.get(f);
-    if (!m) this.files.set(f, m = { key: this.url(f), bytes: () => this.get(this.url(f)) });
+    if (!m) this.files.set(f, m = { key: this.url(f), bytes: parts < 2 ? () => this.get(this.url(f)) : async () => {
+      const got: Uint8Array[] = [];
+      for (let i = 0; i < parts; i++) got.push(new Uint8Array(await this.get(this.url(`${f}.part${i}`))));
+      const all = new Uint8Array(got.reduce((n, g) => n + g.length, 0));
+      let o = 0;
+      for (const g of got) { all.set(g, o); o += g.length; }
+      return all.buffer;
+    } });
     return m;
   }
   /** Model input size (px). */
@@ -220,7 +241,8 @@ export class Embedder {
       this.provider = this.onnx.provider;
       const data = r.data as Float32Array, raw = r.dims.length === 3;  // raw tokens: pool them here
       idx.forEach((i, j) => {
-        const e = raw ? poolTokens(data, j, r.dims[1], r.dims[2], brush) : Float32Array.from(data.subarray(j * DIM, (j + 1) * DIM));
+        const w = raw ? 0 : r.dims[1];  // pooled: DIM (three parts), or a text-and-image model's one part
+        const e = raw ? poolTokens(data, j, r.dims[1], r.dims[2], brush) : Float32Array.from(data.subarray(j * w, (j + 1) * w));
         out[i] = e;
         if (keys) this.cache.set(keys[i], e);
       });
@@ -245,6 +267,20 @@ export class Embedder {
   async gridTokens(crops: Patch[], sp: ModelSpec = this.spec): Promise<TokenGrid[]> {
     return this.runTokens(crops, sp, sp.brushFile ?? sp.file);
   }
+  /** A typed query's embedding (unit length), in the space of model `sp`'s image embeddings:
+   * its text tower's run on the text's CLIP tokens. `merges`: the tokenizer's vocabulary
+   * (models/clip-bpe-merges.txt), fetched once. */
+  async embedText(text: string, merges: () => Promise<string>, sp: ModelSpec = TEXT_MODEL): Promise<Float32Array> {
+    if (!sp.textFile) throw new Error(`${sp.name} has no text tower`);
+    this.tok ??= merges().then((m) => new ClipTokenizer(m));
+    this.tok.catch(() => { this.tok = null; });  // a failed fetch is tried again
+    const ids = (await this.tok).encode(text);
+    const r = await this.onnx.run(this.file(sp.textFile, sp.textParts), ids, [1, CONTEXT]);
+    const e = Float32Array.from((r.data as Float32Array).subarray(0, r.dims[1]));
+    unitPart(e, 0, e.length);
+    return e;
+  }
+  private tok: Promise<ClipTokenizer> | null = null;
   /** Drop the embeddings kept for the session (the bench: each run starts cold). */
   clearCache() { this.cache.clear(); }
   private async runTokens(crops: Patch[], sp: ModelSpec, file: string): Promise<TokenGrid[]> {
@@ -254,15 +290,16 @@ export class Embedder {
     // where the model runs before the first pass sets the batch size, as embed does
     if (!this.provider && typeof this.onnx.session === "function") { await this.onnx.session(model); this.provider = this.onnx.provider; }
     const B = this.provider === "wasm" ? 2 : this.tokBatch;
+    const pad = this.tokPad && this.provider !== "wasm";
     const prep = (part: Patch[]) => {
-      const x = new Float32Array(part.length * n);
+      const x = new Float32Array((pad ? B : part.length) * n);
       part.forEach((p, j) => prepare(p, x, j * n, size, sp));
       return x;
     };
     let part = crops.slice(0, B), x = prep(part);
     for (let s = 0; part.length;) {
       await new Promise((r) => setTimeout(r, 0));
-      const t0 = performance.now(), pass = this.onnx.run(model, x, [part.length, ch, size, size]);
+      const t0 = performance.now(), pass = this.onnx.run(model, x, [x.length / n, ch, size, size]);
       // the next batch's pixels made while the GPU runs this one, as embed does
       const next = crops.slice(s + part.length, s + part.length + B), nextX = next.length ? prep(next) : null;
       const r = await pass;
@@ -297,6 +334,10 @@ export function dot(a: Float32Array, b: Float32Array): number {
   return s;
 }
 
+/** Whether an embedding is one part, compared whole (a window's mean token, 384-d; a
+ * text-and-image model's embedding, 512-d), not the three or four 384-d parts of the others. */
+export const single = (e: Float32Array) => e.length < 3 * PART;
+
 /** Which parts of the embedding a match compares: the whole patch (CLS + mean of tokens), the
  * object at its centre (CLS + centre-weighted tokens), or only what the brush marked (the
  * brushed tokens' mean; embeddings made with a brush): with the CLS token as well it found no
@@ -308,12 +349,13 @@ const PARTS: Record<Focus, number[]> = { whole: [0, 1], center: [0, 2], brush: [
  * after subtracting `mu` (the candidates' mean embedding: "adapt to the data") when given. */
 export function similarity(a: Float32Array, q: Float32Array, focus: Focus, mu?: Float32Array): number {
   let total = 0;
-  const parts = a.length === PART ? [0] : PARTS[focus];  // a window of tokens is one 384-d part
+  const one = single(a);  // a window of tokens, or a text-and-image model's embedding: one part
+  const parts = one ? [0] : PARTS[focus], n = one ? a.length : PART;
   for (const p of parts) {
     const o = p * PART;
-    if (!mu) { let s = 0; for (let i = o; i < o + PART; i++) s += a[i] * q[i]; total += s; continue; }
+    if (!mu) { let s = 0; for (let i = o; i < o + n; i++) s += a[i] * q[i]; total += s; continue; }
     let s = 0, na = 0, nq = 0;
-    for (let i = o; i < o + PART; i++) { const x = a[i] - mu[i], y = q[i] - mu[i]; s += x * y; na += x * x; nq += y * y; }
+    for (let i = o; i < o + n; i++) { const x = a[i] - mu[i], y = q[i] - mu[i]; s += x * y; na += x * x; nq += y * y; }
     total += s / (Math.sqrt(na * nq) + 1e-9);
   }
   return total / parts.length;

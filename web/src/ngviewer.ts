@@ -291,12 +291,8 @@ export class NgViewer {
     }
   }
 
-  /** Query (its examples) and hits as boxes of the annotation layer (the rest of the state untouched). */
-  setBoxes(queries: NgBox[], hits: NgBox[]) {
-    if (!this.viewer) return;
-    const st = this.json();
-    const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
-    if (!layer) return;
+  /** Boxes as the annotation layer's list: the hits, then the query's examples. */
+  private boxList(queries: NgBox[], hits: NgBox[]): Json[] {
     const box = (b: NgBox, id: string, color: string) => {
       const a = this.names.map(() => 0), c = this.names.map(() => 0);
       const h = b.side / 2, put = (n: string, lo: number, hi: number) => { const i = this.idx(n); if (i >= 0) { a[i] = lo + this.o(n); c[i] = hi + this.o(n); } };
@@ -304,7 +300,27 @@ export class NgViewer {
       put("z", this.src.dims === 3 ? b.fz - h : 0, this.src.dims === 3 ? b.fz + h : 1);
       return { type: "axis_aligned_bounding_box", id, pointA: a, pointB: c, description: b.label ?? "", props: [color] };
     };
-    const list = [...hits.map((b, k) => box(b, `hit${k}`, HIT_COLOUR)), ...queries.map((b, k) => box(b, k ? `query${k}` : "query", QUERY_COLOUR))];
+    return [...hits.map((b, k) => box(b, `hit${k}`, HIT_COLOUR)), ...queries.map((b, k) => box(b, k ? `query${k}` : "query", QUERY_COLOUR))];
+  }
+
+  /** The viewer's state as it is now with these boxes as its annotation layer (every hit, not
+   * only those drawn): for a Neuroglancer of one's own. Null before the viewer is up. */
+  stateWith(queries: NgBox[], hits: NgBox[]): Json | null {
+    if (!this.viewer) return null;
+    const st = structuredClone(this.json());
+    const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
+    if (!layer) return null;
+    layer.annotations = this.boxList(queries, hits);
+    return st;
+  }
+
+  /** Query (its examples) and hits as boxes of the annotation layer (the rest of the state untouched). */
+  setBoxes(queries: NgBox[], hits: NgBox[]) {
+    if (!this.viewer) return;
+    const st = this.json();
+    const layer = (st.layers as Json[]).find((l) => l.name === LAYER);
+    if (!layer) return;
+    const list = this.boxList(queries, hits);
     // the annotation layer's own list, replaced in place: a whole-state restore resets the
     // camera and drops local annotations on this viewer
     const local = this.viewer.layerManager?.getLayerByName?.(LAYER)?.layer?.localAnnotations;

@@ -82,6 +82,8 @@
   #attrib { position: absolute; left: 12px; bottom: 8px; right: 12px; color: #aab; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }
   #coords { position: absolute; right: 12px; bottom: 26px; display: flex; gap: 8px; align-items: center; background: #000b; padding: 3px 4px 3px 10px; border-radius: 14px; font-size: 11.5px; color: #cfd6df; font-variant-numeric: tabular-nums; }
   #cursor:empty { display: none; }
+  #textform { margin-top: 6px; flex-wrap: nowrap; }
+  #textq { flex: 1 1 auto; min-width: 0; padding: 3px 8px; font-size: 12px; }
   #goto { width: 170px; padding: 2px 8px; font-size: 11.5px; border-radius: 10px; background: #0008; }
   #zbar { position: absolute; right: 12px; top: 12px; display: none; align-items: center; gap: 6px; background: #000b; padding: 5px 10px; border-radius: 14px; }
 
@@ -280,6 +282,10 @@
         <span id="psize"></span>
         <button id="drawbtn" title="Draw what you are looking for instead of clicking an example">draw</button>
       </div>
+      <form id="textform" class="row" title="Type what to find instead of clicking an example. It runs on PE-Core-S, a model that reads words as well as pictures: 48 MB, and 127 MB more for the words, the first time. Made for photographs, so it suits Earth, the Moon and Mars better than microscopy; plain names of large things work best (a lake, an airport, a crater). Mark hits with the tick and cross to steer it.">
+        <input id="textq" placeholder="or type it: a lake, an airport, a crater" autocomplete="off" maxlength="120" aria-label="Type what to find">
+        <button id="textgo" type="submit">find</button>
+      </form>
       <details id="options">
         <summary>Options</summary>
         <div class="opts">
@@ -348,7 +354,7 @@
       </div>
     </div>
     <div class="hits-head"><span class="title">Hits <span id="hitcount"></span></span>
-      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where in each hit the thing you clicked is: the parts that look like the middle of your box bright, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button>
+      <div class="row" style="gap:6px"><button id="match" class="tog" title="Show where in each hit the thing you clicked is: the parts that look like the middle of your box bright, the rest dimmed">match</button><button id="why" class="tog" title="Show how each hit was matched: the parts of its score, and which parts of it look like the query">why</button><button id="savecsv" class="tog" disabled title="Save the hits as a CSV file: rank, score, where each is (voxels of the finest level, and physical or degrees), your marks, a link">csv</button><button id="saveng" class="tog" hidden title="Open the hits in Neuroglancer in a new tab: every hit a box of an annotation layer, the view as it is here">ng</button>
       <div class="seg small" id="hitsort" title="Order of the list (the numbers stay the match rank)"><button data-k="best" class="on">best</button><button data-k="near">nearest</button><button data-k="far">farthest</button></div></div></div>
     <div id="hithelp" hidden><span id="hitspread"></span> Click a hit to go there; on a hit, <b class="g">&#10003;</b> more like this,
       <b class="b">&#10005;</b> fewer like this: the hits re-rank.</div>
