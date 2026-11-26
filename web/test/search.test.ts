@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DIM, Embedder } from "../src/embedder.ts";
-import { Search } from "../src/search.ts";
+import { DEFAULT_MATCH, NOWHERE, resized, Search, swapTones } from "../src/search.ts";
 import type { Level, Region, Source, Vec3 } from "../src/sources.ts";
 
 /** A 1024 x 1024 image of `f(y, x)` (0-255) with 5 levels, 256 px tiles; counts its reads. */
@@ -75,4 +75,53 @@ test("a search cancelled while the model runs on its query reads nothing after",
   assert.equal(s.state.phase, "query");
   await s.resume();  // nothing resumes a cancelled search
   assert.equal(src.reads, reads);
+});
+
+test("light and dark swapped: a patch mirrored in its own range, its colour kept", () => {
+  const grey = swapTones({ data: Float32Array.from([10, 50, NaN, 200]), size: 2, channels: 1 });
+  assert.deepEqual([...grey.data].map((v) => (v === v ? v : -1)), [200, 160, -1, 10]);
+  const col = swapTones({ data: Float32Array.from([40, 40, 40, 140, 120, 100]), size: 1, channels: 3 }).data;
+  assert.ok(col[0] > col[3], "the dark pixel is now the brighter one");
+  assert.ok(Math.abs(col[3] - col[4] - 20) < 1e-3 && Math.abs(col[4] - col[5] - 20) < 1e-3, "the channels keep their differences");
+});
+
+test("a drawing with light and dark the other way round finds its place only when that is allowed", async () => {
+  const blobs = (y: number, x: number) => 128 + 60 * Math.sin(x / 9) * Math.cos(y / 23) + 40 * Math.sin((x + 2 * y) / 31);
+  const src = source("blobs", blobs), { emb } = embedder();
+  const first = new Search(src, emb, [0, 300, 300], options());
+  await first.start();
+  const c = first.state.hits[3].center;
+  const r = await src.read(0, [0, c[1] - 32, c[2] - 32], [1, c[1] + 32, c[2] + 32]);
+  const sketch = swapTones({ data: r.data, size: 64, channels: 1 });
+  const at = (s: Search) => s.state.hits.find((h) => h.center[1] === c[1] && h.center[2] === c[2]);
+  const plain = new Search(src, emb, NOWHERE, { ...options(), sketch });
+  await plain.start();
+  assert.ok(!at(plain) || at(plain)!.score < 0.5, `as drawn, its place is no hit (${at(plain)?.score})`);
+  const either = new Search(src, emb, NOWHERE, { ...options(), sketch, match: { ...DEFAULT_MATCH, tones: true } });
+  await either.start();
+  const h = at(either);
+  assert.ok(h && h.score > 0.99, `light or dark: its place scores ${h?.score}`);
+  assert.equal(either.explain(h!.index)?.variant, "iid");
+  // and switched on during a search: the hits re-ranked
+  await plain.setMatch({ ...DEFAULT_MATCH, tones: true });
+  assert.ok((at(plain)?.score ?? 0) > 0.99, "switched on afterwards, its place is found");
+});
+
+test("any size, for a drawing: drawn at half the size it is in the data, its place is found at double", async () => {
+  const blobs = (y: number, x: number) => 128 + 60 * Math.sin(x / 19) * Math.cos(y / 37) + 40 * Math.sin((x + 2 * y) / 53);
+  const src = source("blobs2", blobs), { emb } = embedder();
+  const first = new Search(src, emb, [0, 300, 300], options());
+  await first.start();
+  const c = first.state.hits[3].center;
+  // the same place one level up: everything in it half the size, in the box's middle half
+  const r = await src.read(1, [0, c[1] / 2 - 32, c[2] / 2 - 32], [1, c[1] / 2 + 32, c[2] / 2 + 32]);
+  const sketch = { data: r.data, size: 64, channels: 1 };
+  const at = (s: Search) => s.state.hits.find((h) => h.center[1] === c[1] && h.center[2] === c[2]);
+  const s = new Search(src, emb, NOWHERE, { ...options(), sketch, match: { ...DEFAULT_MATCH, scales: true } });
+  await s.start();
+  const h = at(s);
+  assert.ok(h && h.score > 0.95, `any size: its place scores ${h?.score}`);
+  assert.equal(s.explain(h!.index)?.variant, "s-1");
+  const small = resized(sketch, false);
+  assert.equal(small.data[0], small.data[5], "the shrunk drawing has one tone around it");
 });

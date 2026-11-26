@@ -29,7 +29,7 @@ interface Mark { id: number; e: Float32Array }
 export interface Explain {
   score: number;
   parts: { name: "look" | "parts" | "centre" | "brushed" | "tokens"; value: number }[];
-  variant: string;   // "id", a rotation "r1".."r7", a scale "s-1"/"s+1"
+  variant: string;   // "id", a rotation "r1".."r7", "i" + one of those (light and dark swapped), a scale "s-1"/"s+1"
   example: number;   // with "match any": the example (0-based) that matched best, else -1
   feedback: number;  // what the good/bad marks added to the score
   adapted: boolean;  // compared after removing the candidates' mean ("adapt to data")
@@ -135,7 +135,7 @@ const tileKey = (t: Vec3) => t[0] * 2 ** 40 + t[1] * 2 ** 20 + t[2];
 interface Item { c: Vec3; e: Float32Array; pix: Uint8Array; s: number; h: number }
 
 /** One example of what to find: its place, its embeddings (keyed by variant: "id", the
- * rotations "r1".."r7", the scales "s-1", "s+1"), its pixels and its view at the rough level. */
+ * rotations "r1".."r7", those with light and dark swapped "iid", "ir1".., the scales "s-1", "s+1"), its pixels and its view at the rough level. */
 interface Example { c: Vec3; vars: Map<string, Float32Array>; pix: Uint8Array; rough: Float32Array | null; text?: boolean }
 
 /** Every place compared, with its score (for the heat map): centres (z, y, x, working level)
@@ -167,6 +167,7 @@ export interface MatchOptions {
   rotations: boolean;  // also the query rotated/flipped 8 ways, best match counts
   scales: boolean;     // also the query at half and double the field of view
   adapt: boolean;      // subtract the candidates' mean embedding before comparing
+  tones?: boolean;     // also the query with light and dark swapped (and each rotation of it so)
   combine?: "mean" | "any";  // several examples: their mean (default), or the best match among them
 }
 /** How far apart hits must be, in boxes (patch sides): from the query, and from each other
@@ -1288,7 +1289,12 @@ export class Search {
       };
       for (const flip of [false, true]) for (let k = 0; k < 4; k++) if (k || flip) { patches.push({ data: rot(base.data, k, flip), size: P, channels: C }); keys.push(`r${patches.length - 1}`); }
     }
-    if (m.scales && placed(at)) {  // a drawing has no other levels
+    if (m.tones) for (let i = 0, n = patches.length; i < n; i++) { patches.push(swapTones(patches[i])); keys.push(`i${keys[i]}`); }
+    if (m.scales && !placed(at)) {  // a drawing has no other levels: itself at half the size and at double
+      patches.push(resized(base, false), resized(base, true));
+      keys.push("s+1", "s-1");
+    }
+    if (m.scales && placed(at)) {
       const W = this.opt.working, h = P / 2, q = at, d3 = this.src.dims === 3;  // P: the base's side
       for (const L of [W - 1, W + 1]) {
         if (L < 0 || L >= this.src.levels.length) continue;
@@ -1316,7 +1322,7 @@ export class Search {
   async setMatch(m: MatchOptions) {
     const old = this.opt.match ?? DEFAULT_MATCH;
     this.opt.match = m;
-    if (m.rotations !== old.rotations || m.scales !== old.scales) {
+    if (m.rotations !== old.rotations || m.scales !== old.scales || !!m.tones !== !!old.tones) {
       for (const e of this.examples) if (!e.text) e.vars = await this.queryVariants(await this.queryBase(e.c), e.c);
       this.combine();
       this.applyFeedback();
@@ -1494,6 +1500,38 @@ function shrink(pt: Patch, p: number): Patch {
     d[(y * p + x) * C + c] = s / n;
   }
   return { data: d, size: p, channels: C };
+}
+
+/** A drawing at another size in the same box: at double (`bigger`: its middle half, enlarged) or
+ * at half (shrunk, each channel's median around it). */
+export function resized(p: Patch, bigger: boolean): Patch {
+  const P = p.size, C = p.channels, h = P / 2, q = P / 4, o = new Float32Array(P * P * C);
+  if (bigger) {
+    for (let y = 0; y < P; y++) for (let x = 0; x < P; x++) for (let c = 0; c < C; c++)
+      o[(y * P + x) * C + c] = p.data[((q + (y >> 1)) * P + q + (x >> 1)) * C + c];
+    return { data: o, size: P, channels: C };
+  }
+  const s = shrink(p, h);
+  for (let c = 0; c < C; c++) {
+    const med = median(p.data.filter((_, i) => i % C === c));
+    for (let i = 0; i < P * P; i++) o[i * C + c] = med;
+    for (let y = 0; y < h; y++) for (let x = 0; x < h; x++) o[((y + q) * P + x + q) * C + c] = s.data[(y * h + x) * C + c];
+  }
+  return { data: o, size: P, channels: C };
+}
+
+/** A patch with light and dark swapped: each pixel's brightness mirrored within the patch's own
+ * range (its darkest becomes its brightest), its colour kept (every channel moved alike). */
+export function swapTones(p: Patch): Patch {
+  const C = p.channels, n = p.data.length / C, d = p.data, o = new Float32Array(d.length);
+  const lum = (i: number) => (C === 3 ? 0.299 * d[3 * i] + 0.587 * d[3 * i + 1] + 0.114 * d[3 * i + 2] : d[i * C]);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) { const l = lum(i); if (l === l) { if (l < lo) lo = l; if (l > hi) hi = l; } }
+  for (let i = 0; i < n; i++) {
+    const by = lo + hi - 2 * lum(i);
+    for (let c = 0; c < C; c++) { const v = d[i * C + c] + by; o[i * C + c] = v === v ? Math.max(0, Math.min(255, v)) : v; }
+  }
+  return { data: o, size: p.size, channels: C };
 }
 
 /** A drawing as the cheap scan's query window: shrunk to the window, repeated through its
