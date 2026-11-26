@@ -1,8 +1,9 @@
 // The drawing pad: draw what to look for, as one box at the search level, in the data's own
 // tones (its dark, middle and light greys, or colours, taken from the view) or any colour. The
 // drawing becomes the query (Search's `sketch`): the model embeds it as it would a patch of the
-// data, so "look like the data" first turns any colour into the data's own (by brightness),
-// softens it and gives it the data's grain.
+// data, so "look like the data" softens it and gives it the data's grain (and on grey data
+// turns the colour pen into the data's own grey of that brightness; on colour data a picked
+// colour is searched as picked).
 import type { Patch } from "./embedder.ts";
 
 export type RGB = [number, number, number];
@@ -44,16 +45,18 @@ export class SketchPad {
   P = 64;
   tone: Tone = "dark";
   any: RGB = [255, 255, 255];  // the "any colour" pen, as picked
+  asPicked = false;  // colour data: the colour pen is searched as picked (grey data: as the data's grey of that brightness)
   radius = 2;  // brush radius in pixels of a 64 px box (scaled with the box)
   tones: Tones = { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 };
   private g: CanvasRenderingContext2D;
   private m: CanvasRenderingContext2D;  // the same drawing in the data's own colours ("look like the data")
   private last: [number, number] | null = null;
+  private past: [ImageData, ImageData][] = [];  // the drawing (as shown, as the data) before each change, oldest first
 
-  constructor(private cv: HTMLCanvasElement) {
+  constructor(private cv: HTMLCanvasElement, private changed: () => void = () => {}) {
     this.g = cv.getContext("2d", { willReadFrequently: true })!;
     this.m = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
-    cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); this.last = this.at(e); this.stroke(this.last, this.last); });
+    cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); this.keep(); this.last = this.at(e); this.stroke(this.last, this.last); });
     cv.addEventListener("pointermove", (e) => { if (!this.last) return; const p = this.at(e); this.stroke(this.last, p); this.last = p; });
     const end = () => { this.last = null; };
     cv.addEventListener("pointerup", end);
@@ -76,7 +79,7 @@ export class SketchPad {
     return [0, 1, 2].map((k) => r[i][k] * (1 - t) + r[i + 1][k] * t) as RGB;
   }
   /** The pen as shown and as the data's own colour. */
-  private pen(): [RGB, RGB] { return this.tone === "any" ? [this.any, this.inData(this.any)] : [this.tones[this.tone], this.tones[this.tone]]; }
+  private pen(): [RGB, RGB] { return this.tone === "any" ? [this.any, this.asPicked ? this.any : this.inData(this.any)] : [this.tones[this.tone], this.tones[this.tone]]; }
   private stroke(a: [number, number], b: [number, number]) {
     const w = Math.max(1, (2 * this.radius * this.P) / 64), pen = this.pen();
     [this.g, this.m].forEach((g, k) => {
@@ -86,23 +89,46 @@ export class SketchPad {
       g.beginPath(); g.arc(b[0], b[1], w / 2, 0, 7); g.fill();
     });
   }
+  /** Remembers the drawing as it is, before a change (the last 40). */
+  private keep() {
+    const P = this.P;
+    this.past.push([this.g.getImageData(0, 0, P, P), this.m.getImageData(0, 0, P, P)]);
+    if (this.past.length > 40) this.past.shift();
+    this.changed();
+  }
+  get canUndo() { return this.past.length > 0; }
+  /** The drawing as it was before the last stroke, fill, blank or loaded view. */
+  undo() {
+    const was = this.past.pop();
+    if (!was) return;
+    this.last = null;
+    this.g.putImageData(was[0], 0, 0);
+    this.m.putImageData(was[1], 0, 0);
+    this.changed();
+  }
   /** The whole box in the pen's colour (a background to draw on). */
   fill() {
+    this.keep();
     const pen = this.pen();
     [this.g, this.m].forEach((g, k) => { g.fillStyle = this.css(pen[k]); g.fillRect(0, 0, this.P, this.P); });
   }
 
-  /** A blank box of side P in the middle tone. */
+  /** A blank box of side P in the middle tone: a new drawing (nothing to undo). */
   reset(P: number, tones: Tones) {
     this.P = P; this.tones = tones;
-    for (const g of [this.g, this.m]) {
-      g.canvas.width = P; g.canvas.height = P;
-      g.fillStyle = this.css(tones.mid);
-      g.fillRect(0, 0, P, P);
-    }
+    this.past = [];
+    for (const g of [this.g, this.m]) { g.canvas.width = P; g.canvas.height = P; }
+    this.wipe();
+    this.changed();
   }
+  private wipe() {
+    for (const g of [this.g, this.m]) { g.fillStyle = this.css(this.tones.mid); g.fillRect(0, 0, this.P, this.P); }
+  }
+  /** The box blank again, in the middle tone (undo brings the drawing back). */
+  blank() { this.keep(); this.wipe(); }
   /** A P x P image (`channels` interleaved) to draw over. */
   load(px: Float32Array, channels: number) {
+    this.keep();
     const P = this.P, img = new ImageData(P, P);
     for (let i = 0; i < P * P; i++) for (let c = 0; c < 3; c++) {
       const v = px[i * channels + (channels === 3 ? c : 0)];

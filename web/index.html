@@ -249,15 +249,19 @@
     <div id="hint">Drag to pan, scroll to zoom. Click to search for what is in the dashed box.</div>
     <div id="pad" hidden>
       <div class="padhead"><b>Draw what to find</b><button id="padx" title="Close">&#10005;</button></div>
-      <div class="help" id="padhelp">One box at the search level, in this data's own greys.</div>
+      <div class="help" id="padhelp">One box at the search level, in this data's own tones.</div>
       <canvas id="padcv" title="Draw here"></canvas>
       <div class="row padrow"><span class="lbl">pen</span>
-        <div class="seg" id="padtone"><button data-t="dark" class="on">dark</button><button data-t="mid">grey</button><button data-t="light">light</button><button data-t="any" title="Any colour: pick it on the right">colour</button></div>
+        <div class="seg" id="padtone"><button data-t="dark" class="on">dark</button><button data-t="mid" title="This data's middle tone">mid</button><button data-t="light">light</button><button data-t="any" title="Any colour: pick it on the right">colour</button></div>
         <input type="color" id="padcol" value="#ffffff" title="The colour pen's colour"></div>
       <div class="row padrow"><span class="lbl">size</span>
-        <div class="seg" id="padsize"><button data-r="1">thin</button><button data-r="2" class="on">medium</button><button data-r="5">thick</button></div></div>
+        <div class="seg" id="padsize"><button data-r="1">thin</button><button data-r="2" class="on">medium</button><button data-r="5">thick</button></div><button style="margin-left:auto" id="padundo" title="Undo the last stroke, fill, blank or view (Ctrl+Z)" disabled>undo</button></div>
       <div class="row padrow"><span class="lbl">start</span><button id="padblank">blank</button><button id="padview" title="The box at the centre of the view, to draw over">the view</button><button id="padfill" title="Fill the box with the pen, as a background to draw on">fill</button></div>
-      <div class="row padrow"><label title="Turn every colour into the data's own by brightness (black: its darkest, white: its brightest), soften the drawing and give it the data's grain before the model sees it"><input type="checkbox" id="padtex" checked> look like the data</label></div>
+      <div class="row padrow"><label title="Soften the drawing and give it the data's grain before the model sees it. On grey data the colour pen also becomes the data's own grey of that brightness (black: its darkest, white: its brightest); on colour data a picked colour stays as picked"><input type="checkbox" id="padtex" checked> look like the data</label></div>
+      <div class="row padrow" style="flex-wrap:wrap"><span class="lbl">allow</span>
+        <label title="Also match the drawing rotated and mirrored (8 ways): when which way up it is does not matter. The same switch as Options > any rotation"><input type="checkbox" id="padrot"> any rotation</label>
+        <label title="Also match the drawing at half and at double the size in the box. The same switch as Options > any size"><input type="checkbox" id="padscl"> any size</label>
+        <label title="Also match the drawing with light and dark swapped: when only the pattern matters, not which part is the bright one. The same switch as Options > light or dark"><input type="checkbox" id="padinv"> light or dark</label></div>
       <div class="row padrow"><button id="padgo" class="primary">Search for this</button></div>
     </div>
     <div id="bpad" hidden>
@@ -316,7 +320,8 @@
           <span class="lbl">allow</span>
           <div class="row">
             <label title="Also match the query rotated and mirrored (8 ways): for things with no fixed orientation (craters, galaxies)"><input type="checkbox" id="rot"> any rotation</label>
-            <label title="Also match the query at half and double the size (the levels above and below)"><input type="checkbox" id="scl"> any size</label>
+            <label title="Also match the query at half and double the size (the levels above and below; a drawing: itself shrunk and enlarged)"><input type="checkbox" id="scl"> any size</label>
+            <label title="Also match the query with light and dark swapped (its brightness mirrored, its colour kept): when only the pattern matters, not which part is the bright one. With any rotation, 16 ways"><input type="checkbox" id="inv"> light or dark</label>
             <label title="Compare after removing what all patches here have in common (helps when everything looks alike). Choosing PE-Core-T turns it on: its look (class token) is nearly the same for every patch, so its scores would otherwise all sit near 1"><input type="checkbox" id="adapt"> adapt to data</label>
           </div>
         </div>

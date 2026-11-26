@@ -1237,7 +1237,11 @@ function whyText(s: Search, i: number): string {
   if (!e) return "";
   const name = { look: "look", parts: "parts", centre: "centre", brushed: "marked", tokens: "tokens" };
   const bits = [e.parts.map((p) => `${name[p.name]} ${p.value.toFixed(2)}`).join(" · ")];
-  if (e.variant !== "id") bits.push(VARIANT[e.variant] ?? `turned (${e.variant.slice(1)})`);
+  if (e.variant !== "id") {
+    const swapped = e.variant[0] === "i", v = swapped ? e.variant.slice(1) : e.variant;
+    if (v !== "id") bits.push(VARIANT[v] ?? `turned (${v.slice(1)})`);
+    if (swapped) bits.push("light and dark swapped");
+  }
   if (e.example >= 0) bits.push(`closest: example ${e.example + 1}`);
   if (Math.abs(e.feedback) >= 0.005) bits.push(`marks ${e.feedback > 0 ? "+" : ""}${e.feedback.toFixed(2)}`);
   return bits.join(", ");
@@ -1725,9 +1729,10 @@ function goTo(i: number) {
 function matchOptions(): MatchOptions {
   return { focus: brushW ? "brush" : $<HTMLSelectElement>("focus").value as Focus, rotations: $<HTMLInputElement>("rot").checked,
            scales: $<HTMLInputElement>("scl").checked, adapt: $<HTMLInputElement>("adapt").checked,
+           tones: $<HTMLInputElement>("inv").checked,
            combine: $<HTMLSelectElement>("combine").value as "mean" | "any" };
 }
-for (const id of ["focus", "rot", "scl", "adapt", "combine"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
+for (const id of ["focus", "rot", "scl", "adapt", "inv", "combine"]) $(id).addEventListener("change", () => search?.setMatch(matchOptions()));
 function spread(): Spread { return { fromQuery: Number($<HTMLSelectElement>("far").value), between: Number($<HTMLSelectElement>("between").value) }; }
 for (const id of ["far", "between"]) $(id).addEventListener("change", () => search?.setSpread(spread()));
 let hitSort = "best";
@@ -1805,10 +1810,11 @@ async function toggleGlobe() {
 }
 
 // ---------------------------------------------------------------------------------------
-// drawing what to find: a box at the search level, drawn in the view's own greys
+// drawing what to find: a box at the search level, drawn in the view's own tones
 // ---------------------------------------------------------------------------------------
-const pad = new SketchPad($<HTMLCanvasElement>("padcv"));
+const pad = new SketchPad($<HTMLCanvasElement>("padcv"), () => { $<HTMLButtonElement>("padundo").disabled = !pad.canUndo; });
 let padAt: { W: number; P: number } | null = null;
+let padFor: unknown = null;  // the dataset the pad's drawing was made on
 /** The view's centre at level W (z, y, x). */
 function viewCentre(W: number): Vec3 {
   const v = currentView()!, f = 2 ** W;
@@ -1833,15 +1839,37 @@ async function openPad() {
   padAt = { W, P };
   if (!search) takeChannels();
   $("pad").hidden = false;
-  $("padhelp").textContent = `One box of ${patchSize()}. Any colour works: "look like the data" turns it into this data's own `
-    + `${src.channels === 3 ? "colours" : "greys"} by brightness and adds its grain; untick it to search the drawing as drawn.`;
-  pad.reset(P, { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 });
+  pad.asPicked = src.channels === 3;
+  $("padhelp").textContent = `One box of ${patchSize()}. ` + (src.channels === 3
+    ? `The dark, mid and light pens are this data's own colours; the colour pen is searched as you pick it. "look like the data" softens the drawing and adds the data's grain.`
+    : `Any colour works: "look like the data" turns it into this data's own greys by brightness and adds its grain; untick it to search the drawing as drawn.`);
+  syncPadAllow();
+  // the drawing made here before stays (to change it and search again); a new box size or dataset starts blank
+  const s = src, keep = padFor === s && pad.P === P;
+  padFor = s;
+  if (!keep) pad.reset(P, { dark: [40, 40, 40], mid: [128, 128, 128], light: [215, 215, 215], noise: 0 });
   try {  // the tones (greys or colours) and grain of what is on screen
     const side = Math.min(4 * P, 512), v = await viewPixels(W, side);
-    pad.reset(P, tonesOf(v.data, v.channels, side, side));
+    if (src !== s || padAt?.P !== P) return;  // another dataset or box meanwhile
+    const t = tonesOf(v.data, v.channels, side, side);
+    if (keep || pad.canUndo) pad.tones = t; else pad.reset(P, t);  // (drawn on already: only the pens change)
   } catch { /* the defaults */ }
   showPens();
 }
+// the pad's own "any rotation" / "any size" / "light or dark": the same switches as under Options
+const PAD_ALLOW: [string, string][] = [["padrot", "rot"], ["padscl", "scl"], ["padinv", "inv"]];
+function syncPadAllow() { for (const [a, b] of PAD_ALLOW) $<HTMLInputElement>(a).checked = $<HTMLInputElement>(b).checked; }
+for (const [a, b] of PAD_ALLOW) {
+  $(a).addEventListener("change", () => { $<HTMLInputElement>(b).checked = $<HTMLInputElement>(a).checked; $(b).dispatchEvent(new Event("change")); });
+  $(b).addEventListener("change", syncPadAllow);
+}
+$("padundo").addEventListener("click", () => pad.undo());
+document.addEventListener("keydown", (e: KeyboardEvent) => {
+  if ($("pad").hidden || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+  if ((e.target as HTMLElement).closest?.("input[type=text], input:not([type]), textarea")) return;  // a text box's own undo
+  e.preventDefault();
+  pad.undo();
+});
 $("drawbtn").addEventListener("click", () => ($("pad").hidden ? openPad() : ($("pad").hidden = true)));
 $("padx").addEventListener("click", () => { $("pad").hidden = true; });
 function choosePen(t: Tone) {
@@ -1868,8 +1896,8 @@ $("padsize").addEventListener("click", (e) => {
   pad.radius = Number(r);
   for (const b of $("padsize").querySelectorAll("button")) b.classList.toggle("on", b.dataset.r === r);
 });
-$("padblank").addEventListener("click", () => pad.reset(pad.P, pad.tones));
-$("padview").addEventListener("click", async () => { if (padAt) { const v = await viewPixels(padAt.W, padAt.P); pad.load(v.data, v.channels); } });
+$("padblank").addEventListener("click", () => pad.blank());
+$("padview").addEventListener("click", async () => { if (padAt && pad.P === padAt.P) { const v = await viewPixels(padAt.W, padAt.P); pad.load(v.data, v.channels); } });
 $("padgo").addEventListener("click", () => {
   if (!src || !padAt) return;
   const sk = pad.patch(src.channels, $<HTMLInputElement>("padtex").checked);
